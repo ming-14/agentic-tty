@@ -67,13 +67,13 @@ class App:
         self._runners: dict[str, SessionRunner] = {}
         self._selected: str | None = None
         self._ticks = 0
-        self._refreshing = False
         # 屏幕视图：屏幕 / 格式 / 画布尺寸没变就不重渲染——位图渲染不便宜
         self._rendered_key: tuple[str, int, str, float] | None = None
         self._photo: tk.PhotoImage | None = None
         self._svg_source: str | None = None  # None = 该会话没有屏幕视图
         self._screen_note = ""  # 没有屏幕视图时的提示文字
         self._build_ui()
+        self._select_session(None)  # 初始无会话：pty 专属控件按此状态摆好
         self._root.after(_TICK_MS, self._tick)
 
     # ════════════════════════════════════════════════════════════
@@ -253,11 +253,9 @@ class App:
         runner = SessionRunner(session)
         runner.start()
         self._runners[session.uid] = runner
-        self._selected = session.uid
         self._status.set(f"已创建 {' '.join(argv)}（{mode}）uid={session.uid[:8]}")
-        self._sync_pty_controls()
-        self._refresh_tree()
-        self._refresh_detail()
+        self._refresh_tree()  # 新行先进表，选中它才有意义
+        self._select_session(session.uid)
 
     def _close_selected(self) -> None:
         uid = self._selected
@@ -268,10 +266,9 @@ class App:
         runner = self._runners.pop(session.uid, None)
         if runner is not None:
             runner.stop()
-        self._selected = None
         self._status.set(f"已关闭 uid={session.uid[:8]}")
         self._refresh_tree()
-        self._refresh_detail()
+        self._select_session(None)
 
     def _send_input(self, newline: bool = False) -> None:
         runner = self._runners.get(self._selected) if self._selected else None
@@ -304,10 +301,28 @@ class App:
         self._status.set(f"尺寸已改为 {cols}×{rows}")
 
     def _on_select(self, _event: object = None) -> None:
-        if self._refreshing:
-            return
+        """用户改了树的选中项 → 切换当前会话。
+
+        `<<TreeviewSelect>>` 是**异步**派发的，且值没变也照发，程序侧切会话同样会触发它，
+        所以先比一次 `_selected`，把非用户发起的那次当成 no-op。
+        """
         selection = self._tree.selection()
-        self._selected = selection[0] if selection else None
+        uid = selection[0] if selection else None
+        if uid != self._selected:
+            self._select_session(uid)
+
+    def _select_session(self, uid: str | None) -> None:
+        """把当前会话切到 `uid`（无会话传 `None`）：树选中、pty 专属控件、详情一起到位。
+
+        程序侧改选中必须走这里：只改 `_selected` 而不动树，界面就会与实际不一致。
+        """
+        self._selected = uid
+        selected = self._tree.selection()
+        if uid is None:
+            if selected:
+                self._tree.selection_remove(*selected)
+        elif uid not in selected:
+            self._tree.selection_set(uid)
         self._sync_pty_controls()
         self._refresh_detail()
 
@@ -334,33 +349,36 @@ class App:
     # ════════════════════════════════════════════════════════════
 
     def _refresh_tree(self) -> None:
-        self._refreshing = True
-        try:
-            for item in self._tree.get_children():
-                self._tree.delete(item)
-            for session in self._registry.list():
-                members = self._processes(session)
-                self._tree.insert(
-                    "",
-                    tk.END,
-                    iid=session.uid,
-                    values=(
-                        session.spec.argv[0] if session.spec.argv else "",
-                        session.mode,
-                        str(session.state),
-                        "-" if session.exit_code is None else session.exit_code,
-                        "-" if members is None else len(members),
-                    ),
-                )
-            if self._selected and self._registry.find(self._selected) is not None:
-                self._tree.selection_set(self._selected)
-        finally:
-            self._refreshing = False
+        """增量刷新：行 iid 就是 uid，只增删行、只在值变了时改写。
+
+        不能全表重建 + `selection_set`：那个事件是异步派发的，会在本函数返回后才被处理，
+        于是被当成"用户换了会话"，把用户切走的标签页弹回「屏幕」（见 `_on_select`）。
+        """
+        sessions = self._registry.list()
+        alive = {session.uid for session in sessions}
+        for uid in self._tree.get_children():
+            if uid not in alive:
+                self._tree.delete(uid)
+        for index, session in enumerate(sessions):
+            values = self._row_values(session)
+            if not self._tree.exists(session.uid):
+                self._tree.insert("", index, iid=session.uid, values=values)
+            elif self._tree.item(session.uid, "values") != tuple(str(v) for v in values):
+                self._tree.item(session.uid, values=values)
+
+    def _row_values(self, session: Session) -> tuple[str | int, ...]:
+        members = self._processes(session)
+        return (
+            session.spec.argv[0] if session.spec.argv else "",
+            session.mode,
+            session.state,
+            "-" if session.exit_code is None else session.exit_code,
+            "-" if members is None else len(members),
+        )
 
     def _refresh_detail(self) -> None:
         session = self._registry.find(self._selected) if self._selected else None
         if session is None:
-            self._sync_pty_controls()
             self._set_text(self._view, "")
             self._set_text(self._raw, "")
             self._set_text(self._svg, "")
