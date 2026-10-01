@@ -110,6 +110,19 @@ def test_pty_only_controls_hidden_for_fake(root):
     app.on_close()
 
 
+def test_screen_image_fits_canvas(root):
+    """屏幕按画布大小缩放铺满，画布独占一行（没有滚动条）。"""
+    app = App(root)
+    session = create_session(ExampleMode.PTY, (sys.executable, "-c", "print('x')"))
+    app._image_canvas.winfo_width = lambda: 600
+    app._image_canvas.winfo_height = lambda: 300
+
+    # 80×24 字符 × 8×17 px 基准 → 按较小的一维贴合
+    assert app._fit_scale(session) == pytest.approx(min(600 / (80 * 8), 300 / (24 * 17)))
+    assert app._image_tab.grid_slaves(row=1) == [app._image_canvas]
+    app.on_close()
+
+
 def _pty_available() -> bool:
     try:
         from agentic_tty.runtime.pty_host import require_pywezterm

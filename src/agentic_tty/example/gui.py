@@ -11,7 +11,8 @@
 
 右侧「屏幕」/「SVG 源码」页是 **pty 专属**（其他模式藏掉）：`image` 格式走
 `Session.render_image`（终端模型直接出位图），`svg` 格式走 `Session.render_svg`
-再经 resvg 栅格化——**Tk 的 PhotoImage 只吃位图，没有 SVG 解码器**。
+再经 resvg 栅格化——**Tk 的 PhotoImage 只吃位图，没有 SVG 解码器**。屏幕按画布
+大小缩放铺满，不出滚动条。
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ except ImportError as exc:  # 依赖缺失就说清楚怎么补，不静默降�
     raise ImportError("Tk 管理台渲染 SVG 需要 resvg-py：pip install -e .[gui]") from exc
 
 from ..core.session.base import Session
+from ..core.terminal.session import TerminalSession
 from ..foundation.logs import get_logger
 from ..runtime.runner import SessionRunner
 from .programs import PROGRAMS
@@ -39,8 +41,10 @@ _TICK_MS = 20
 # 每多少个 tick 刷一次界面（20ms × 8 ≈ 160ms，避免文本频繁重排）
 _REFRESH_EVERY = 8
 _RAW_TAIL = 2000
-# 屏幕位图相对字符格基准（8×17 px）的缩放
-_ZOOM = 2.0
+# pywezterm 终端模型的字符格基准像素：位图与 SVG 都以它为 1×
+_CELL_W, _CELL_H = 8, 17
+# 保存 PNG 用的固定缩放（屏幕页显示时会按画布大小另算）
+_EXPORT_SCALE = 2.0
 _FORMAT_IMAGE = "image"
 _FORMAT_SVG = "svg"
 
@@ -56,8 +60,8 @@ class App:
         self._selected: str | None = None
         self._ticks = 0
         self._refreshing = False
-        # 屏幕视图：屏幕没变（日志末尾没动）就不重渲染——位图渲染不便宜
-        self._rendered_key: tuple[str, int, str] | None = None
+        # 屏幕视图：屏幕 / 格式 / 画布尺寸没变就不重渲染——位图渲染不便宜
+        self._rendered_key: tuple[str, int, str, float] | None = None
         self._photo: tk.PhotoImage | None = None
         self._svg_source: str | None = None  # None = 该会话没有屏幕视图
         self._screen_note = ""  # 没有屏幕视图时的提示文字
@@ -122,7 +126,7 @@ class App:
 
         self._image_tab = ttk.Frame(self._notebook)
         format_row = ttk.Frame(self._image_tab)
-        format_row.grid(row=0, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 2))
+        format_row.grid(row=0, column=0, sticky="w", padx=6, pady=(4, 2))
         ttk.Label(format_row, text="格式").pack(side=tk.LEFT)
         self._format = tk.StringVar(value=_FORMAT_IMAGE)
         for text, value in (("image", _FORMAT_IMAGE), ("svg", _FORMAT_SVG)):
@@ -139,17 +143,9 @@ class App:
             foreground="#888780",
         ).pack(side=tk.LEFT, padx=6)
 
+        # 屏幕铺满画布，不出滚动条
         self._image_canvas = tk.Canvas(self._image_tab, highlightthickness=0)
-        image_h = ttk.Scrollbar(
-            self._image_tab, orient=tk.HORIZONTAL, command=self._image_canvas.xview
-        )
-        image_v = ttk.Scrollbar(
-            self._image_tab, orient=tk.VERTICAL, command=self._image_canvas.yview
-        )
-        self._image_canvas.configure(xscrollcommand=image_h.set, yscrollcommand=image_v.set)
         self._image_canvas.grid(row=1, column=0, sticky="nsew")
-        image_v.grid(row=1, column=1, sticky="ns")
-        image_h.grid(row=2, column=0, sticky="ew")
         self._image_tab.rowconfigure(1, weight=1)
         self._image_tab.columnconfigure(0, weight=1)
 
@@ -308,7 +304,8 @@ class App:
 
     def _sync_pty_controls(self) -> None:
         """屏幕页 / SVG 源码页 / 导出按钮 / 尺寸控件都是 pty 专属：其他模式藏掉或禁用。"""
-        is_pty = self._modes.get(self._selected) is ExampleMode.PTY
+        session = self._sessions.get(self._selected) if self._selected else None
+        is_pty = isinstance(session, TerminalSession)
         state = "normal" if is_pty else "hidden"
         self._notebook.tab(self._image_tab, state=state)
         self._notebook.tab(self._svg, state=state)
@@ -371,11 +368,12 @@ class App:
         )
 
     def _refresh_screen_views(self, session: Session) -> None:
-        """屏幕页 / SVG 源码页（pty 专属）：屏幕或格式没变就跳过重渲染。"""
-        if self._modes.get(session.uid) is not ExampleMode.PTY:
+        """屏幕页 / SVG 源码页（pty 专属）：屏幕、格式或画布尺寸没变就跳过重渲染。"""
+        if not isinstance(session, TerminalSession):
             return
         fmt = self._format.get()
-        key = (session.uid, session.journal.end_offset, fmt)
+        scale = self._fit_scale(session)
+        key = (session.uid, session.journal.end_offset, fmt, round(scale, 4))
         if key == self._rendered_key:
             return
         self._rendered_key = key
@@ -389,14 +387,23 @@ class App:
             return
         self._screen_note = ""
         self._set_text(self._svg, self._svg_source)
-        self._set_image(*self._render_screen(session, fmt, self._svg_source))
+        self._set_image(*self._render_screen(session, fmt, self._svg_source, scale))
 
-    def _render_screen(self, session: Session, fmt: str, svg: str) -> tuple[bytes | None, str]:
+    def _fit_scale(self, session: TerminalSession) -> float:
+        """让屏幕正好铺满画布（不出现滚动条）。画布还没量出尺寸时按 1× 画。"""
+        width, height = self._image_canvas.winfo_width(), self._image_canvas.winfo_height()
+        if width <= 1 or height <= 1:
+            return 1.0
+        return min(width / (session.cols * _CELL_W), height / (session.rows * _CELL_H))
+
+    def _render_screen(
+        self, session: Session, fmt: str, svg: str, scale: float
+    ) -> tuple[bytes | None, str]:
         """屏幕位图：`image` 由终端模型直接出，`svg` 先出矢量再经 resvg 栅格化。"""
         try:
             if fmt == _FORMAT_SVG:
-                return resvg_py.svg_to_bytes(svg_string=svg, zoom=_ZOOM), ""
-            return session.render_image(scale=_ZOOM, fmt="png"), ""
+                return resvg_py.svg_to_bytes(svg_string=svg, zoom=scale), ""
+            return session.render_image(scale=scale, fmt="png"), ""
         except Exception as exc:  # SVG 为空 / 宿主已关闭
             return None, f"<无屏幕位图: {exc}>"
 
@@ -409,12 +416,14 @@ class App:
         self._photo = None  # 必须留引用，否则 Tk 会把图回收掉
         if data is None:
             self._image_canvas.create_text(12, 12, anchor="nw", text=note, fill="#888780")
-            self._image_canvas.configure(scrollregion=(0, 0, 0, 0))
             return
-        # Tk 的 PhotoImage 只吃位图（8.6 起原生支持 PNG）
+        # Tk 的 PhotoImage 只吃位图（8.6 起原生支持 PNG）；create_image 默认居中
         self._photo = tk.PhotoImage(data=base64.b64encode(data).decode("ascii"))
-        self._image_canvas.create_image(0, 0, anchor="nw", image=self._photo)
-        self._image_canvas.configure(scrollregion=(0, 0, self._photo.width(), self._photo.height()))
+        self._image_canvas.create_image(
+            self._image_canvas.winfo_width() / 2,
+            self._image_canvas.winfo_height() / 2,
+            image=self._photo,
+        )
 
     def _save_svg(self) -> None:
         if self._svg_source is None:
@@ -436,7 +445,7 @@ class App:
         if session is None:
             return
         try:
-            data = session.render_image(scale=_ZOOM, fmt="png")
+            data = session.render_image(scale=_EXPORT_SCALE, fmt="png")
         except Exception as exc:
             messagebox.showinfo("保存 PNG", f"无屏幕位图: {exc}")
             return
@@ -452,7 +461,7 @@ class App:
         self._status.set(f"已保存 PNG → {path}")
 
     def _render_view(self, session: Session) -> str:
-        if self._modes.get(session.uid) is ExampleMode.PTY:
+        if isinstance(session, TerminalSession):
             return self._screen_text(session)
         return self._render_streams(session)
 
