@@ -1,6 +1,6 @@
 """示例层的 Tk 管理台：接入核心层接口，手动起会话、看屏幕、发输入。
 
-    python -m agentic_tty.example --gui
+    python -m agentic_tty.example
 
 **Tk 的 mainloop 就是所有者线程**：界面回调与 `SessionRunner.pump()` 都跑在同一
 线程，所以这里不需要任何锁——这正是核心层"单线程所有者"约定带来的好处。
@@ -493,9 +493,11 @@ class App:
         return "\n".join(parts)
 
     def _render_raw(self, session: Session) -> str:
+        """原始字节页：每路只取尾部——`read_all` 会把整个保留区复制一遍。"""
         lines = []
         for stream in session.streams():
-            tail = session.read_all(stream)[-_RAW_TAIL:]
+            end = session.journal_for(stream).end_offset
+            tail = session.read_range(max(0, end - _RAW_TAIL), end, stream)
             lines.append(f"── {stream} ──\n{tail!r}")
         return "\n".join(lines)
 
