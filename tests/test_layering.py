@@ -10,11 +10,23 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "agentic_tty"
 # 允许的依赖：包 → 它可以依赖的顶层包
 _ALLOWED: dict[str, frozenset[str]] = {
     "foundation": frozenset({"foundation"}),
+    # 线协议是两端共享的契约，只压在 foundation 上
+    "protocol": frozenset({"foundation", "protocol"}),
     "core": frozenset({"foundation", "core"}),
     # 运行时层是唯一可以碰原生扩展与平台 API 的层
     "runtime": frozenset({"foundation", "core", "runtime"}),
-    # 示例层是 adapter 的占位，也是核心层的测试驱动
-    "example": frozenset({"foundation", "core", "runtime", "example"}),
+    # 开发接口：用例编排，不认识传输与适配器
+    "service": frozenset({"foundation", "protocol", "core", "runtime", "service"}),
+    # 外网兼容层：只搬字节与帧，不认识业务（客户端链也止于这里）
+    "transport": frozenset({"foundation", "protocol", "transport"}),
+    # 接入层：客户端形态只用 transport + protocol，进程内挂载形态才用得上 service
+    "adapters": frozenset({"foundation", "protocol", "service", "transport", "adapters"}),
+    # 装配层：摸得到它要装配的一切，但不该认识适配器
+    "daemon": frozenset(
+        {"foundation", "protocol", "core", "runtime", "service", "transport", "daemon"}
+    ),
+    # 示例层是核心层的测试驱动与各层的占位：经 transport 演示客户端，但不走 service
+    "example": frozenset({"foundation", "protocol", "core", "runtime", "transport", "example"}),
 }
 
 # 核心链路不允许触碰的第三方（原生扩展 / web 框架）
