@@ -12,7 +12,6 @@ from agentic_tty.core.ports import PTY, SUBPROCESS, SessionSpec, Stream
 from agentic_tty.core.session.base import Session
 from agentic_tty.core.session.registry import SessionRegistry
 from agentic_tty.core.session.state import SessionState
-from agentic_tty.core.views import last_lines
 from agentic_tty.example.fake_host import FakeHost, FakeProgram
 from agentic_tty.runtime.runner import SessionRunner
 
@@ -55,7 +54,7 @@ def test_subprocess_runs_to_completion():
         assert session.exit_code == 0
         assert session.state is SessionState.EXITED
         assert session.drained
-        assert last_lines(session.read_all(Stream.STDOUT), 1) == "DONE\n"
+        assert session.read_all(Stream.STDOUT).splitlines()[-1] == b"DONE"
     finally:
         session.close()
         runner.stop()

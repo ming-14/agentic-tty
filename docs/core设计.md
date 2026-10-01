@@ -11,7 +11,7 @@ core 只做三件事：
 2. **子进程会话核心** —— 双流、无终端模型。
 3. **生命周期管理** —— 状态机、注册表、退出与排空判定。
 
-配套的支撑件：端口定义、字节日志、字节视图、边界扫描、错误。
+配套的支撑件：端口定义、字节日志、边界扫描、错误。
 
 core **不做**：`sid` 解析、tags、连接、订阅者、推送、线程、协议帧、认证、**返回条件与等待引擎**。
 
@@ -28,7 +28,6 @@ core/
   errors.py          领域错误
   scan.py            转义序列与多字节字符的边界扫描
   journal.py         输出字节日志 + 对齐纯函数 plan_attach
-  views.py           字节视图（全量 / 切片 / 行 / offset / grep）
   session/
     state.py         SessionState / 状态机
     base.py          Session 抽象（身份 + 生命周期 + 摄入 + 视图）
@@ -156,16 +155,14 @@ def plan_attach(journal: OutputJournal, cursor: int | None, end: int) -> Resume 
 
 ## 6. 视图
 
-字节视图直接切片日志，按需生成、不额外维护状态：
+字节视图直接切片日志，按需生成、不额外维护状态。核心层给的是日志本身与切片入口：
 
-```python
-def read_all(data: bytes) -> bytes: ...
-def read_range(data: bytes, start: int, end: int | None = None) -> bytes: ...
-def last_bytes(data: bytes, n: int) -> bytes: ...
-def last_lines(data: bytes, n: int, *, encoding: str = "utf-8") -> str: ...
-def line_range(data: bytes, start: int, end: int | None, *, encoding: str = "utf-8") -> str: ...
-def grep(data: bytes, pattern: str, *, encoding: str = "utf-8", limit: int | None = None) -> list[str]: ...
-```
+- `OutputJournal.read(from_offset, length=None)`：任意区间（半开 `[start, end)`）。
+- `Session.read_all(stream)` / `Session.read_range(start, end, stream)`：每流独立的整段与切片。
+- 订阅对齐用 `attach_plan(cursor)`（见 5）。
+
+行 / offset 增量 / grep 这类展示型视图由消费它们的层（service 的返回数据）在日志之上按需实现，
+核心层不单独养一套纯函数。
 
 屏幕视图只存在于 Pty 会话，由终端模型渲染，是派生视图：
 
