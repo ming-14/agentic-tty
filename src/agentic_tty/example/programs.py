@@ -5,8 +5,7 @@
 
 from __future__ import annotations
 
-from ..core.ports import SessionSpec
-from .fake_host import FakeHost, FakeProgram
+from .fake_host import FakeProgram
 
 
 def _respond(line: bytes) -> bytes:
@@ -50,11 +49,3 @@ PROGRAMS: dict[str, FakeProgram] = {
         title="crash",
     ),
 }
-
-
-def make_host(spec: SessionSpec) -> FakeHost:
-    name = spec.argv[0] if spec.argv else ""
-    program = PROGRAMS.get(name)
-    if program is None:
-        raise KeyError(f"示例未定义程序 {name!r}（可选：{', '.join(sorted(PROGRAMS))}）")
-    return FakeHost(spec, program)
