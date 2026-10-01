@@ -57,13 +57,17 @@ class OutputJournal:
     def trim_to_budget(self) -> int:
         """按预算裁剪头部，返回裁剪掉的字节数。
 
-        裁剪点由 `scan.clean_offset_at_or_after` 对齐到转义序列/字符边界。
-        扫描从缓冲起点开始，是 O(n)；裁剪是低频路径，暂不做增量扫描状态。
+        裁剪点由 `scan.trim_cut_offset` 给出：**≥ 超出量的某个干净边界**，不保证最小
+        （最多晚 64 字节，对齐序列边界才是硬要求）。这条路径因此是 C 速的——日志满载
+        后每次摄入都会走到它，逐序列解析会成为主人侧循环的主要开销。
+
+        尾部无法定界（残缺序列、未终止的字符串序列）时返回 len(data)，即整段裁掉：
+        那种情况下确实不存在别的干净边界，订阅者只能走重建。
         """
         excess = len(self._buf) - self._budget
         if excess <= 0:
             return 0
-        cut = scan.clean_offset_at_or_after(self._buf, excess)
+        cut = scan.trim_cut_offset(self._buf, excess)
         if cut <= 0:
             return 0
         del self._buf[:cut]
