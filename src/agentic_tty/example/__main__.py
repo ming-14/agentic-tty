@@ -1,6 +1,6 @@
 """示例：用假宿主或真宿主驱动核心层。
 
-    python -m agentic_tty.example                       # 三个假程序场景
+    python -m agentic_tty.example                       # 三个假程序场景 + 一个真进程树场景
     python -m agentic_tty.example --gui                 # Tk 管理台
     python -m agentic_tty.example --run "cmd /c dir"    # 跑一条真命令（子进程）
     python -m agentic_tty.example --run "cmd" --mode pty --save-screen out/
@@ -94,10 +94,37 @@ def _demo_repl() -> None:
     print()
 
 
+def _demo_process_tree() -> None:
+    """真子进程：进程树成员随命令起止变化（轮询式观测，核心层不给事件）。"""
+    print("== 真子进程：进程树成员随命令起止变化 ==")
+    code = (
+        "import subprocess, sys, time;"
+        "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(2)']);"
+        "print(g.pid, flush=True);"
+        "time.sleep(2)"
+    )
+    session, runner = _open(ExampleMode.SUBPROCESS, (sys.executable, "-c", code))
+    try:
+        print(f"  起后：成员 {len(session.descendants())} 个")
+        members: tuple[int, ...] = ()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not members:
+            runner.pump()
+            members = session.descendants()
+            time.sleep(0.02)
+        print(f"  运行中：成员 {len(members)} 个 {list(members)}")
+        runner.run_until_drained(time.monotonic() + 5.0)
+        print(f"  结束后：成员 {len(session.descendants())} 个   退出码 = {session.exit_code}")
+    finally:
+        _close(session, runner)
+    print()
+
+
 def _run_demos() -> int:
     _demo_build()
     _demo_streams()
     _demo_repl()
+    _demo_process_tree()
     return 0
 
 

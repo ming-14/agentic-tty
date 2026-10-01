@@ -123,6 +123,38 @@ def test_screen_image_fits_canvas(root):
     app.on_close()
 
 
+def test_process_tab_shows_tree_members(root):
+    """「进程」页所有模式都有：会话树那列是成员数，页内列出成员 pid。"""
+    app = App(root)
+    app._command.set("repl")
+    app._mode.set(ExampleMode.FAKE.value)
+    app._create_session()
+    uid = next(iter(app._sessions))
+    app._selected = uid
+
+    # 假宿主的进程树成员由测试直接设（不接真进程）
+    host = app._sessions[uid].host
+    assert host is not None
+    host.descendants_pids = (101, 202)
+    app._refresh_tree()
+    app._refresh_detail()
+
+    assert app._notebook.tab(app._procs, "state") == "normal"  # 不是 pty 专属
+    assert app._tree.item(uid, "values")[4] == "2"
+    text = app._procs.get("1.0", "end-1c")
+    assert "进程树成员 2 个" in text
+    assert "pid 101" in text and "pid 202" in text
+    app.on_close()
+
+
+def test_processes_helper_returns_none_when_unobservable(root):
+    """未启动的会话观测不到进程树：返回 None 而不是抛给界面。"""
+    app = App(root)
+    session = create_session(ExampleMode.FAKE, ("repl",))  # 没 start → 没有宿主
+    assert app._processes(session) is None
+    app.on_close()
+
+
 def _pty_available() -> bool:
     try:
         from agentic_tty.runtime.pty_host import require_pywezterm

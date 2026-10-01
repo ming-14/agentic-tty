@@ -13,6 +13,9 @@
 `Session.render_image`（终端模型直接出位图），`svg` 格式走 `Session.render_svg`
 再经 resvg 栅格化——**Tk 的 PhotoImage 只吃位图，没有 SVG 解码器**。屏幕按画布
 大小缩放铺满，不出滚动条。
+
+「进程」页**所有模式都有**：会话树里那列"进程"是进程树成员数，页内列出成员 pid，
+以及（Windows）该会话名下探测到的可见窗口。
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ except ImportError as exc:  # 依赖缺失就说清楚怎么补，不静默降�
 from ..core.session.base import Session
 from ..core.terminal.session import TerminalSession
 from ..foundation.logs import get_logger
+from ..runtime.monitor import windows_of
 from ..runtime.runner import SessionRunner
 from .programs import PROGRAMS
 from .sessions import ExampleMode, create_session
@@ -105,13 +109,14 @@ class App:
 
         left = ttk.Frame(body)
         body.add(left, weight=1)
-        columns = ("command", "mode", "state", "exit")
+        columns = ("command", "mode", "state", "exit", "procs")
         self._tree = ttk.Treeview(left, columns=columns, show="headings", selectmode="browse")
         for col, text, width in (
             ("command", "命令", 90),
             ("mode", "模式", 80),
             ("state", "状态", 70),
             ("exit", "退出码", 60),
+            ("procs", "进程", 50),
         ):
             self._tree.heading(col, text=text)
             self._tree.column(col, width=width, anchor=tk.W, stretch=True)
@@ -152,10 +157,12 @@ class App:
         self._svg = tk.Text(self._notebook, wrap=tk.NONE, font=("Consolas", 9))
         self._view = tk.Text(self._notebook, wrap=tk.NONE, font=("Consolas", 10))
         self._raw = tk.Text(self._notebook, wrap=tk.NONE, font=("Consolas", 9))
+        self._procs = tk.Text(self._notebook, wrap=tk.NONE, font=("Consolas", 10))
         self._notebook.add(self._image_tab, text="屏幕")
         self._notebook.add(self._svg, text="SVG 源码")
         self._notebook.add(self._view, text="视图")
         self._notebook.add(self._raw, text="原始字节")
+        self._notebook.add(self._procs, text="进程")
 
         entry_row = ttk.Frame(right)
         entry_row.pack(fill=tk.X, pady=(6, 0))
@@ -330,6 +337,7 @@ class App:
             for item in self._tree.get_children():
                 self._tree.delete(item)
             for uid, session in self._sessions.items():
+                members = self._processes(session)
                 self._tree.insert(
                     "",
                     tk.END,
@@ -339,6 +347,7 @@ class App:
                         self._modes.get(uid, ""),
                         str(session.state),
                         "-" if session.exit_code is None else session.exit_code,
+                        "-" if members is None else len(members),
                     ),
                 )
             if self._selected in self._sessions:
@@ -353,6 +362,7 @@ class App:
             self._set_text(self._view, "")
             self._set_text(self._raw, "")
             self._set_text(self._svg, "")
+            self._set_text(self._procs, "")
             self._svg_source = None
             self._screen_note = "未选中会话"
             self._set_image(None, self._screen_note)
@@ -360,6 +370,7 @@ class App:
             return
         self._set_text(self._view, self._render_view(session))
         self._set_text(self._raw, self._render_raw(session))
+        self._set_text(self._procs, self._render_processes(session))
         self._refresh_screen_views(session)
         drained = "已排空" if session.drained else "进行中"
         self._status.set(
@@ -484,6 +495,39 @@ class App:
         for stream in session.streams():
             tail = session.read_all(stream)[-_RAW_TAIL:]
             lines.append(f"── {stream} ──\n{tail!r}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _processes(session: Session) -> tuple[int, ...] | None:
+        """进程树成员；观测不到（未启动 / 没有作业对象 / 已关闭）返回 None。
+
+        `descendants()` 是**轮询式**观测，这里每刷一次界面查一次；比对前后两次就能
+        看出"谁起来了、谁没了"——判定留给命令层，核心层只出快照。
+        """
+        try:
+            return session.descendants()
+        except Exception:  # CoreError / MonitorUnavailable
+            return None
+
+    def _render_processes(self, session: Session) -> str:
+        host = session.host
+        root = host.pid if host is not None else None
+        lines = [
+            f"模式 {self._modes.get(session.uid, '')} · 状态 {session.state}"
+            f" · 退出码 {'-' if session.exit_code is None else session.exit_code}",
+            f"根进程 pid {root if root is not None else '-'}",
+        ]
+        members = self._processes(session)
+        if members is None:
+            lines.append("进程树成员：观测不到（未启动 / 没有作业对象 / 已关闭）")
+            return "\n".join(lines)
+        lines.append(f"进程树成员 {len(members)} 个（不含根进程）：")
+        lines.extend(f"  pid {pid}" for pid in members)
+        # 窗口探测只在 Windows 有实现；其他平台返回空并记一次告警
+        wanted = {root} if root is not None else set()
+        windows = windows_of(wanted | set(members))
+        lines.append(f"可见窗口 {len(windows)} 个：")
+        lines.extend(f'  pid {w.pid} · "{w.title}"' for w in windows)
         return "\n".join(lines)
 
     @staticmethod
