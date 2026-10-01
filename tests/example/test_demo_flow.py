@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 
-from agentic_tty.core.ports import SessionMode, SessionSpec, Stream
+from agentic_tty.core.ports import PTY, SUBPROCESS, SessionSpec, Stream
 from agentic_tty.core.session.base import Session
 from agentic_tty.core.session.registry import SessionRegistry
 from agentic_tty.core.session.state import SessionState
@@ -49,7 +49,7 @@ def test_subprocess_runs_to_completion():
         exit_code=0,
     )
     registry = _registry(program)
-    session, runner = _open(registry, SessionSpec(mode=SessionMode.PROCESS, argv=("x",)))
+    session, runner = _open(registry, SessionSpec(mode=SUBPROCESS, argv=("x",)))
     try:
         assert runner.run_until_drained(time.monotonic() + 3.0)
         assert session.exit_code == 0
@@ -68,7 +68,7 @@ def test_subprocess_streams_stay_independent():
         exit_after=0.05,
     )
     registry = _registry(program)
-    session, runner = _open(registry, SessionSpec(mode=SessionMode.PROCESS, argv=("x",)))
+    session, runner = _open(registry, SessionSpec(mode=SUBPROCESS, argv=("x",)))
     try:
         runner.run_until_drained(time.monotonic() + 3.0)
         assert session.read_all(Stream.STDOUT) == b"out\n"
@@ -85,7 +85,7 @@ def test_terminal_wait_prompt_then_send_then_read_echo():
         respond=lambda line: b"ok:" + line.strip() + b"\n> ",
     )
     registry = _registry(program)
-    session, runner = _open(registry, SessionSpec(mode=SessionMode.PTY, argv=("x",)))
+    session, runner = _open(registry, SessionSpec(mode=PTY, argv=("x",)))
     try:
         assert _pump_until_output(runner, session, b"> ", 2.0)
         session.send(b"ping\n")
@@ -98,7 +98,7 @@ def test_terminal_wait_prompt_then_send_then_read_echo():
 
 def test_run_for_stops_early_when_session_ends():
     registry = _registry(FakeProgram(exit_after=0.05, exit_code=0))
-    session, runner = _open(registry, SessionSpec(mode=SessionMode.PROCESS, argv=("x",)))
+    session, runner = _open(registry, SessionSpec(mode=SUBPROCESS, argv=("x",)))
     try:
         started = time.monotonic()
         runner.run_for(5.0)  # 会话 0.05s 就结束，不该真的跑 5 秒
@@ -111,8 +111,8 @@ def test_run_for_stops_early_when_session_ends():
 
 def test_registry_close_all_releases_hosts():
     registry = _registry(FakeProgram(exit_after=None))
-    first = registry.create(SessionSpec(mode=SessionMode.PROCESS, argv=("x",)))
-    second = registry.create(SessionSpec(mode=SessionMode.PTY, argv=("x",)))
+    first = registry.create(SessionSpec(mode=SUBPROCESS, argv=("x",)))
+    second = registry.create(SessionSpec(mode=PTY, argv=("x",)))
     first.start()
     second.start()
     registry.close_all()

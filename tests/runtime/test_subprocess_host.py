@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import sys
 
-from agentic_tty.core.ports import SessionMode, SessionSpec
+from agentic_tty.core.ports import SUBPROCESS, SessionSpec
 from agentic_tty.runtime.subprocess_host import SubprocessHost
 
 
 def _spec(argv: list[str]) -> SessionSpec:
-    return SessionSpec(mode=SessionMode.PROCESS, argv=argv)
+    return SessionSpec(mode=SUBPROCESS, argv=argv)
 
 
 def _py(code: str) -> list[str]:
@@ -74,7 +74,7 @@ def test_kill_terminates_tree():
 
 def test_env_is_passed_through():
     spec = SessionSpec(
-        mode=SessionMode.PROCESS,
+        mode=SUBPROCESS,
         argv=_py("import os;print(os.environ.get('AGENTIC_TTY_TEST',''))"),
         env={"AGENTIC_TTY_TEST": "42"},
     )

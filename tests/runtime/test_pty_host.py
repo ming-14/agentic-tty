@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from agentic_tty.core.ports import SessionMode, SessionSpec
+from agentic_tty.core.ports import PTY, SessionSpec
 from agentic_tty.runtime.pty_host import PtyHost
 
 
@@ -46,7 +46,7 @@ def _drain(host, deadline_s: float = 5.0) -> bytes:
 
 
 def test_pty_read_feed_and_screen_text():
-    host = PtyHost(SessionSpec(mode=SessionMode.PTY, argv=_echo_argv()))
+    host = PtyHost(SessionSpec(mode=PTY, argv=_echo_argv()))
     try:
         raw = _drain(host)
         assert b"pty-hello" in raw
@@ -58,7 +58,7 @@ def test_pty_read_feed_and_screen_text():
 
 
 def test_pty_resize_updates_both_sides():
-    host = PtyHost(SessionSpec(mode=SessionMode.PTY, argv=_echo_argv(), cols=80, rows=24))
+    host = PtyHost(SessionSpec(mode=PTY, argv=_echo_argv(), cols=80, rows=24))
     try:
         host.resize(120, 40)
         assert host._pty.get_size() == (120, 40)
@@ -68,7 +68,7 @@ def test_pty_resize_updates_both_sides():
 
 
 def test_pty_snapshot_contains_screen_content():
-    host = PtyHost(SessionSpec(mode=SessionMode.PTY, argv=_echo_argv()))
+    host = PtyHost(SessionSpec(mode=PTY, argv=_echo_argv()))
     try:
         _drain(host)
         snapshot = host.snapshot()
@@ -80,7 +80,7 @@ def test_pty_snapshot_contains_screen_content():
 
 
 def test_pty_read_returns_empty_after_close():
-    host = PtyHost(SessionSpec(mode=SessionMode.PTY, argv=_echo_argv()))
+    host = PtyHost(SessionSpec(mode=PTY, argv=_echo_argv()))
     host.kill()
     host.close()
     assert host.read(timeout=0.2) == b""

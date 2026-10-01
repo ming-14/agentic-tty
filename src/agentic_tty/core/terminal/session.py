@@ -10,7 +10,6 @@ from ..errors import CoreError
 from ..ports import (
     HostFactory,
     HostMetadata,
-    SessionMode,
     SessionSpec,
     Stream,
     TerminalHost,
@@ -31,8 +30,6 @@ class TerminalSession(Session):
         *,
         journal_budget_bytes: int,
     ) -> None:
-        if spec.mode is not SessionMode.PTY:
-            raise ValueError("TerminalSession 只接受 pty 模式")
         super().__init__(uid, spec, host_factory, journal_budget_bytes=journal_budget_bytes)
         self._cols = spec.cols
         self._rows = spec.rows

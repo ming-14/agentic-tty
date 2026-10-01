@@ -16,12 +16,10 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
-
-class SessionMode(StrEnum):
-    """会话形态。"""
-
-    PTY = "pty"
-    PROCESS = "subprocess"
+# 内置模式的标签。模式是**开放字符串**：标签由接入方（会话实现 / 宿主）自己定义，
+# core 不做校验；这两个只是内置的终端形态所用的标签。
+PTY = "pty"
+SUBPROCESS = "subprocess"
 
 
 class Stream(StrEnum):
@@ -35,7 +33,7 @@ class Stream(StrEnum):
 class SessionSpec:
     """创建一个会话宿主所需的全部输入。"""
 
-    mode: SessionMode
+    mode: str
     argv: Sequence[str]
     cols: int = 80
     rows: int = 24

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from ..errors import CoreError
 from ..journal import OutputJournal
-from ..ports import HostFactory, ProcessHost, SessionMode, SessionSpec, Stream
+from ..ports import HostFactory, ProcessHost, SessionSpec, Stream
 from ..session.base import Session
 
 
@@ -24,8 +24,6 @@ class ProcessSession(Session):
         *,
         journal_budget_bytes: int,
     ) -> None:
-        if spec.mode is not SessionMode.PROCESS:
-            raise ValueError("ProcessSession 只接受 subprocess 模式")
         super().__init__(uid, spec, host_factory, journal_budget_bytes=journal_budget_bytes)
         self._err_journal = OutputJournal(journal_budget_bytes)
 

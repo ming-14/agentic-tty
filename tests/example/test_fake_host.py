@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from agentic_tty.core.ports import SessionMode, SessionSpec
+from agentic_tty.core.ports import PTY, SUBPROCESS, SessionSpec
 from agentic_tty.example.fake_host import FakeHost, FakeProgram
 
 _MAX = 65536
 
 
-def _spec(mode: SessionMode = SessionMode.PROCESS) -> SessionSpec:
+def _spec(mode: str = SUBPROCESS) -> SessionSpec:
     return SessionSpec(mode=mode, argv=("x",))
 
 
@@ -53,7 +53,7 @@ def test_close_stdin_blocks_further_writes():
 
 
 def test_ingest_accumulates_a_plain_text_screen():
-    host = FakeHost(_spec(SessionMode.PTY), FakeProgram(title="demo"))
+    host = FakeHost(_spec(PTY), FakeProgram(title="demo"))
     host.ingest(b"hello ")
     host.ingest(b"world")
     assert host.snapshot() == b"hello world"

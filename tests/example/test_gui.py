@@ -8,8 +8,9 @@ import pytest
 
 tk = pytest.importorskip("tkinter")
 
-from agentic_tty.core.ports import SessionMode, Stream  # noqa: E402
+from agentic_tty.core.ports import Stream  # noqa: E402
 from agentic_tty.example.gui import App  # noqa: E402
+from agentic_tty.example.sessions import ExampleMode  # noqa: E402
 
 
 @pytest.fixture
@@ -39,7 +40,7 @@ def _pump_until(root: tk.Tk, app: App, uid: str, predicate, timeout: float = 5.0
 def test_create_session_pumps_to_completion(root):
     app = App(root)
     app._command.set("build")
-    app._mode.set(SessionMode.PROCESS.value)
+    app._mode.set(ExampleMode.FAKE.value)
     app._create_session()
     assert len(app._sessions) == 1
     uid = next(iter(app._sessions))
@@ -48,14 +49,14 @@ def test_create_session_pumps_to_completion(root):
     session = app._sessions[uid]
     assert session.exit_code == 0
     assert b"build OK" in session.read_all(Stream.STDOUT)
-    assert app._render_view(session).startswith("── stdout ──")
+    assert app._render_view(session).startswith("── 屏幕 ──")
     app.on_close()
 
 
 def test_send_input_and_close(root):
     app = App(root)
     app._command.set("repl")
-    app._mode.set(SessionMode.PTY.value)
+    app._mode.set(ExampleMode.FAKE.value)
     app._create_session()
     uid = next(iter(app._sessions))
 
@@ -63,7 +64,7 @@ def test_send_input_and_close(root):
     app._send_input(newline=True)
     assert _pump_until(root, app, uid, lambda s: b"echo: hi" in s.read_all(Stream.STDOUT))
 
-    # 视图走的是 snapshot（Pty 基础服务）
+    # 假会话的视图含屏幕快照
     assert "echo: hi" in app._render_view(app._sessions[uid])
 
     app._selected = uid
@@ -72,10 +73,26 @@ def test_send_input_and_close(root):
     app.on_close()
 
 
-def test_resize_only_for_pty(root):
+def test_mode_change_swaps_command_source(root):
+    app = App(root)
+    assert app._mode.get() == ExampleMode.FAKE.value
+    assert "repl" in app._command["values"]
+
+    app._mode.set(ExampleMode.PTY.value)
+    app._on_mode_change()
+    assert not app._command["values"]  # Tk 把空列表读回成 ""
+    assert app._command.get() == ""
+
+    app._mode.set(ExampleMode.FAKE.value)
+    app._on_mode_change()
+    assert "build" in app._command["values"]
+    app.on_close()
+
+
+def test_resize_fake_session(root):
     app = App(root)
     app._command.set("tail")
-    app._mode.set(SessionMode.PTY.value)
+    app._mode.set(ExampleMode.FAKE.value)
     app._create_session()
     uid = next(iter(app._sessions))
     app._selected = uid

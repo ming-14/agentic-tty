@@ -24,7 +24,7 @@ core **不做**：`sid` 解析、tags、连接、订阅者、推送、线程、�
 
 ```
 core/
-  ports.py           端口（依赖倒置接缝）+ SessionMode / Stream
+  ports.py           端口（依赖倒置接缝）+ 内置模式标签 / Stream
   errors.py          领域错误
   scan.py            转义序列与多字节字符的边界扫描
   journal.py         输出字节日志 + 对齐纯函数 plan_attach
@@ -43,10 +43,12 @@ core/
 
 核心层定义它需要宿主提供什么，运行时层提供实现：
 
+**模式是开放字符串**：标签由接入方（会话实现 / 宿主）自己定义，核心层不校验，
+也不把 pty / subprocess 当作封闭集合。下面两个只是**内置**形态所用的标签。
+
 ```python
-class SessionMode(StrEnum):
-    PTY = "pty"
-    PROCESS = "subprocess"
+PTY = "pty"
+SUBPROCESS = "subprocess"
 
 
 class Stream(StrEnum):
@@ -56,7 +58,7 @@ class Stream(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class SessionSpec:
-    mode: SessionMode
+    mode: str
     argv: Sequence[str]
     cols: int = 80
     rows: int = 24
@@ -169,7 +171,7 @@ class IngestResult:
 
 class Session:
     uid: str
-    mode: SessionMode
+    mode: str
     state: SessionState
     exit_code: int | None
     error: str | None
@@ -224,9 +226,16 @@ class Session:
 
 ```python
 class SessionRegistry:
-    def __init__(self, host_factory: HostFactory, *, journal_budget_bytes: int = 8 << 20) -> None: ...
+    def __init__(
+        self,
+        host_factory: HostFactory,
+        *,
+        session_classes: Mapping[str, type[Session]] | None = None,
+        journal_budget_bytes: int = 8 << 20,
+    ) -> None: ...
+    # session_classes：`模式标签 → 会话类`，缺省给内置两种；接入方可自带映射
 
-    def create(self, spec: SessionSpec) -> Session: ...   # 按 spec.mode 选子类
+    def create(self, spec: SessionSpec) -> Session: ...   # 查映射；未知标签报错
     def get(self, uid: str) -> Session: ...               # 不存在抛 SessionNotFound
     def find(self, uid: str) -> Session | None: ...
     def list(self) -> list[Session]: ...

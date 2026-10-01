@@ -1,16 +1,29 @@
-"""会话注册表：按 uid 索引，按形态选择会话实现。"""
+"""会话注册表：按 uid 索引，按模式标签选择会话实现。
+
+模式是**开放字符串**（见 `ports.SessionSpec.mode`）：注册表不写死 pty / subprocess，
+而是查一份 `标签 → 会话类` 的映射；默认给内置两种，接入方可传入自己的映射。
+"""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from ...foundation.ids import new_uid
 from ...foundation.logs import get_logger
-from ..errors import SessionNotFound
-from ..ports import HostFactory, SessionMode, SessionSpec
+from ..errors import CoreError, SessionNotFound
+from ..ports import PTY, SUBPROCESS, HostFactory, SessionSpec
+from ..process.session import ProcessSession
+from ..terminal.session import TerminalSession
 from .base import Session
 
 _logger = get_logger("core.registry")
 
 DEFAULT_JOURNAL_BUDGET = 8 << 20
+
+DEFAULT_SESSION_CLASSES: dict[str, type[Session]] = {
+    PTY: TerminalSession,
+    SUBPROCESS: ProcessSession,
+}
 
 
 class SessionRegistry:
@@ -20,18 +33,19 @@ class SessionRegistry:
         self,
         host_factory: HostFactory,
         *,
+        session_classes: Mapping[str, type[Session]] | None = None,
         journal_budget_bytes: int = DEFAULT_JOURNAL_BUDGET,
     ) -> None:
         self._host_factory = host_factory
+        self._classes = dict(session_classes or DEFAULT_SESSION_CLASSES)
         self._budget = journal_budget_bytes
         self._sessions: dict[str, Session] = {}
 
     def create(self, spec: SessionSpec) -> Session:
         """创建会话对象（未启动）。"""
-        from ..process.session import ProcessSession
-        from ..terminal.session import TerminalSession
-
-        cls = TerminalSession if spec.mode is SessionMode.PTY else ProcessSession
+        cls = self._classes.get(spec.mode)
+        if cls is None:
+            raise CoreError(f"未知会话模式: {spec.mode!r}")
         uid = new_uid()
         session = cls(uid, spec, self._host_factory, journal_budget_bytes=self._budget)
         self._sessions[uid] = session

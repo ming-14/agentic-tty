@@ -53,7 +53,7 @@ class Session:
     ) -> None:
         self.uid = uid
         self.spec = spec
-        self.mode = spec.mode
+        self.mode: str = spec.mode
         self.state = SessionState.CREATED
         self.exit_code: int | None = None
         self.error: str | None = None

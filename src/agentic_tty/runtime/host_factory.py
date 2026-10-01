@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
-from ..core.ports import HostFactory, HostLifecycle, SessionMode, SessionSpec
-from .errors import DependencyMissing
+from ..core.ports import PTY, SUBPROCESS, HostFactory, HostLifecycle, SessionSpec
+from .errors import DependencyMissing, HostSpawnError
 from .pty_host import PtyHost, require_pywezterm
 from .subprocess_host import SubprocessHost
 
 
 def create_host(spec: SessionSpec) -> HostLifecycle:
-    """按会话形态选择宿主。"""
-    if spec.mode is SessionMode.PTY:
+    """按模式标签选择宿主（内置 pty / subprocess 两种）。"""
+    if spec.mode == PTY:
         return PtyHost(spec)
-    return SubprocessHost(spec)
+    if spec.mode == SUBPROCESS:
+        return SubprocessHost(spec)
+    raise HostSpawnError(f"未知会话模式: {spec.mode!r}")
 
 
 def check_dependencies() -> None:

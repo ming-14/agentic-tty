@@ -6,8 +6,8 @@
 线程，所以这里不需要任何锁——这正是核心层"单线程所有者"约定带来的好处。
 宿主的读由运行时层的读线程代劳（`SessionRunner`），界面线程从不阻塞。
 
-命令框是**可编辑的**：下拉里是示例假程序（`build` / `noisy` / `repl` / `tail` /
-`crash`，不启动真程序）；直接输入真命令则走运行时层的真宿主。
+模式三选一：`fake` 跑示例假程序（命令框下拉即假程序名）；`pty` / `subprocess`
+跑真命令（命令框直接输入）。
 """
 
 from __future__ import annotations
@@ -16,13 +16,11 @@ import shlex
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from ..core.ports import SessionMode, SessionSpec, Stream
 from ..core.session.base import Session
-from ..core.session.registry import SessionRegistry
 from ..foundation.logs import get_logger
 from ..runtime.runner import SessionRunner
-from .hosts import make_host
 from .programs import PROGRAMS
+from .sessions import ExampleMode, create_session
 
 _logger = get_logger("example.gui")
 
@@ -37,9 +35,9 @@ class App:
 
     def __init__(self, root: tk.Tk) -> None:
         self._root = root
-        self._registry = SessionRegistry(host_factory=make_host, journal_budget_bytes=1 << 20)
         self._sessions: dict[str, Session] = {}
         self._runners: dict[str, SessionRunner] = {}
+        self._modes: dict[str, ExampleMode] = {}
         self._selected: str | None = None
         self._ticks = 0
         self._refreshing = False
@@ -57,14 +55,15 @@ class App:
         top = ttk.Frame(self._root, padding=(8, 6))
         top.pack(fill=tk.X)
         ttk.Label(top, text="模式").pack(side=tk.LEFT)
-        self._mode = tk.StringVar(value=SessionMode.PTY.value)
+        self._mode = tk.StringVar(value=ExampleMode.FAKE.value)
         for text, value in (
-            ("pty", SessionMode.PTY.value),
-            ("subprocess", SessionMode.PROCESS.value),
+            ("fake", ExampleMode.FAKE.value),
+            ("pty", ExampleMode.PTY.value),
+            ("subprocess", ExampleMode.SUBPROCESS.value),
         ):
-            ttk.Radiobutton(top, text=text, value=value, variable=self._mode).pack(
-                side=tk.LEFT, padx=(4, 0)
-            )
+            ttk.Radiobutton(
+                top, text=text, value=value, variable=self._mode, command=self._on_mode_change
+            ).pack(side=tk.LEFT, padx=(4, 0))
         ttk.Label(top, text="   命令").pack(side=tk.LEFT)
         self._command = ttk.Combobox(top, values=sorted(PROGRAMS), width=18)
         self._command.set("repl")
@@ -73,7 +72,7 @@ class App:
         ttk.Button(top, text="关闭选中", command=self._close_selected).pack(side=tk.LEFT)
         ttk.Label(
             top,
-            text="（下拉是示例假程序；直接输入真命令则走真宿主）",
+            text="（fake 下拉选假程序；pty / subprocess 直接输入真命令）",
             foreground="#888780",
         ).pack(side=tk.LEFT, padx=6)
 
@@ -157,16 +156,26 @@ class App:
     # 操作
     # ════════════════════════════════════════════════════════════
 
+    def _on_mode_change(self) -> None:
+        """切模式时同步命令框：fake 给假程序下拉，真形态清空留给自由输入。"""
+        if self._mode.get() == ExampleMode.FAKE.value:
+            self._command["values"] = sorted(PROGRAMS)
+            if self._command.get() not in PROGRAMS:
+                self._command.set("repl")
+        else:
+            self._command["values"] = []
+            self._command.set("")
+
     def _create_session(self) -> None:
         text = self._command.get().strip()
         if not text:
             messagebox.showwarning("创建会话", "请填命令")
             return
-        mode = SessionMode(self._mode.get())
+        mode = ExampleMode(self._mode.get())
         # 命令按 shell 语义拆分，支持 "cmd.exe /c dir" 这种整串
         argv = tuple(shlex.split(text)) or (text,)
         try:
-            session = self._registry.create(SessionSpec(mode=mode, argv=argv))
+            session = create_session(mode, argv)
             session.start()
         except Exception as exc:
             messagebox.showerror("创建会话失败", str(exc))
@@ -175,6 +184,7 @@ class App:
         runner.start()
         self._sessions[session.uid] = session
         self._runners[session.uid] = runner
+        self._modes[session.uid] = mode
         self._selected = session.uid
         self._status.set(f"已创建 {' '.join(argv)}（{mode}）uid={session.uid[:8]}")
         self._refresh_tree()
@@ -187,6 +197,7 @@ class App:
         if session is None:
             return
         self._sessions.pop(uid, None)
+        self._modes.pop(uid, None)
         session.close()  # 先强杀进程树再关宿主（核心层内部顺序）
         if runner is not None:
             runner.stop()
@@ -248,7 +259,7 @@ class App:
                     iid=uid,
                     values=(
                         session.spec.argv[0] if session.spec.argv else "",
-                        str(session.mode),
+                        self._modes.get(uid, ""),
                         str(session.state),
                         "-" if session.exit_code is None else session.exit_code,
                     ),
@@ -268,29 +279,40 @@ class App:
         self._set_text(self._raw, self._render_raw(session))
         drained = "已排空" if session.drained else "进行中"
         self._status.set(
-            f"{session.spec.argv[0]} · {session.mode} · {session.state} · {drained} · "
-            f"exit={session.exit_code} · uid={session.uid[:8]}"
+            f"{session.spec.argv[0]} · {self._modes.get(session.uid, '')} · {session.state} · "
+            f"{drained} · exit={session.exit_code} · uid={session.uid[:8]}"
         )
 
     def _render_view(self, session: Session) -> str:
-        if session.mode is SessionMode.PTY:
-            # 真宿主能直接给可见屏幕纯文本；假宿主没有，退回 snapshot
-            screen = getattr(session.host, "screen_text", None)
-            if callable(screen):
-                try:
-                    return screen()
-                except Exception as exc:  # 宿主已关闭等：退回 snapshot
-                    _logger.debug("screen_text 不可用 uid=%s: %s", session.uid, exc)
+        mode = self._modes.get(session.uid)
+        if mode is ExampleMode.SUBPROCESS:
+            return self._render_streams(session)
+        if mode is ExampleMode.FAKE:
+            # 假会话同时有屏幕与双流：三段都给出，便于对照
+            return "\n".join(
+                (f"── 屏幕 ──\n{self._screen_text(session)}", self._render_streams(session))
+            )
+        return self._screen_text(session)
+
+    def _screen_text(self, session: Session) -> str:
+        # 真宿主能直接给可见屏幕纯文本；假宿主没有，退回 snapshot
+        screen = getattr(session.host, "screen_text", None)
+        if callable(screen):
             try:
-                return session.snapshot().decode("utf-8", errors="replace")
-            except Exception as exc:
-                return f"<屏幕不可用: {exc}>"
-        parts = [
-            f"── stdout ──\n{session.read_all(Stream.STDOUT).decode('utf-8', errors='replace')}"
-        ]
-        parts.append(
-            f"── stderr ──\n{session.read_all(Stream.STDERR).decode('utf-8', errors='replace')}"
-        )
+                return screen()
+            except Exception as exc:  # 宿主已关闭等：退回 snapshot
+                _logger.debug("screen_text 不可用 uid=%s: %s", session.uid, exc)
+        try:
+            return session.snapshot().decode("utf-8", errors="replace")
+        except Exception as exc:
+            return f"<屏幕不可用: {exc}>"
+
+    @staticmethod
+    def _render_streams(session: Session) -> str:
+        parts = []
+        for stream in session.streams():
+            text = session.read_all(stream).decode("utf-8", errors="replace")
+            parts.append(f"── {stream} ──\n{text}")
         return "\n".join(parts)
 
     def _render_raw(self, session: Session) -> str:
@@ -326,6 +348,7 @@ class App:
                 runner.stop()
         self._sessions.clear()
         self._runners.clear()
+        self._modes.clear()
         self._root.destroy()
 
 
