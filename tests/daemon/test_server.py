@@ -39,6 +39,8 @@ class FakeHandler:
         self.shutdown_block: float | None = None
         self.deferred: list[Envelope] = []
         self.binary_on: set[str] = set()
+        self.pump_boom = False
+        self.poll_boom = False
 
     def handle(self, envelope: Envelope) -> Reply | None:
         if envelope.type == "defer":
@@ -55,6 +57,8 @@ class FakeHandler:
         return Reply(ok_response(envelope.type, envelope.mid, {"type": envelope.type}))
 
     def poll(self) -> list[Reply]:
+        if self.poll_boom:
+            raise RuntimeError("poll 故意炸")
         replies = [
             Reply(ok_response(item.type, item.mid, {"deferred": True}), request=item)
             for item in self.deferred
@@ -67,6 +71,8 @@ class FakeHandler:
 
     def pump(self) -> None:
         self.pumps += 1
+        if self.pump_boom:
+            raise RuntimeError("pump 故意炸")
 
     def shutdown(self) -> None:
         if self.shutdown_block is not None:
@@ -303,6 +309,29 @@ def test_handler_crash_becomes_an_error_reply(tmp_path):
             response = client.request("boom")
             assert response.payload.output["ok"] is False
             assert response.payload.output["error"]["code"] == "InternalError"
+        finally:
+            client.close()
+
+
+def test_handler_pump_crash_does_not_kill_the_loop(tmp_path):
+    """一次推进异常不能杀死所有者循环：守护进程还得能继续应答。"""
+    handler = FakeHandler()
+    with serve(tmp_path, handler) as (daemon, _):
+        handler.pump_boom = True
+        client = Client(daemon.address)
+        try:
+            assert client.request("ping").payload.output["ok"] is True
+        finally:
+            client.close()
+
+
+def test_handler_poll_crash_does_not_kill_the_loop(tmp_path):
+    handler = FakeHandler()
+    with serve(tmp_path, handler) as (daemon, _):
+        handler.poll_boom = True
+        client = Client(daemon.address)
+        try:
+            assert client.request("ping").payload.output["ok"] is True
         finally:
             client.close()
 

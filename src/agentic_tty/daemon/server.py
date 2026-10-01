@@ -182,8 +182,8 @@ class Daemon:
         while not self._stop_requested.is_set():
             self._accept_pending()
             self._drain_inbound()
-            handler.pump()
-            self._dispatch(handler.poll())
+            self._pump_handler(handler)
+            self._dispatch(self._poll_handler(handler))
             self._reap()
             time.sleep(self._config.tick_interval)
 
@@ -267,6 +267,21 @@ class Daemon:
             # 会话可能刚被关掉；一个坏 sid 不值得断掉整条连接。
             _logger.warning("上行字节无人接收 sid=%s: %s", frame.key, exc)
 
+    def _pump_handler(self, handler: RequestHandler) -> None:
+        """推进处理层。异常在这里隔离——一次推进失败不该杀死整条所有者循环。"""
+        try:
+            handler.pump()
+        except Exception:
+            _logger.exception("请求处理层推进失败（已隔离，循环继续）")
+
+    def _poll_handler(self, handler: RequestHandler) -> list[Reply]:
+        """取处理层此刻的响应；失败只丢这一轮，循环照常走。"""
+        try:
+            return handler.poll()
+        except Exception:
+            _logger.exception("请求处理层交出响应失败（已隔离）")
+            return []
+
     def _dispatch(self, replies: list[Reply]) -> None:
         for reply in replies:
             requested = reply.request
@@ -337,8 +352,8 @@ class Daemon:
             return
         limit = min(deadline, time.monotonic() + self._config.drain_timeout)
         while self._routes and time.monotonic() < limit:
-            handler.pump()
-            self._dispatch(handler.poll())
+            self._pump_handler(handler)
+            self._dispatch(self._poll_handler(handler))
             self._reap()
             time.sleep(self._config.tick_interval)
 
