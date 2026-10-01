@@ -40,7 +40,9 @@ class ProcessSession(Session):
         return self._process_host().read_stderr(max_bytes, timeout)
 
     def _journal_for(self, stream: Stream) -> OutputJournal:
-        return self._err_journal if stream is Stream.STDERR else self._journal
+        if stream is Stream.STDERR:
+            return self._err_journal
+        return super()._journal_for(stream)  # 非 STDOUT 由基类报错
 
     def _process_host(self) -> ProcessHost:
         host = self.host

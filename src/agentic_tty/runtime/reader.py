@@ -3,9 +3,9 @@
 线程只做读，**不碰终端模型**（模型由所有者线程独占）。
 
 读用**带超时**的方式而不是纯阻塞：PTY 在子进程退出后并不会返回 EOF，纯阻塞读
-会永久挂住一个线程。因此收工条件是"**进程已退出（或宿主已关）且本轮读空**"——
-退出后输出是有限的，一次空读即表示已排空；排空后投一个 `eof=True` 的块，
-由所有者线程记账（`mark_eof`）。
+会永久挂住一个线程。因此收工条件有两条：宿主已释放（会话已关闭）直接收工；
+或**进程已退出且本轮读空**——退出后输出是有限的，一次空读即表示已排空，
+此时投一个 `eof=True` 的块，由所有者线程记账（`mark_eof`）。
 """
 
 from __future__ import annotations
@@ -60,6 +60,11 @@ class StreamReader:
     def _run(self) -> None:
         uid = self._session.uid
         while not self._stop.is_set():
+            if self._session.host is None:
+                # 宿主已释放（会话已关闭）：收工。
+                # （这里只**读** `exit_code` / `host` 两个不可变引用，不改会话状态；
+                #   状态改动一律经 EOF 块回到所有者线程做。）
+                return
             try:
                 chunk = self._session.read_stream(self._stream, self._read_timeout, self._max_bytes)
             except Exception as exc:  # 宿主已关闭/被杀：正常终止路径
@@ -75,13 +80,9 @@ class StreamReader:
                 continue
             if self._session.exit_code is not None:
                 # 进程已退出且本轮读空 → 该路已排空。
-                # （这里只**读** `exit_code` / `host` 两个不可变引用，不改会话状态；
-                #   状态改动一律经 EOF 块回到所有者线程做。）
                 self._bridge.put(
                     Chunk(uid=uid, stream=self._stream, data=b"", eof=True),
                     stop_check=self._stop.is_set,
                 )
-                return
-            if self._session.host is None:
                 return
             time.sleep(_EMPTY_READ_PAUSE)

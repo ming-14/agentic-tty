@@ -203,9 +203,14 @@ class Session:
     def read_stream(
         self, stream: Stream, timeout: float | None = 0.2, max_bytes: int = 65536
     ) -> bytes:
-        """从某一路读一段。**只允许读线程调用**（不碰终端模型）。"""
+        """从某一路读一段。**只允许读线程调用**（不碰终端模型）。
+
+        空返回值表示**本轮无数据（超时）**，不代表 EOF。宿主已释放（从未启动或已关闭）
+        时明确报错，不与"读空"混同：静默返回空会让驱动方把"没有宿主"当成"暂时没输出"
+        而空转，也掩盖了在错误时机读取的问题。
+        """
         if self._host is None:
-            return b""
+            raise CoreError(f"没有可读的宿主（会话状态 {self.state}）")
         if stream is Stream.STDOUT:
             return self._host.read(max_bytes, timeout)
         return self._read_secondary(stream, timeout, max_bytes)
@@ -239,6 +244,8 @@ class Session:
         **EOF 不等于进程退出**：程序可以先关掉 stdout/stderr 而继续运行
         （守护进程、`exec`），所以两件事必须分开记。
         """
+        if stream not in self.streams():
+            raise CoreError(f"{self.mode} 会话没有 {stream} 流")
         self._eof.add(stream)
 
     @property
