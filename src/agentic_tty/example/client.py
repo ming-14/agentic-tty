@@ -25,7 +25,13 @@ from ..foundation.logs import configure, get_logger
 from ..foundation.paths import default_runtime_dir
 from ..protocol.envelope import Envelope, make_request
 from ..protocol.frame import BytesFrame, ControlFrame
-from ..protocol.messages import Kind, data_of, error_of
+from ..protocol.messages import (
+    DEFAULT_CELL_HEIGHT,
+    DEFAULT_CELL_WIDTH,
+    Kind,
+    data_of,
+    error_of,
+)
 from ..transport import registry as transports
 from ..transport.channel import Channel, decode_control
 from ..transport.errors import ConnectionClosed, TransportError
@@ -37,8 +43,6 @@ _REFRESH_EVERY = 10  # 20ms × 10 ≈ 200ms 拉一次视图
 _LIST_EVERY = 25  # ≈500ms 刷一次会话列表
 _RAW_TAIL = 4000  # 原始字节页只取最后这么多字节
 _FULL_TAIL_LINES = 500  # 全量输出页只取最后这么多行
-# pywezterm 终端模型的字符格基准像素：算缩放用
-_CELL_W, _CELL_H = 8, 17
 _CONNECT_TIMEOUT = 2.0
 
 _TAB_IMAGE = "屏幕"
@@ -324,7 +328,13 @@ class ClientApp:
         width, height = self._canvas.winfo_width(), self._canvas.winfo_height()
         if width <= 1 or height <= 1:
             return 1.0
-        return max(0.2, min(width / (cols * _CELL_W), height / (rows * _CELL_H)))
+        return max(
+            0.2,
+            min(
+                width / (cols * DEFAULT_CELL_WIDTH),
+                height / (rows * DEFAULT_CELL_HEIGHT),
+            ),
+        )
 
     def _apply_sessions(self, rows: list[dict]) -> None:
         """增量刷新会话表：行 iid 就是 sid。

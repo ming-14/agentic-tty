@@ -1,4 +1,5 @@
 reference/
+.freebuff/
 .workbuddy-ai/
 vendor/pywezterm/
 __pycache__/

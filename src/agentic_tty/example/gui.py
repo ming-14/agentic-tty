@@ -35,6 +35,7 @@ from ..core.session.base import Session
 from ..core.session.registry import SessionRegistry
 from ..core.terminal.session import TerminalSession
 from ..foundation.logs import get_logger
+from ..protocol.messages import DEFAULT_CELL_HEIGHT, DEFAULT_CELL_WIDTH
 from ..runtime.monitor import windows_of
 from ..runtime.runner import SessionRunner
 from .programs import PROGRAMS
@@ -46,8 +47,6 @@ _TICK_MS = 20
 # 每多少个 tick 刷一次界面（20ms × 8 ≈ 160ms，避免文本频繁重排）
 _REFRESH_EVERY = 8
 _RAW_TAIL = 2000
-# pywezterm 终端模型的字符格基准像素：位图与 SVG 都以它为 1×
-_CELL_W, _CELL_H = 8, 17
 # 保存 PNG 用的固定缩放（屏幕页显示时会按画布大小另算）
 _EXPORT_SCALE = 2.0
 _FORMAT_IMAGE = "image"
@@ -426,7 +425,10 @@ class App:
         width, height = self._image_canvas.winfo_width(), self._image_canvas.winfo_height()
         if width <= 1 or height <= 1:
             return 1.0
-        return min(width / (session.cols * _CELL_W), height / (session.rows * _CELL_H))
+        return min(
+            width / (session.cols * DEFAULT_CELL_WIDTH),
+            height / (session.rows * DEFAULT_CELL_HEIGHT),
+        )
 
     def _render_screen(
         self, session: Session, fmt: str, svg: str, scale: float

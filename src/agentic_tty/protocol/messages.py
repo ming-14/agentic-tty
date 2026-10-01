@@ -72,6 +72,13 @@ class Kind(StrEnum):
     BYTES = "bytes"
 
 
+# 终端模型的字符格基准像素。`read_terminal` 的 image 模式由守护进程按这个基准渲染，
+# 客户端拿会话的 cols / rows 估算缩放；两端都得能拿到，所以放在共享契约里，
+# 而不是各自硬编码一份。
+DEFAULT_CELL_WIDTH = 8
+DEFAULT_CELL_HEIGHT = 17
+
+
 @dataclass(frozen=True, slots=True)
 class SessionInfo:
     """一条会话的对外快照。
