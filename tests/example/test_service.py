@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import pytest
 
+from agentic_tty.core.ports import PTY, SessionSpec
+from agentic_tty.core.terminal.session import TerminalSession
 from agentic_tty.daemon.handler import RequestHandler
-from agentic_tty.example.service import BadRequest, ExampleService, WaitSpec
+from agentic_tty.example.fake_host import FakeHost, FakeProgram
+from agentic_tty.example.service import BadRequest, ExampleService, WaitSpec, _Activity
 from agentic_tty.protocol.envelope import make_request
 from agentic_tty.protocol.messages import error_of, ok_response
 
@@ -96,6 +99,34 @@ def test_remove_session_requires_a_target():
     reply = service.handle(make_request("remove_session"))
     assert reply is not None
     assert error_of(reply.envelope).code == "BadRequest"
+
+
+def test_pty_idle_probe_skips_screen_render_without_new_bytes(monkeypatch):
+    """空闲检测先比日志偏移：没有新字节就不该整屏渲染（空闲会话每 tick 都在跑）。"""
+    service = ExampleService()
+    session = TerminalSession(
+        "uid-1",
+        SessionSpec(mode=PTY, argv=("x",)),
+        lambda spec: FakeHost(spec, FakeProgram()),
+        journal_budget_bytes=1 << 16,
+    )
+    session.start()
+    try:
+        service._activity[session.uid] = _Activity(at=0.0)
+        renders = 0
+        real = TerminalSession.screen_text
+
+        def counting(self):
+            nonlocal renders
+            renders += 1
+            return real(self)
+
+        monkeypatch.setattr(TerminalSession, "screen_text", counting)
+        service._note_activity(session, 1.0)
+        service._note_activity(session, 2.0)
+        assert renders == 1
+    finally:
+        session.close()
 
 
 def test_ok_response_helper_matches_what_the_service_returns():

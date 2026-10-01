@@ -522,6 +522,11 @@ class ExampleService:
         if activity is None:
             return
         if isinstance(session, TerminalSession):
+            # 先比日志偏移：没有新字节就不可能有画面变化，别白渲染一整屏文本
+            end = session.journal.end_offset
+            if activity.offsets.get(Stream.STDOUT) == end:
+                return
+            activity.offsets[Stream.STDOUT] = end
             try:
                 text = session.screen_text()
             except CoreError:  # 宿主已释放
