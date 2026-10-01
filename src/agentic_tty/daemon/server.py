@@ -21,12 +21,12 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ..foundation.logs import add_rotating_file, get_logger
+from ..foundation.paths import default_runtime_dir
 from ..protocol.envelope import DIR_REQUEST, Envelope
 from ..protocol.errors import ProtocolError
 from ..protocol.frame import BytesFrame, ControlFrame
 from ..protocol.messages import failed_response
 from ..runtime.host_factory import check_dependencies as default_dependency_check
-from ..runtime.paths import default_runtime_dir
 from ..runtime.platform.signals import install_shutdown_handler
 from ..runtime.platform.single_instance import SingleInstance
 from ..transport import registry as transports
