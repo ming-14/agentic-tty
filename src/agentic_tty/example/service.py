@@ -313,7 +313,7 @@ class ExampleService:
         sid = _text(op, "sid")
         text = _text(op, "text")
         session = self._session(sid)
-        data = text.encode(session.spec.encoding)
+        data = _input_bytes(session, text)
         self.on_input(sid, data)
         return _Produced({"sid": sid, "written": len(data)})
 
@@ -618,6 +618,18 @@ def _tail_lines(text: str, op: Mapping[str, Any]) -> str:
     if lines is None:
         return text
     return "".join(text.splitlines(keepends=True)[-lines:])
+
+
+def _input_bytes(session: Session, text: str) -> bytes:
+    """把文本展开成会话要的字节（控制字符展开属于命令层）。
+
+    PTY 的"回车"是 **CR（0x0D）**：ConPTY 上的 cmd.exe 只认 CR 提交命令行，LF 会被
+    当成普通字符留在输入缓冲里（几条命令会拼成一行）；POSIX PTY 的规范模式会把 CR
+    转成 NL，所以 CR 在两边都对。子进程的 stdin 是普通字节流，保持 LF 原样。
+    """
+    if isinstance(session, TerminalSession):
+        text = text.replace("\r\n", "\r").replace("\n", "\r")
+    return text.encode(session.spec.encoding)
 
 
 def _str_list(op: Mapping[str, Any], key: str) -> list[str]:

@@ -73,7 +73,14 @@ def test_input_reaches_the_program(demo_daemon):
     try:
         client.request("create_shell_terminal", sid="io")
         client.request("input_into_terminal", sid="io", text="echo hello-there\n")
-        assert "hello-there" in client.screen_until("io", "hello-there")
+        # 回显一次 + 真实输出一次：只有一次说明回车没被终端认成回车，命令没被执行
+        deadline = time.monotonic() + DEADLINE
+        text = ""
+        while time.monotonic() < deadline:
+            text = data_of(client.request("read_terminal", sid="io", mode="screen"))["text"]
+            if text.count("hello-there") >= 2:
+                break
+        assert text.count("hello-there") >= 2, f"命令没有被执行，屏幕: {text!r}"
     finally:
         client.close()
 
@@ -83,7 +90,8 @@ def test_raw_bytes_travel_as_byte_frames(demo_daemon):
     client = WireClient(demo_daemon.address)
     try:
         client.request("create_shell_terminal", sid="raw")
-        client.channel.send_bytes("stdout", "raw", b"echo from-raw-bytes\n")
+        # 原生字节帧不走命令层的展开，回车得自己给对：PTY 的 Enter 是 CR
+        client.channel.send_bytes("stdout", "raw", b"echo from-raw-bytes\r")
         assert "from-raw-bytes" in client.screen_until("raw", "from-raw-bytes")
     finally:
         client.close()

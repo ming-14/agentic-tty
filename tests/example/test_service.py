@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import pytest
 
-from agentic_tty.core.ports import PTY, SessionSpec
+from agentic_tty.core.ports import PTY, SUBPROCESS, SessionSpec
+from agentic_tty.core.process.session import ProcessSession
 from agentic_tty.core.terminal.session import TerminalSession
 from agentic_tty.daemon.handler import RequestHandler
 from agentic_tty.example.fake_host import FakeHost, FakeProgram
-from agentic_tty.example.service import BadRequest, ExampleService, WaitSpec, _Activity
+from agentic_tty.example.service import (
+    BadRequest,
+    ExampleService,
+    WaitSpec,
+    _Activity,
+    _input_bytes,
+)
 from agentic_tty.protocol.envelope import make_request
 from agentic_tty.protocol.messages import error_of, ok_response
 
@@ -127,6 +134,29 @@ def test_pty_idle_probe_skips_screen_render_without_new_bytes(monkeypatch):
         assert renders == 1
     finally:
         session.close()
+
+
+def test_pty_input_turns_newlines_into_carriage_returns():
+    """PTY 的回车是 CR：ConPTY 的 cmd.exe 只认 CR，LF 会被留在输入缓冲里。"""
+    session = TerminalSession(
+        "uid-1",
+        SessionSpec(mode=PTY, argv=("x",)),
+        lambda spec: FakeHost(spec, FakeProgram()),
+        journal_budget_bytes=1 << 16,
+    )
+    assert _input_bytes(session, "dir\n") == b"dir\r"
+    assert _input_bytes(session, "a\r\nb\nc") == b"a\rb\rc"
+
+
+def test_subprocess_input_keeps_newlines():
+    """子进程 stdin 是普通字节流，不该被终端化的回车改写。"""
+    session = ProcessSession(
+        "uid-1",
+        SessionSpec(mode=SUBPROCESS, argv=("x",)),
+        lambda spec: FakeHost(spec, FakeProgram()),
+        journal_budget_bytes=1 << 16,
+    )
+    assert _input_bytes(session, "line\n") == b"line\n"
 
 
 def test_ok_response_helper_matches_what_the_service_returns():
