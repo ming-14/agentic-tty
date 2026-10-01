@@ -20,6 +20,7 @@ class Command(StrEnum):
 
     DAEMON_STATUS = "get_daemon_status"
     CREATE_SHELL_TERMINAL = "create_shell_terminal"
+    CREATE_TERMINAL = "create_terminal"
     LIST_SESSIONS = "list_sessions"
     REMOVE_SESSION = "remove_session"
     INPUT_INTO_TERMINAL = "input_into_terminal"
@@ -47,12 +48,17 @@ class ReadMode(StrEnum):
     取值与 `Kind` 一致是刻意的（读什么视图直接决定返回走哪个呈现通道），但两者是
     **不同位置上的字段**——一个是请求参数，一个是信封上的呈现意图——所以各留一个，
     不合并。
+
+    `IMAGE` 是给**纯客户端**准备的：客户端只依赖 `protocol + transport`，它没有终端
+    模型、自己渲染不出屏幕，只能让守护进程渲染好再把位图送过来。
     """
 
     SCREEN = "screen"
     """可见屏幕纯文本（pty 专属）。"""
     TEXT = "text"
     """全量输出：含滚动历史的可见文本（pty 专属）。"""
+    IMAGE = "image"
+    """可见屏幕的位图（png），以字节帧返回（pty 专属）。"""
     BYTES = "bytes"
     """字节流全量（原始真源），以字节帧返回。"""
 
@@ -62,6 +68,7 @@ class Kind(StrEnum):
 
     TEXT = "text"
     SCREEN = "screen"
+    IMAGE = "image"
     BYTES = "bytes"
 
 
@@ -70,6 +77,8 @@ class SessionInfo:
     """一条会话的对外快照。
 
     **只有 `sid`，没有 `uid`**：`uid` 是核心层内部的标识，出了 service 就该消失。
+
+    `cols` / `rows` 只有终端会话才有——客户端要靠它把屏幕缩放到自己的画布。
     """
 
     sid: str
@@ -79,6 +88,8 @@ class SessionInfo:
     drained: bool
     exit_code: int | None = None
     tags: tuple[str, ...] = ()
+    cols: int | None = None
+    rows: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -89,6 +100,8 @@ class SessionInfo:
             "drained": self.drained,
             "exit_code": self.exit_code,
             "tags": list(self.tags),
+            "cols": self.cols,
+            "rows": self.rows,
         }
 
     @classmethod
@@ -104,6 +117,8 @@ class SessionInfo:
                 drained=bool(raw["drained"]),
                 exit_code=raw.get("exit_code"),
                 tags=tuple(str(t) for t in raw.get("tags") or ()),
+                cols=_optional_int(raw.get("cols")),
+                rows=_optional_int(raw.get("rows")),
             )
         except KeyError as exc:
             raise MessageError(f"会话信息缺少字段: {exc}") from exc
@@ -196,3 +211,7 @@ def error_of(envelope: Envelope) -> Failure | None:
     message = str(raw.get("message") or "")
     extra = {k: v for k, v in raw.items() if k not in ("code", "message")}
     return Failure(code=code, message=message, extra=extra)
+
+
+def _optional_int(value: Any) -> int | None:
+    return None if value is None else int(value)

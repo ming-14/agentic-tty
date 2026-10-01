@@ -21,9 +21,15 @@ from agentic_tty.protocol.messages import (
 
 def test_command_names_are_the_wire_values():
     assert Command.CREATE_SHELL_TERMINAL == "create_shell_terminal"
+    assert Command.CREATE_TERMINAL == "create_terminal"
     assert Command.INPUT_INTO_TERMINAL == "input_into_terminal"
     assert Condition.IDLE == "idle"
     assert ReadMode.BYTES == "bytes"
+
+
+def test_image_mode_aligns_with_the_rendering_channel():
+    """纯客户端没有终端模型，屏幕得由守护进程渲染好送过来。"""
+    assert ReadMode.IMAGE.value == Kind.IMAGE.value == "image"
 
 
 def test_condition_covers_exit_both_ways():
@@ -90,10 +96,20 @@ def test_session_info_roundtrip():
         drained=False,
         exit_code=None,
         tags=("build", "ci"),
+        cols=100,
+        rows=30,
     )
     restored = SessionInfo.from_dict(info.to_dict())
     assert restored == info
     assert info.to_dict()["tags"] == ["build", "ci"]
+
+
+def test_session_size_is_optional():
+    """只有终端会话有尺寸——客户端靠它把屏幕缩放到自己的画布。"""
+    info = SessionInfo.from_dict(
+        {"sid": "s", "mode": "subprocess", "state": "running", "running": True, "drained": False}
+    )
+    assert (info.cols, info.rows) == (None, None)
 
 
 def test_session_info_never_carries_uid():
