@@ -259,6 +259,14 @@ class Session:
         """改尺寸；只有终端会话支持。"""
         raise CoreError(f"{self.mode} 会话没有尺寸")
 
+    def render_svg(self) -> str:
+        """可见屏幕的 SVG；只有终端会话支持。"""
+        raise CoreError(f"{self.mode} 会话没有屏幕")
+
+    def render_image(self, *, scale: float = 1.0, fmt: str = "png") -> bytes:
+        """可见屏幕的位图；只有终端会话支持。"""
+        raise CoreError(f"{self.mode} 会话没有屏幕")
+
     # ════════════════════════════════════════════════════════════
     # 子类接缝
     # ════════════════════════════════════════════════════════════

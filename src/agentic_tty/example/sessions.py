@@ -65,6 +65,14 @@ class FakeSession(Session):
         """屏幕快照：假宿主为已摄入的纯文本尾部。"""
         return self._fake_host().snapshot()
 
+    def render_svg(self) -> str:
+        """可见屏幕的 SVG（假宿主给最小 SVG）。"""
+        return self._fake_host().render_svg()
+
+    def render_image(self, *, scale: float = 1.0, fmt: str = "png") -> bytes:
+        """可见屏幕的位图（假宿主不渲染位图，会抛 NotImplementedError）。"""
+        return self._fake_host().render_image(scale=scale, fmt=fmt)
+
     @property
     def cols(self) -> int:
         return self._cols

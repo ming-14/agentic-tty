@@ -10,6 +10,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from xml.sax.saxutils import escape
 
 from ..core.ports import HostMetadata, SessionSpec
 
@@ -95,6 +96,17 @@ class FakeHost:
 
     def metadata(self) -> HostMetadata:
         return HostMetadata(title=self._program.title, cwd=self._spec.cwd)
+
+    def render_svg(self) -> str:
+        """最小 SVG：把纯文本尾部塞进 `<text>`。
+
+        假宿主没有终端模型，不做真实渲染——只够验证"取屏幕视图"这条链路。
+        """
+        text = escape(self._screen.decode("utf-8", errors="replace"))
+        return f'<svg xmlns="http://www.w3.org/2000/svg"><text>{text}</text></svg>'
+
+    def render_image(self, *, scale: float = 1.0, fmt: str = "png") -> bytes:
+        raise NotImplementedError("假宿主没有位图渲染；位图请用真 PTY 宿主")
 
     # ── ProcessHost ────────────────────────────────────────────
 

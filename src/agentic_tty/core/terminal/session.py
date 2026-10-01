@@ -53,6 +53,14 @@ class TerminalSession(Session):
         """重建字节（RIS + scrollback 重放 + 可见区 + 模式恢复）。"""
         return self._terminal_host().snapshot()
 
+    def render_svg(self) -> str:
+        """可见屏幕的 SVG。"""
+        return self._terminal_host().render_svg()
+
+    def render_image(self, *, scale: float = 1.0, fmt: str = "png") -> bytes:
+        """可见屏幕的位图。"""
+        return self._terminal_host().render_image(scale=scale, fmt=fmt)
+
     def metadata(self) -> HostMetadata:
         return self._terminal_host().metadata()
 

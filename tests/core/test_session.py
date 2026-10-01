@@ -150,6 +150,22 @@ def test_process_session_rejects_resize_and_snapshot():
         session.resize(10, 10)
     with pytest.raises(CoreError):
         session.snapshot()
+    with pytest.raises(CoreError):
+        session.render_svg()
+    with pytest.raises(CoreError):
+        session.render_image()
+    session.close()
+
+
+def test_terminal_session_forwards_screen_views():
+    registry = _registry()
+    session = _create(registry, PTY)
+    session.ingest(b"hello")
+    svg = session.render_svg()
+    assert svg.startswith("<svg") and "hello" in svg
+    # 假宿主不渲染位图：能抛到 NotImplementedError 说明转发确实落到了宿主
+    with pytest.raises(NotImplementedError):
+        session.render_image(fmt="png")
     session.close()
 
 

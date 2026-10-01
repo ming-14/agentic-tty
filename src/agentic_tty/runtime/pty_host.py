@@ -113,6 +113,14 @@ class PtyHost:
             cwd=self._term.get_current_dir(),
         )
 
+    def render_svg(self) -> str:
+        """可见屏幕的 SVG。底层该参数必填，固定 0 = 不压缩。"""
+        return self._term.render_svg(0)
+
+    def render_image(self, *, scale: float = 1.0, fmt: str = "png") -> bytes:
+        """可见屏幕的位图。"""
+        return self._term.render_image(scale=scale, fmt=fmt)
+
     # ── 观测 ───────────────────────────────────────────────────
 
     def screen_text(self) -> str:

@@ -79,6 +79,33 @@ def test_pty_snapshot_contains_screen_content():
         host.close()
 
 
+def test_pty_render_svg_contains_screen_text():
+    host = PtyHost(SessionSpec(mode=PTY, argv=_echo_argv()))
+    try:
+        _drain(host)
+        svg = host.render_svg()
+        assert svg.startswith("<svg")
+        assert "pty-hello" in svg
+    finally:
+        host.kill()
+        host.close()
+
+
+@pytest.mark.parametrize(
+    ("fmt", "magic"),
+    [("png", b"\x89PNG\r\n\x1a\n"), ("jpg", b"\xff\xd8\xff"), ("bmp", b"BM")],
+)
+def test_pty_render_image_formats(fmt, magic):
+    host = PtyHost(SessionSpec(mode=PTY, argv=_echo_argv()))
+    try:
+        _drain(host)
+        image = host.render_image(scale=1.0, fmt=fmt)
+        assert image.startswith(magic)
+    finally:
+        host.kill()
+        host.close()
+
+
 def test_pty_read_returns_empty_after_close():
     host = PtyHost(SessionSpec(mode=PTY, argv=_echo_argv()))
     host.kill()

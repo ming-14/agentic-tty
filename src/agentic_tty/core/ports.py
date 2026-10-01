@@ -106,6 +106,17 @@ class TerminalHost(HostLifecycle, Protocol):
         """当前元数据快照。"""
         ...
 
+    def render_svg(self) -> str:
+        """把当前**可见屏幕**渲染成 SVG（派生视图，按需生成）。"""
+        ...
+
+    def render_image(self, *, scale: float = 1.0, fmt: str = "png") -> bytes:
+        """把当前**可见屏幕**渲染成位图（派生视图，按需生成）。
+
+        `scale` 是字符格的像素缩放；`fmt` ∈ `png` / `jpg` / `jpeg` / `bmp`。
+        """
+        ...
+
 
 @runtime_checkable
 class ProcessHost(HostLifecycle, Protocol):
