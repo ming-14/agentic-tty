@@ -72,9 +72,10 @@ class App:
         self._photo: tk.PhotoImage | None = None
         self._svg_source: str | None = None  # None = 该会话没有屏幕视图
         self._screen_note = ""  # 没有屏幕视图时的提示文字
+        self._tick_job: str | None = None  # 挂起的定时任务；收尾必须先取消，否则销毁后仍会触发
         self._build_ui()
         self._select_session(None)  # 初始无会话：pty 专属控件按此状态摆好
-        self._root.after(_TICK_MS, self._tick)
+        self._tick_job = self._root.after(_TICK_MS, self._tick)
 
     # ════════════════════════════════════════════════════════════
     # 界面
@@ -219,7 +220,7 @@ class App:
         except Exception:
             _logger.exception("驱动循环异常")
         finally:
-            self._root.after(_TICK_MS, self._tick)
+            self._tick_job = self._root.after(_TICK_MS, self._tick)
 
     # ════════════════════════════════════════════════════════════
     # 操作
@@ -568,6 +569,9 @@ class App:
 
     def on_close(self) -> None:
         """窗口关闭：收尾所有会话（与守护进程退出的语义一致）。"""
+        if self._tick_job is not None:  # 不取消的话，销毁后它还会触发一次并报错
+            self._root.after_cancel(self._tick_job)
+            self._tick_job = None
         self._registry.close_all()  # 会话收尾：先强杀进程树再关宿主
         for runner in list(self._runners.values()):
             runner.stop()
