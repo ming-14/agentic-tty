@@ -30,6 +30,7 @@ from ..foundation.logs import get_logger
 from ..protocol.envelope import Envelope
 from ..protocol.messages import (
     Command,
+    Condition,
     DaemonStatus,
     Kind,
     ReadMode,
@@ -46,8 +47,9 @@ _logger = get_logger("example.service")
 _DEFAULT_COLS = 80
 _DEFAULT_ROWS = 24
 _RELEASE_JOIN_SECONDS = 5.0
-_DURATIONS = ("idle", "timeout")
-_FLAGS = ("ended", "crashed")
+# 返回条件词汇的唯一来源是 protocol.Condition；按取值形态分两组（秒数 / 布尔）
+_WAIT_DURATIONS = (Condition.IDLE, Condition.TIMEOUT)
+_WAIT_FLAGS = (Condition.ENDED, Condition.CRASHED)
 
 
 class ExampleServiceError(AgenticTtyError):
@@ -87,23 +89,23 @@ class WaitSpec:
     @classmethod
     def parse(cls, raw: Mapping[str, Any]) -> WaitSpec:
         """解析线格式的 condition 组；未知条件直接报错，不静默忽略。"""
-        unknown = sorted(set(raw) - {*_DURATIONS, *_FLAGS})
+        unknown = sorted(set(raw) - {*_WAIT_DURATIONS, *_WAIT_FLAGS})
         if unknown:
             raise BadRequest(f"未知返回条件: {', '.join(unknown)}")
-        for name in _DURATIONS:
+        for name in _WAIT_DURATIONS:
             value = raw.get(name)
             if value is None:
                 continue
             if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
                 raise BadRequest(f"返回条件 {name} 必须是正的秒数")
-        for name in _FLAGS:
+        for name in _WAIT_FLAGS:
             if name in raw and not isinstance(raw[name], bool):
                 raise BadRequest(f"返回条件 {name} 必须是布尔值")
         return cls(
-            ended=bool(raw.get("ended", False)),
-            crashed=bool(raw.get("crashed", False)),
-            idle=float(raw["idle"]) if "idle" in raw else None,
-            timeout=float(raw["timeout"]) if "timeout" in raw else None,
+            ended=bool(raw.get(Condition.ENDED, False)),
+            crashed=bool(raw.get(Condition.CRASHED, False)),
+            idle=float(raw[Condition.IDLE]) if Condition.IDLE in raw else None,
+            timeout=float(raw[Condition.TIMEOUT]) if Condition.TIMEOUT in raw else None,
         )
 
 
