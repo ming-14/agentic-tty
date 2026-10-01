@@ -194,6 +194,22 @@ def test_drained_once_closed():
     assert session.drained  # 宿主已释放，不可能再有输出
 
 
+def test_descendants_forward_to_host():
+    host = FakeHost(SessionSpec(mode=SUBPROCESS, argv=("x",)), FakeProgram())
+    session = _create(_registry_with(host), SUBPROCESS)
+    assert session.descendants() == ()
+    host.descendants_pids = (101, 202)  # 模拟子进程起来了
+    assert session.descendants() == (101, 202)
+    session.close()
+
+
+def test_descendants_before_start_is_rejected():
+    registry = _registry()
+    session = registry.create(SessionSpec(mode=SUBPROCESS, argv=("x",)))
+    with pytest.raises(CoreError):
+        session.descendants()
+
+
 def test_terminal_resize_updates_both_sides():
     registry = _registry()
     session = _create(registry, PTY)

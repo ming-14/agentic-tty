@@ -126,3 +126,26 @@ def test_pty_read_returns_empty_after_close():
     host.kill()
     host.close()
     assert host.read(timeout=0.2) == b""
+
+
+def test_pty_grandchild_forked_immediately_stays_in_job():
+    """回归：PTY 子进程必须"创建时即入作业"。
+
+    入作业若发生在创建之后，子进程先 fork 出的孙进程会逃出作业，从此既枚举不到也杀不到。
+    """
+    code = (
+        "import subprocess, sys, time;"
+        "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(10)']);"
+        "print(g.pid, flush=True);"
+        "time.sleep(10)"
+    )
+    host = PtyHost(SessionSpec(mode=PTY, argv=[sys.executable, "-c", code]))
+    try:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not host.descendants():
+            time.sleep(0.05)
+        # 作业里恰好是"根 + 孙进程"：孙进程没逃逸，conhost 也没混进来
+        assert len(host.descendants()) == 1
+    finally:
+        host.kill()
+        host.close()

@@ -13,7 +13,7 @@ from types import ModuleType
 from ..core.ports import HostMetadata, SessionSpec
 from ..foundation.logs import get_logger
 from .errors import DependencyMissing, HostSpawnError
-from .process_tree import ProcessTree
+from .process_tree import ProcessTree, close_job, create_job
 
 _logger = get_logger("runtime.pty_host")
 
@@ -52,11 +52,15 @@ class PtyHost:
         self._term = pw.Terminal(cols=spec.cols, rows=spec.rows)
         env = dict(os.environ)
         env.update(spec.env)
+        # 先建作业、再 spawn：子进程在 CreateProcessW 时就入作业，没有"创建后再赋值"
+        # 的时间窗（那条窗口会让先 fork 出的孙进程逃出作业）
+        job = create_job()
         try:
-            self._pty.spawn(list(spec.argv), cwd=spec.cwd, env=env)
+            pid, _ = self._pty.spawn(list(spec.argv), cwd=spec.cwd, env=env, job_handle=job)
         except Exception as exc:
+            close_job(job)
             raise HostSpawnError(f"启动 PTY 失败 {list(spec.argv)}: {exc}") from exc
-        self._tree = ProcessTree(self._pty.child_pid() or 0)
+        self._tree = ProcessTree(pid, job)
         self._closed = False
 
     # ── HostLifecycle ──────────────────────────────────────────
@@ -77,6 +81,10 @@ class PtyHost:
 
     def kill(self) -> None:
         self._tree.kill()
+
+    def descendants(self) -> tuple[int, ...]:
+        """本会话进程树的当前成员（不含根进程）。"""
+        return self._tree.descendants()
 
     def close(self) -> None:
         if self._closed:

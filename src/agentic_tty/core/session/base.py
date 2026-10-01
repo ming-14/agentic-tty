@@ -182,6 +182,16 @@ class Session:
             self._transition(SessionState.EXITED)
         _logger.info("会话已退出 uid=%s code=%s", self.uid, code)
 
+    def descendants(self) -> tuple[int, ...]:
+        """本会话进程树里**除根进程外**的当前成员 pid。**只允许所有者线程调用。**
+
+        轮询式观测：比对前后两次结果即可得出"谁起来了、谁没了"。判定（什么时候算
+        "命令跑完了"）属于命令层，核心层只出原料。
+        """
+        if self._host is None:
+            raise CoreError("会话未启动")
+        return self._host.descendants()
+
     # ════════════════════════════════════════════════════════════
     # 输出流
     # ════════════════════════════════════════════════════════════

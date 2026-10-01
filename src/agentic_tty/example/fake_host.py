@@ -54,6 +54,8 @@ class FakeHost:
         self._screen = bytearray()
         self._cols = spec.cols
         self._rows = spec.rows
+        # 进程树成员：测试直接改它来模拟"子进程起来了 / 没了"
+        self.descendants_pids: tuple[int, ...] = ()
 
     # ── HostLifecycle ──────────────────────────────────────────
 
@@ -81,6 +83,10 @@ class FakeHost:
 
     def kill(self) -> None:
         self._exited = True
+
+    def descendants(self) -> tuple[int, ...]:
+        """进程树成员（测试替身：由测试设置 `descendants_pids`）。"""
+        return self.descendants_pids
 
     def close(self) -> None:
         self._closed = True

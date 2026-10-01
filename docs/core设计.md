@@ -80,6 +80,7 @@ class HostLifecycle(Protocol):
     def write(self, data: bytes) -> None: ...
     def try_wait(self) -> int | None: ...
     def kill(self) -> None: ...
+    def descendants(self) -> tuple[int, ...]: ...
     def close(self) -> None: ...
 
 
@@ -197,6 +198,7 @@ class Session:
     def stop(self, timeout: float = 5.0) -> None: ...
     def close(self) -> None: ...
     def refresh(self) -> None: ...                              # 同步宿主退出码与状态
+    def descendants(self) -> tuple[int, ...]: ...                # 进程树成员（轮询式，不含根）
     def expect_eof(self) -> None: ...                            # 声明有外部驱动
     @property
     def drained(self) -> bool: ...                               # 退出且不再有输出
@@ -268,7 +270,7 @@ class SessionRegistry:
 | 方法 | 唯一允许的调用者 |
 |---|---|
 | `read_stream` | 读线程 |
-| `ingest_stream` / `refresh` / 屏幕视图读取 / `resize` / `mark_eof` | 所有者线程 |
+| `ingest_stream` / `refresh` / `descendants` / 屏幕视图读取 / `resize` / `mark_eof` | 所有者线程 |
 | `send` | 写线程 |
 
 两条硬不变量：
@@ -355,4 +357,4 @@ class ProcessHost(HostLifecycle, Protocol):
 | 宿主实现（PTY / 子进程 / 进程树） | 运行时层（runtime） | 唯一碰原生扩展与平台 API |
 | 线程、事件循环、桥 | 运行时层（runtime） | 并发与阻塞 I/O |
 
-核心层只把**原料**交给上层：字节日志（`read_all` / `read_range` / `journal_for`）、offset 区间（`ingest_stream` 的返回值）、对齐决策（`attach_plan`）、屏幕视图（`screen_text` / `full_text` / `screen_cells` / `render_svg` / `render_image`）、重建字节（`rebuild_bytes`）、退出与排空（`exit_code` / `drained` / `eof_streams`）、生命周期状态。
+核心层只把**原料**交给上层：字节日志（`read_all` / `read_range` / `journal_for`）、offset 区间（`ingest_stream` 的返回值）、对齐决策（`attach_plan`）、屏幕视图（`screen_text` / `full_text` / `screen_cells` / `render_svg` / `render_image`）、重建字节（`rebuild_bytes`）、退出与排空（`exit_code` / `drained` / `eof_streams`）、进程树成员（`descendants`）、生命周期状态。

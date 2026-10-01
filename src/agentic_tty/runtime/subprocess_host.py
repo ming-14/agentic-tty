@@ -12,8 +12,18 @@ import sys
 import time
 
 from ..core.ports import SessionSpec
+from ..foundation.logs import get_logger
 from .errors import HostSpawnError
-from .process_tree import ProcessTree
+from .process_tree import (
+    CREATE_SUSPENDED,
+    ProcessTree,
+    assign_job,
+    close_job,
+    create_job,
+    resume_process,
+)
+
+_logger = get_logger("runtime.subprocess_host")
 
 _IS_WINDOWS = sys.platform == "win32"
 
@@ -59,9 +69,15 @@ class SubprocessHost:
     def __init__(self, spec: SessionSpec) -> None:
         env = dict(os.environ)
         env.update(spec.env)
+        # 先建作业、再 spawn。Windows 上以挂起态创建，入作业后再恢复：进程在入作业
+        # 前不执行任何指令，因此不可能已经 fork 出逃逸的孙进程。
+        job = create_job()
         extra: dict = {}
         if _IS_WINDOWS:
-            extra["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            flags = subprocess.CREATE_NEW_PROCESS_GROUP
+            if job is not None:
+                flags |= CREATE_SUSPENDED
+            extra["creationflags"] = flags
         else:
             extra["start_new_session"] = True
         try:
@@ -75,8 +91,21 @@ class SubprocessHost:
                 **extra,
             )
         except OSError as exc:
+            close_job(job)
             raise HostSpawnError(f"启动子进程失败 {list(spec.argv)}: {exc}") from exc
-        self._tree = ProcessTree(self._proc.pid)
+        if job is not None:
+            try:
+                if not assign_job(job, self._proc.pid):
+                    _logger.warning(
+                        "子进程加入作业对象失败，进程树将只能按 pid 终止 pid=%s", self._proc.pid
+                    )
+                # 入作业成败都必须恢复，否则挂起的子进程永远不会运行
+                resume_process(self._proc.pid)
+            except Exception:
+                self._proc.kill()  # 恢复失败会让子进程永远挂在挂起态，先收掉
+                close_job(job)
+                raise
+        self._tree = ProcessTree(self._proc.pid, job)
         self._closed = False
 
     # ── HostLifecycle ──────────────────────────────────────────
@@ -103,6 +132,10 @@ class SubprocessHost:
 
     def kill(self) -> None:
         self._tree.kill()
+
+    def descendants(self) -> tuple[int, ...]:
+        """本会话进程树的当前成员（不含根进程）。"""
+        return self._tree.descendants()
 
     def close(self) -> None:
         if self._closed:

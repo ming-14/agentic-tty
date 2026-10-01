@@ -202,6 +202,10 @@ pid, handle = p.spawn(["/bin/sh", "-c", "sleep 10"],
 # Windows and child program parses command line itself (e.g., cmd.exe /c), preserve original quote semantics:
 p.spawn([r"C:\Windows\System32\cmd.exe", "/c", "echo \"a b\""],
         raw_cmdline=r'cmd.exe /c echo "a b"')
+# Windows: put the child into a job object at creation time (PROC_THREAD_ATTRIBUTE_JOB_LIST).
+# Assigning the job after creation instead leaves a window in which whatever the child
+# forks first escapes the job.  The caller creates and owns the job handle.
+p.spawn([r"C:\Windows\System32\cmd.exe"], job_handle=job)
 
 p.resize(100, 30);  p.get_size()      # (cols, rows)
 p.write(b"dir\r\n")
@@ -217,7 +221,7 @@ p.close()                             # Idempotent; after close read() always b'
 
 ```
 Pty(cols=80, rows=24)
-spawn(argv, cwd=None, env=None, raw_cmdline=None) -> (pid, handle)
+spawn(argv, cwd=None, env=None, raw_cmdline=None, job_handle=None) -> (pid, handle)
 read(n=65536, timeout=None) -> bytes · write(data) · resize(cols, rows) · get_size() -> (cols, rows)
 try_wait() -> int|None · kill() · close() · buffered_bytes() -> int
 child_pid() -> int|None · child_handle() -> int|None · hpcon() -> int|None
