@@ -51,7 +51,7 @@ def test_process_session_keeps_streams_separate():
     assert session.read_all(Stream.STDOUT) == b"out1"
     assert session.read_all(Stream.STDERR) == b"err1"
     assert session.journal.end_offset == 4
-    assert session.stderr_journal.end_offset == 4  # 各自独立的 offset 空间
+    assert session.journal_for(Stream.STDERR).end_offset == 4  # 各自独立的 offset 空间
     session.close()
 
 
@@ -132,6 +132,22 @@ def test_drained_requires_all_streams_eof_when_externally_driven():
     assert driven.drained
     session.close()
     driven.close()
+
+
+def test_stop_records_exit_code_so_drained_settles():
+    registry = _registry(FakeProgram(exit_after=None, exit_code=7))
+    session = _create(registry, SUBPROCESS)
+    session.expect_eof()  # 有外部驱动：drained 还要求所有流 EOF
+    assert not session.drained
+
+    session.stop()
+    assert session.state is SessionState.EXITED
+    # 强杀后必须拿到退出码，否则 drained 永远为假、驱动循环停不下来
+    assert session.exit_code == 7
+    for stream in session.streams():
+        session.mark_eof(stream)
+    assert session.drained
+    session.close()
 
 
 def test_terminal_resize_updates_both_sides():

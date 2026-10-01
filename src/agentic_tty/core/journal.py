@@ -93,13 +93,16 @@ class OutputJournal:
 def plan_attach(journal: OutputJournal, cursor: int | None, end: int) -> Resume | Rebuild:
     """纯函数：给定客户端游标与日志末尾，决定续传还是重建。
 
-    - `cursor is None`：全新订阅者，从 0 整段重放。
+    - `cursor is None`：全新订阅者，语义上就是游标 0——因此同样受裁剪边界约束。
     - 游标在保留区内：续传。
     - 游标早于保留区：重建（唯一的有损路径）。
     - 游标超前于末尾：抛 `OffsetAhead`（协议不一致，不静默当作全新客户端）。
+
+    全新订阅者不能直接给 `Resume(0)`：日志裁剪过之后 0 已不在保留区，
+    `journal.read(0)` 会静默抬到保留区起点，订阅者拿到半截内容而无人察觉。
     """
     if cursor is None:
-        return Resume(0)
+        cursor = 0
     if cursor > end:
         raise OffsetAhead(f"客户端游标 {cursor} 超前于日志末尾 {end}")
     if cursor < journal.start_offset:

@@ -72,3 +72,11 @@ def test_plan_attach_rebuild_when_cursor_trimmed_away():
     journal.trim_to_budget()
     assert journal.start_offset > 0
     assert plan_attach(journal, 0, journal.end_offset) == Rebuild("trimmed")
+
+
+def test_plan_attach_fresh_subscriber_rebuilds_when_trimmed():
+    journal = OutputJournal(4)
+    journal.append(b"abcdefgh")
+    journal.trim_to_budget()
+    # 全新订阅者视作游标 0；0 已被裁剪 → 与落后游标一样走重建，不能静默丢头部
+    assert plan_attach(journal, None, journal.end_offset) == Rebuild("trimmed")

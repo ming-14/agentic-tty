@@ -29,6 +29,9 @@ from .state import SessionState, check_transition
 
 _logger = get_logger("core.session")
 
+# 强杀后轮询退出码的间隔
+_EXIT_POLL_INTERVAL = 0.01
+
 
 @dataclass(frozen=True, slots=True)
 class IngestResult:
@@ -112,7 +115,9 @@ class Session:
         """强杀进程树并进入退出态；不释放宿主（由 `close` 负责）。
 
         先杀再关是硬要求：宿主关闭在部分平台上可能长时间阻塞，先终止子进程
-        才能让它快速返回。
+        才能让它快速返回。强杀后退出码不会立刻可见（Windows Job Object 尤甚），
+        必须等它出现——`exit_code` 留空会让 `drained` 永远为假，读线程也就不投
+        EOF，驱动循环停不下来。
         """
         if self.state in (SessionState.CLOSED, SessionState.EXITED):
             return
@@ -124,10 +129,24 @@ class Session:
                 self._host.kill()
             except Exception as exc:
                 _logger.warning("终止宿主异常 uid=%s: %s", self.uid, exc)
-            if self.exit_code is None:
-                self.exit_code = self._host.try_wait()
+            self._collect_exit(timeout)
         self._transition(SessionState.EXITED)
         _logger.info("会话已停止 uid=%s exit=%s", self.uid, self.exit_code)
+
+    def _collect_exit(self, timeout: float) -> None:
+        """等宿主给出退出码；到点仍拿不到就记警告，不让停止流程无界阻塞。"""
+        if self._host is None or self.exit_code is not None:
+            return
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            code = self._host.try_wait()
+            if code is not None:
+                self.exit_code = code
+                return
+            if time.monotonic() >= deadline:
+                _logger.warning("等待退出码超时 uid=%s，退出码将留空", self.uid)
+                return
+            time.sleep(_EXIT_POLL_INTERVAL)
 
     def close(self) -> None:
         """释放宿主并进入关闭态（幂等）。"""

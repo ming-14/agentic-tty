@@ -139,7 +139,7 @@ def plan_attach(journal: OutputJournal, cursor: int | None, end: int) -> Resume 
 
 | 情形 | 决策 |
 |---|---|
-| 全新订阅者（`cursor is None`） | `Resume(0)` |
+| 全新订阅者（`cursor is None`） | 视作游标 `0`：未裁剪时 `Resume(0)`，已裁剪时同下行走重建 |
 | 断点在日志覆盖范围内 | `Resume(cursor)` |
 | 断点早于 `start_offset` | `Rebuild(reason="trimmed")` |
 | 断点晚于 `end` | 抛 `OffsetAhead`（协议不一致，不静默重同步） |
@@ -221,7 +221,7 @@ class Session:
 
 ### 7.1 退出与排空是两件事
 
-- `exit_code` 一拿到就记（`refresh()` 从宿主取）。
+- `exit_code` 一拿到就记：`refresh()` 从宿主轮询，`stop()` 强杀后也要等它出现（强杀后退出码不会立刻可见）。留空会让 `drained` 永远为假。
 - `drained` = "进程已退出 **且** 不再会有输出到达"。有外部驱动（读线程 / 泵）时，要等所有流都 EOF；没有外部驱动的会话则退出即结束。
 - **EOF 不等于退出**：程序可以先关掉 stdout/stderr 而继续运行（守护进程、`exec`），所以每个流单独记 EOF。
 

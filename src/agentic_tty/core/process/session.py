@@ -27,10 +27,6 @@ class ProcessSession(Session):
         super().__init__(uid, spec, host_factory, journal_budget_bytes=journal_budget_bytes)
         self._err_journal = OutputJournal(journal_budget_bytes)
 
-    @property
-    def stderr_journal(self) -> OutputJournal:
-        return self._err_journal
-
     def close_stdin(self) -> None:
         """关闭 stdin 发 EOF。"""
         self._process_host().close_stdin()
