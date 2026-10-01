@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentic-tty"
+version = "0.0.0"
+description = "PTY 与子进程会话的守护进程核心"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-timeout>=2.0", "ruff>=0.6"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+timeout = 60
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["vendor"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "RUF"]
+ignore = [
+    # 宿主与界面边界有意兜住所有异常：第三方原生扩展、平台 API、UI 回调抛什么
+    # 都不该炸穿会话生命周期。这些位置都在 except 里做了日志或用户提示。
+    "BLE001",
+    # 全角标点在中文注释/文档字符串里是刻意的写法
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["agentic_tty"]
