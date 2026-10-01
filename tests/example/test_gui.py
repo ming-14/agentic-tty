@@ -52,7 +52,7 @@ def test_create_session_pumps_to_completion(root):
     session = app._sessions[uid]
     assert session.exit_code == 0
     assert b"build OK" in session.read_all(Stream.STDOUT)
-    assert app._render_view(session).startswith("── 屏幕 ──")
+    assert app._render_view(session).startswith("── stdout ──")
     app.on_close()
 
 
@@ -67,7 +67,7 @@ def test_send_input_and_close(root):
     app._send_input(newline=True)
     assert _pump_until(root, app, uid, lambda s: b"echo: hi" in s.read_all(Stream.STDOUT))
 
-    # 假会话的视图含屏幕快照
+    # 假会话没有屏幕视图，视图就是双流
     assert "echo: hi" in app._render_view(app._sessions[uid])
 
     app._selected = uid
@@ -92,24 +92,8 @@ def test_mode_change_swaps_command_source(root):
     app.on_close()
 
 
-def test_resize_fake_session(root):
-    app = App(root)
-    app._command.set("tail")
-    app._mode.set(ExampleMode.FAKE.value)
-    app._create_session()
-    uid = next(iter(app._sessions))
-    app._selected = uid
-    app._cols.delete(0, "end")
-    app._cols.insert(0, "100")
-    app._rows.delete(0, "end")
-    app._rows.insert(0, "30")
-    app._resize()
-    assert (app._sessions[uid].cols, app._sessions[uid].rows) == (100, 30)
-    app.on_close()
-
-
-def test_screen_tabs_are_pty_only(root):
-    """屏幕页 / SVG 源码页与导出按钮都是 pty 专属：其他模式藏掉、禁用，也不渲染。"""
+def test_pty_only_controls_hidden_for_fake(root):
+    """屏幕页 / SVG 源码页 / 导出按钮 / 尺寸控件都是 pty 专属：其他模式藏掉或禁用。"""
     app = App(root)
     app._command.set("repl")
     app._mode.set(ExampleMode.FAKE.value)
@@ -120,8 +104,8 @@ def test_screen_tabs_are_pty_only(root):
     assert app._notebook.tab(app._image_tab, "state") == "hidden"
     assert app._notebook.tab(app._svg, "state") == "hidden"
     assert app._svg_source is None
-    assert "disabled" in app._save_svg_btn.state()
-    assert "disabled" in app._save_png_btn.state()
+    for widget in (app._save_svg_btn, app._save_png_btn, app._resize_btn, app._cols, app._rows):
+        assert "disabled" in widget.state()
     assert not any(app._image_canvas.type(i) == "image" for i in app._image_canvas.find_all())
     app.on_close()
 
@@ -138,7 +122,7 @@ def _pty_available() -> bool:
 
 @pytest.mark.skipif(not _pty_available(), reason="pywezterm 不可用")
 def test_screen_views_for_real_pty(root):
-    """真 PTY：屏幕页 / SVG 源码页可用，image 与 svg 两种格式都落成位图。"""
+    """真 PTY：屏幕页 / SVG 源码页 / 尺寸控件可用，image 与 svg 都落成位图。"""
     app = App(root)
     session = create_session(ExampleMode.PTY, (sys.executable, "-c", "print('gui-svg')"))
     session.start()
@@ -148,13 +132,14 @@ def test_screen_views_for_real_pty(root):
     app._runners[session.uid] = runner
     app._modes[session.uid] = ExampleMode.PTY
     app._selected = session.uid
-    app._sync_screen_tabs()
+    app._sync_pty_controls()
 
     assert _pump_until(root, app, session.uid, lambda s: s.drained)
     app._refresh_detail()
 
     assert app._notebook.tab(app._image_tab, "state") == "normal"
     assert "disabled" not in app._save_png_btn.state()
+    assert "disabled" not in app._resize_btn.state()
     assert app._svg_source.startswith("<svg") and "gui-svg" in app._svg_source
     assert any(app._image_canvas.type(i) == "image" for i in app._image_canvas.find_all())
 
@@ -162,4 +147,11 @@ def test_screen_views_for_real_pty(root):
     app._format.set("svg")
     app._refresh_detail()
     assert any(app._image_canvas.type(i) == "image" for i in app._image_canvas.find_all())
+
+    app._cols.delete(0, "end")
+    app._cols.insert(0, "100")
+    app._rows.delete(0, "end")
+    app._rows.insert(0, "30")
+    app._resize()
+    assert (session.cols, session.rows) == (100, 30)
     app.on_close()

@@ -30,9 +30,10 @@ class FakeProgram:
 
 
 class FakeHost:
-    """脚本化宿主：提供终端模型的摄入 / 快照，也提供子进程的双管道。
+    """脚本化宿主（测试替身）。
 
-    **不做屏幕渲染**：SVG / 位图是真实终端模型的能力，假宿主没有。
+    同时实现 `TerminalHost` 与 `ProcessHost`：核心层的单测要覆盖两种会话形态，都
+    跑在这个假宿主上。**不做屏幕渲染**——SVG / 位图是真实终端模型的能力。
     """
 
     def __init__(self, spec: SessionSpec, program: FakeProgram) -> None:

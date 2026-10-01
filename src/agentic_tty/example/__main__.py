@@ -87,8 +87,8 @@ def _demo_repl() -> None:
     print(f"  等提示符 = {_wait_for(runner, session, b'> ', 5.0)}")
     runner.submit_input(b"hello\n")
     print(f"  等回显 = {_wait_for(runner, session, b'echo: hello', 5.0)}")
-    print("  屏幕快照（假宿主为纯文本尾部）：")
-    for line in session.snapshot().decode().splitlines():
+    print("  stdout：")
+    for line in session.read_all(Stream.STDOUT).decode().splitlines():
         print(f"    {line}")
     _close(session, runner)
     print()

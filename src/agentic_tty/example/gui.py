@@ -185,7 +185,8 @@ class App:
         self._rows = ttk.Entry(size_row, width=5)
         self._rows.insert(0, "24")
         self._rows.pack(side=tk.LEFT)
-        ttk.Button(size_row, text="应用", command=self._resize).pack(side=tk.LEFT, padx=4)
+        self._resize_btn = ttk.Button(size_row, text="应用", command=self._resize)
+        self._resize_btn.pack(side=tk.LEFT, padx=4)
         self._save_svg_btn = ttk.Button(size_row, text="保存 SVG", command=self._save_svg)
         self._save_svg_btn.pack(side=tk.LEFT, padx=(12, 0))
         self._save_png_btn = ttk.Button(size_row, text="保存 PNG", command=self._save_png)
@@ -248,7 +249,7 @@ class App:
         self._modes[session.uid] = mode
         self._selected = session.uid
         self._status.set(f"已创建 {' '.join(argv)}（{mode}）uid={session.uid[:8]}")
-        self._sync_screen_tabs()
+        self._sync_pty_controls()
         self._refresh_tree()
         self._refresh_detail()
 
@@ -302,17 +303,23 @@ class App:
             return
         selection = self._tree.selection()
         self._selected = selection[0] if selection else None
-        self._sync_screen_tabs()
+        self._sync_pty_controls()
         self._refresh_detail()
 
-    def _sync_screen_tabs(self) -> None:
-        """「屏幕」/「SVG 源码」页与导出按钮都是 pty 专属：其他模式藏掉 / 禁用。"""
+    def _sync_pty_controls(self) -> None:
+        """屏幕页 / SVG 源码页 / 导出按钮 / 尺寸控件都是 pty 专属：其他模式藏掉或禁用。"""
         is_pty = self._modes.get(self._selected) is ExampleMode.PTY
         state = "normal" if is_pty else "hidden"
         self._notebook.tab(self._image_tab, state=state)
         self._notebook.tab(self._svg, state=state)
-        for button in (self._save_svg_btn, self._save_png_btn):
-            button.state(["!disabled"] if is_pty else ["disabled"])
+        for widget in (
+            self._save_svg_btn,
+            self._save_png_btn,
+            self._resize_btn,
+            self._cols,
+            self._rows,
+        ):
+            widget.state(["!disabled"] if is_pty else ["disabled"])
         if is_pty:
             self._notebook.select(self._image_tab)
 
@@ -345,7 +352,7 @@ class App:
     def _refresh_detail(self) -> None:
         session = self._sessions.get(self._selected) if self._selected else None
         if session is None:
-            self._sync_screen_tabs()
+            self._sync_pty_controls()
             self._set_text(self._view, "")
             self._set_text(self._raw, "")
             self._set_text(self._svg, "")
@@ -445,28 +452,18 @@ class App:
         self._status.set(f"已保存 PNG → {path}")
 
     def _render_view(self, session: Session) -> str:
-        mode = self._modes.get(session.uid)
-        if mode is ExampleMode.SUBPROCESS:
-            return self._render_streams(session)
-        if mode is ExampleMode.FAKE:
-            # 假会话同时有屏幕与双流：三段都给出，便于对照
-            return "\n".join(
-                (f"── 屏幕 ──\n{self._screen_text(session)}", self._render_streams(session))
-            )
-        return self._screen_text(session)
+        if self._modes.get(session.uid) is ExampleMode.PTY:
+            return self._screen_text(session)
+        return self._render_streams(session)
 
     def _screen_text(self, session: Session) -> str:
-        # 文本视图还没进端口（要等命令层"返回数据"过滤的设计）：真宿主有
-        # screen_text，假宿主退回纯文本尾部。
+        # 文本视图还没进端口（要等命令层"返回数据"过滤的设计）：真 pty 宿主有 screen_text
         screen = getattr(session.host, "screen_text", None)
-        if callable(screen):
-            try:
-                return screen()
-            except Exception as exc:  # 宿主已关闭等：退回 snapshot
-                _logger.debug("screen_text 不可用 uid=%s: %s", session.uid, exc)
+        if not callable(screen):
+            return "<屏幕不可用>"
         try:
-            return session.snapshot().decode("utf-8", errors="replace")
-        except Exception as exc:
+            return screen()
+        except Exception as exc:  # 宿主已关闭等
             return f"<屏幕不可用: {exc}>"
 
     @staticmethod
