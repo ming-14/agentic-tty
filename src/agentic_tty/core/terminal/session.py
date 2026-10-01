@@ -49,9 +49,21 @@ class TerminalSession(Session):
         self._rows = rows
         _logger.info("会话尺寸已变更 uid=%s -> %dx%d", self.uid, cols, rows)
 
-    def snapshot(self) -> bytes:
-        """重建字节（RIS + scrollback 重放 + 可见区 + 模式恢复）。"""
-        return self._terminal_host().snapshot()
+    def rebuild_bytes(self) -> bytes:
+        """重建字节（RIS + 模式恢复 + scrollback + 可见区）。"""
+        return self._terminal_host().rebuild_bytes()
+
+    def screen_text(self) -> str:
+        """可见屏幕纯文本。"""
+        return self._terminal_host().screen_text()
+
+    def full_text(self) -> str:
+        """含滚动历史的可见文本。"""
+        return self._terminal_host().full_text()
+
+    def screen_cells(self) -> tuple[tuple[str, ...], ...]:
+        """可见屏幕字符格栅。"""
+        return self._terminal_host().screen_cells()
 
     def render_svg(self) -> str:
         """可见屏幕的 SVG。"""

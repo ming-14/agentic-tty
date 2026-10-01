@@ -466,12 +466,8 @@ class App:
         return self._render_streams(session)
 
     def _screen_text(self, session: Session) -> str:
-        # 文本视图还没进端口（要等命令层"返回数据"过滤的设计）：真 pty 宿主有 screen_text
-        screen = getattr(session.host, "screen_text", None)
-        if not callable(screen):
-            return "<屏幕不可用>"
         try:
-            return screen()
+            return session.screen_text()
         except Exception as exc:  # 宿主已关闭等
             return f"<屏幕不可用: {exc}>"
 

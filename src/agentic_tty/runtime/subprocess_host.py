@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 
-from ..core.ports import HostMetadata, SessionSpec
+from ..core.ports import SessionSpec
 from .errors import HostSpawnError
 from .process_tree import ProcessTree
 
@@ -131,9 +131,6 @@ class SubprocessHost:
             pass
 
     # ── 观测 ───────────────────────────────────────────────────
-
-    def metadata(self) -> HostMetadata:
-        return HostMetadata()
 
     def wait_exit(self, timeout: float) -> int | None:
         """带超时地等退出码（供测试与收尾使用）。"""

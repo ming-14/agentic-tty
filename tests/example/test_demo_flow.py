@@ -90,7 +90,7 @@ def test_terminal_wait_prompt_then_send_then_read_echo():
         assert _pump_until_output(runner, session, b"> ", 2.0)
         session.send(b"ping\n")
         assert _pump_until_output(runner, session, b"ok:ping", 2.0)
-        assert b"ok:ping" in session.snapshot()
+        assert "ok:ping" in session.screen_text()
     finally:
         session.close()
         runner.stop()

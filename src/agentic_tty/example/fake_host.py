@@ -1,8 +1,8 @@
 """假宿主：脚本化程序模拟（测试替身）。
 
 按相对时间吐出预置输出，可对输入做回显与应答。它**不是终端模拟器**：
-`ingest` 只把字节追加到一个纯文本尾部缓冲，`snapshot` 返回该缓冲——够用来
-验证"摄入与日志相邻"和视图链路，不承担 VT 语义。
+`ingest` 只把字节追加到一个纯文本尾部缓冲，`rebuild_bytes` / `screen_text`
+都返回该缓冲——够用来验证"摄入与日志相邻"和视图链路，不承担 VT 语义。
 """
 
 from __future__ import annotations
@@ -94,8 +94,24 @@ class FakeHost:
     def resize(self, cols: int, rows: int) -> None:
         self._cols, self._rows = cols, rows
 
-    def snapshot(self) -> bytes:
+    def rebuild_bytes(self) -> bytes:
+        """重建字节（测试替身：就是屏幕缓冲本身，不承担 VT 语义）。"""
         return bytes(self._screen)
+
+    def screen_text(self) -> str:
+        """可见屏幕纯文本（测试替身：把缓冲按 UTF-8 解出来）。"""
+        return self._screen.decode("utf-8", errors="replace")
+
+    def full_text(self) -> str:
+        """全量输出（测试替身没有滚动历史，等同可见屏幕）。"""
+        return self.screen_text()
+
+    def screen_cells(self) -> tuple[tuple[str, ...], ...]:
+        """字符格栅（测试替身不处理宽字符，按字符逐格铺开）。"""
+        text = self.screen_text()
+        if not text:
+            return ()
+        return tuple(tuple(line) for line in text.split("\n"))
 
     def metadata(self) -> HostMetadata:
         return HostMetadata(title=self._program.title, cwd=self._spec.cwd)

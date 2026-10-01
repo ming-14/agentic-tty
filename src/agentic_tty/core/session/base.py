@@ -8,9 +8,9 @@ Pty 会话与子进程会话共享本类，差异只有两处：
 ## 摄入在核心层闭合
 
 `ingest_stream()` 内部把"喂终端模型"与"追加日志"**相邻执行**（同线程、中间无
-IO），因此 `fed_offset == journal.end` 恒成立。快照重建的正确性建立在这一点上：
-`snapshot()` 渲染期间不可能有 `ingest_stream()` 插入，快照恰是"重放
-`[0, end)` 之后"的状态，与对齐点同源。
+IO），因此 `fed_offset == journal.end` 恒成立。屏幕视图与重建字节的正确性建立在
+这一点上：读取屏幕（`screen_text()` / `rebuild_bytes()` 等）期间不可能有
+`ingest_stream()` 插入，读到的恰是"重放 `[0, end)` 之后"的状态，与对齐点同源。
 
 本类**不含**：连接、推送、订阅者、线程、sid、返回条件与等待引擎（那是命令层的）。
 """
@@ -73,10 +73,6 @@ class Session:
     # ════════════════════════════════════════════════════════════
 
     @property
-    def running(self) -> bool:
-        return self.state is SessionState.RUNNING
-
-    @property
     def host(self) -> HostLifecycle | None:
         """宿主句柄（供驱动方读取；不暴露核心层内部状态）。"""
         return self._host
@@ -87,11 +83,14 @@ class Session:
 
     @property
     def drained(self) -> bool:
-        """进程已退出**且不再会有输出到达**。
+        """不再会有输出到达。
 
-        进程退出与尾部输出到达之间有竞态：一退出就当作结束会丢掉最后一段输出。
-        因此有外部驱动时，必须等所有流都 EOF；没有外部驱动的会话则退出即结束。
+        进程退出与尾部输出到达之间有竞态：一退出就当作结束会丢掉最后一段输出，
+        所以有外部驱动时必须等所有流都 EOF；没有外部驱动的会话则退出即结束。
+        已关闭的会话宿主已释放，不可能再有输出。
         """
+        if self.state is SessionState.CLOSED:
+            return True
         if self.exit_code is None:
             return False
         if not self._expect_eof:
@@ -166,14 +165,22 @@ class Session:
         _logger.info("会话已关闭 uid=%s", self.uid)
 
     def refresh(self) -> None:
-        """推进退出检测：同步宿主退出码与状态。**只允许所有者线程调用。**"""
-        if self.state is not SessionState.RUNNING or self._host is None:
+        """推进退出检测：同步宿主退出码与状态。**只允许所有者线程调用。**
+
+        已进入退出态但还没拿到退出码（强杀后等超时）时继续补拿——留空会让
+        `drained` 永远为假，驱动循环停不下来。
+        """
+        if self._host is None or self.exit_code is not None:
+            return
+        if self.state not in (SessionState.RUNNING, SessionState.EXITED):
             return
         code = self._host.try_wait()
-        if code is not None:
-            self.exit_code = code
+        if code is None:
+            return
+        self.exit_code = code
+        if self.state is SessionState.RUNNING:
             self._transition(SessionState.EXITED)
-            _logger.info("会话已退出 uid=%s code=%s", self.uid, code)
+        _logger.info("会话已退出 uid=%s code=%s", self.uid, code)
 
     # ════════════════════════════════════════════════════════════
     # 输出流
@@ -270,13 +277,25 @@ class Session:
         journal = self._journal_for(stream)
         return _plan_attach(journal, cursor, journal.end_offset)
 
-    def snapshot(self) -> bytes:
-        """重建字节；只有终端会话支持。"""
-        raise CoreError(f"{self.mode} 会话没有屏幕")
-
     def resize(self, cols: int, rows: int) -> None:
         """改尺寸；只有终端会话支持。"""
         raise CoreError(f"{self.mode} 会话没有尺寸")
+
+    def rebuild_bytes(self) -> bytes:
+        """重建字节（喂进空终端模型即可还原当前状态）；只有终端会话支持。"""
+        raise CoreError(f"{self.mode} 会话没有屏幕")
+
+    def screen_text(self) -> str:
+        """可见屏幕纯文本；只有终端会话支持。"""
+        raise CoreError(f"{self.mode} 会话没有屏幕")
+
+    def full_text(self) -> str:
+        """含滚动历史的可见文本；只有终端会话支持。"""
+        raise CoreError(f"{self.mode} 会话没有屏幕")
+
+    def screen_cells(self) -> tuple[tuple[str, ...], ...]:
+        """可见屏幕字符格栅；只有终端会话支持。"""
+        raise CoreError(f"{self.mode} 会话没有屏幕")
 
     def render_svg(self) -> str:
         """可见屏幕的 SVG；只有终端会话支持。"""

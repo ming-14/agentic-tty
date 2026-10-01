@@ -99,7 +99,7 @@ class PtyHost:
         self._pty.resize(cols, rows)
         self._term.resize(cols, rows)
 
-    def snapshot(self) -> bytes:
+    def rebuild_bytes(self) -> bytes:
         """重建字节：RIS + 模式恢复 + scrollback + 可见区。"""
         parts = [b"\x1bc"]
         parts.append(_to_bytes(self._term.mode_restore_seq()))
@@ -107,11 +107,21 @@ class PtyHost:
         parts.append(_to_bytes(self._term.render_ansi(include_cursor=True)))
         return b"".join(parts)
 
-    def metadata(self) -> HostMetadata:
-        return HostMetadata(
-            title=self._term.get_title(),
-            cwd=self._term.get_current_dir(),
-        )
+    def screen_text(self) -> str:
+        """可见屏幕纯文本。"""
+        return self._term.text()
+
+    def full_text(self) -> str:
+        """全量输出：历史区 + 可见区，用 `\\n` 连接。"""
+        history = self._term.render_scrollback(keep_ansi=False)
+        visible = self._term.text()
+        if not history:
+            return visible
+        return f"{history}\n{visible}" if visible else history
+
+    def screen_cells(self) -> tuple[tuple[str, ...], ...]:
+        """可见屏幕字符格栅；宽字符的续格为空串。"""
+        return tuple(tuple(cell[1] for cell in row) for row in self._term.snapshot())
 
     def render_svg(self) -> str:
         """可见屏幕的 SVG。底层该参数必填，固定 0 = 不压缩。"""
@@ -121,11 +131,8 @@ class PtyHost:
         """可见屏幕的位图。"""
         return self._term.render_image(scale=scale, fmt=fmt)
 
-    # ── 观测 ───────────────────────────────────────────────────
-
-    def screen_text(self) -> str:
-        """可见屏幕纯文本（管理台显示用）。"""
-        return self._term.text()
-
-    def render_ansi(self) -> str:
-        return self._term.render_ansi(include_cursor=True)
+    def metadata(self) -> HostMetadata:
+        return HostMetadata(
+            title=self._term.get_title(),
+            cwd=self._term.get_current_dir(),
+        )

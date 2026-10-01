@@ -21,6 +21,24 @@ def _create(registry: SessionRegistry, mode: str) -> Session:
     return session
 
 
+class _SlowExitHost(FakeHost):
+    """强杀后退出码要过几次查询才可见（Windows Job Object 强杀后的真实行为）。"""
+
+    def __init__(self, spec: SessionSpec, program: FakeProgram, blind_calls: int = 1) -> None:
+        super().__init__(spec, program)
+        self._blind = blind_calls
+
+    def try_wait(self) -> int | None:
+        if self._blind > 0:
+            self._blind -= 1
+            return None
+        return super().try_wait()
+
+
+def _registry_with(host: FakeHost) -> SessionRegistry:
+    return SessionRegistry(lambda spec: host, journal_budget_bytes=1 << 16)
+
+
 def test_ingest_advances_offsets_and_journal():
     registry = _registry()
     session = _create(registry, SUBPROCESS)
@@ -150,6 +168,32 @@ def test_stop_records_exit_code_so_drained_settles():
     session.close()
 
 
+def test_stop_waits_for_late_exit_code():
+    host = _SlowExitHost(SessionSpec(mode=SUBPROCESS, argv=("x",)), FakeProgram(exit_code=9))
+    session = _create(_registry_with(host), SUBPROCESS)
+    session.stop(timeout=1.0)
+    assert session.exit_code == 9  # 查一次拿不到不能就留空
+    session.close()
+
+
+def test_refresh_fills_exit_code_missed_by_stop():
+    host = _SlowExitHost(SessionSpec(mode=SUBPROCESS, argv=("x",)), FakeProgram(exit_code=9))
+    session = _create(_registry_with(host), SUBPROCESS)
+    session.stop(timeout=0.0)  # 首次查询拿不到就超时
+    assert session.exit_code is None
+    session.refresh()  # 由驱动循环补拿
+    assert session.exit_code == 9
+    session.close()
+
+
+def test_drained_once_closed():
+    registry = _registry(FakeProgram(exit_after=None))
+    session = _create(registry, SUBPROCESS)
+    session.expect_eof()
+    session.close()
+    assert session.drained  # 宿主已释放，不可能再有输出
+
+
 def test_terminal_resize_updates_both_sides():
     registry = _registry()
     session = _create(registry, PTY)
@@ -165,11 +209,28 @@ def test_process_session_rejects_screen_api():
     with pytest.raises(CoreError):
         session.resize(10, 10)
     with pytest.raises(CoreError):
-        session.snapshot()
+        session.rebuild_bytes()
+    with pytest.raises(CoreError):
+        session.screen_text()
+    with pytest.raises(CoreError):
+        session.full_text()
+    with pytest.raises(CoreError):
+        session.screen_cells()
     with pytest.raises(CoreError):
         session.render_svg()
     with pytest.raises(CoreError):
         session.render_image()
+    session.close()
+
+
+def test_terminal_screen_views_forward_to_host():
+    registry = _registry()
+    session = _create(registry, PTY)
+    session.ingest(b"hello\nworld")
+    assert session.screen_text() == "hello\nworld"
+    assert session.full_text() == "hello\nworld"
+    assert session.screen_cells() == (("h", "e", "l", "l", "o"), ("w", "o", "r", "l", "d"))
+    assert session.rebuild_bytes() == b"hello\nworld"
     session.close()
 
 

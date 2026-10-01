@@ -67,13 +67,28 @@ def test_pty_resize_updates_both_sides():
         host.close()
 
 
-def test_pty_snapshot_contains_screen_content():
+def test_pty_rebuild_bytes_contains_screen_content():
     host = PtyHost(SessionSpec(mode=PTY, argv=_echo_argv()))
     try:
         _drain(host)
-        snapshot = host.snapshot()
-        assert snapshot.startswith(b"\x1bc")  # RIS 打头
-        assert b"pty-hello" in snapshot
+        rebuild = host.rebuild_bytes()
+        assert rebuild.startswith(b"\x1bc")  # RIS 打头
+        assert b"pty-hello" in rebuild
+    finally:
+        host.kill()
+        host.close()
+
+
+def test_pty_screen_views():
+    host = PtyHost(SessionSpec(mode=PTY, argv=_echo_argv(), cols=40, rows=6))
+    try:
+        _drain(host)
+        assert "pty-hello" in host.screen_text()
+        assert "pty-hello" in host.full_text()
+
+        cells = host.screen_cells()
+        assert len(cells) == 6  # 行数等于 rows
+        assert any("pty-hello" in "".join(row) for row in cells)
     finally:
         host.kill()
         host.close()

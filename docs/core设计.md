@@ -86,11 +86,14 @@ class HostLifecycle(Protocol):
 class TerminalHost(HostLifecycle, Protocol):
     def ingest(self, data: bytes) -> bytes: ...          # 返回要回写应用的应答
     def resize(self, cols: int, rows: int) -> None: ...
-    def snapshot(self) -> bytes: ...
-    def metadata(self) -> HostMetadata: ...
-    # 屏幕视图（派生，按需渲染）：可见屏幕 → SVG / 位图
+    def rebuild_bytes(self) -> bytes: ...                # 重建字节（重同步用），不是屏幕内容
+    # 屏幕视图（派生，按需渲染）
+    def screen_text(self) -> str: ...                    # 可见屏幕纯文本
+    def full_text(self) -> str: ...                      # 全量输出：含滚动历史的可见文本
+    def screen_cells(self) -> tuple[tuple[str, ...], ...]: ...   # 字符格栅（宽字符续格为空串）
     def render_svg(self) -> str: ...
     def render_image(self, *, scale: float = 1.0, fmt: str = "png") -> bytes: ...
+    def metadata(self) -> HostMetadata: ...
 
 
 class ProcessHost(HostLifecycle, Protocol):
@@ -159,7 +162,16 @@ def line_range(data: bytes, start: int, end: int | None, *, encoding: str = "utf
 def grep(data: bytes, pattern: str, *, encoding: str = "utf-8", limit: int | None = None) -> list[str]: ...
 ```
 
-屏幕视图（快照 / SVG / 行列 / 光标）只存在于 Pty 会话，由终端模型渲染，是派生视图。
+屏幕视图只存在于 Pty 会话，由终端模型渲染，是派生视图：
+
+- `screen_text()`：可见屏幕纯文本。
+- `full_text()`：**全量输出**——含滚动历史的可见文本（历史区 + 可见区）。
+- `screen_cells()`：可见屏幕的字符格栅，宽字符的续格为空串；按格取用（如"可见屏幕第 N 列"）由上层处理。
+- `render_svg()` / `render_image()`：可见屏幕的矢量 / 位图。
+
+`rebuild_bytes()` **不在返回数据之列**：它返回的是"喂进一个空终端模型即可还原当前状态"的重建字节，供订阅者游标落后时重同步（`plan_attach → Rebuild`），不是给调用方看的屏幕内容。
+
+**"全量输出"只有一个含义**：含滚动历史的所有可见文本。字节侧的对应物叫**字节流全量**（字节日志本身），两者不可混用——一个是解析后的可见文本，一个是未经解析的原始字节。
 
 ## 7. 会话
 
@@ -206,7 +218,10 @@ class Session:
     def read_all(self, stream: Stream = Stream.STDOUT) -> bytes: ...
     def read_range(self, start: int, end: int | None = None, stream: Stream = Stream.STDOUT) -> bytes: ...
     def attach_plan(self, cursor: int | None, stream: Stream = Stream.STDOUT) -> Resume | Rebuild: ...
-    def snapshot(self) -> bytes: ...                             # Pty 专用
+    def rebuild_bytes(self) -> bytes: ...                        # Pty 专用（重同步用，非屏幕内容）
+    def screen_text(self) -> str: ...                            # Pty 专用
+    def full_text(self) -> str: ...                              # Pty 专用
+    def screen_cells(self) -> tuple[tuple[str, ...], ...]: ...    # Pty 专用
     def render_svg(self) -> str: ...                             # Pty 专用
     def render_image(self, *, scale: float = 1.0, fmt: str = "png") -> bytes: ...  # Pty 专用
     def resize(self, cols: int, rows: int) -> None: ...           # Pty 专用
@@ -221,8 +236,8 @@ class Session:
 
 ### 7.1 退出与排空是两件事
 
-- `exit_code` 一拿到就记：`refresh()` 从宿主轮询，`stop()` 强杀后也要等它出现（强杀后退出码不会立刻可见）。留空会让 `drained` 永远为假。
-- `drained` = "进程已退出 **且** 不再会有输出到达"。有外部驱动（读线程 / 泵）时，要等所有流都 EOF；没有外部驱动的会话则退出即结束。
+- `exit_code` 一拿到就记：`refresh()` 从宿主轮询（进入退出态后仍继续补拿），`stop()` 强杀后也要等它出现（强杀后退出码不会立刻可见）。留空会让 `drained` 永远为假。
+- `drained` = "不再会有输出到达"：已关闭的会话宿主已释放，恒为真；否则要求进程已退出——有外部驱动（读线程 / 泵）时还要等所有流 EOF，没有外部驱动的会话则退出即结束。
 - **EOF 不等于退出**：程序可以先关掉 stdout/stderr 而继续运行（守护进程、`exec`），所以每个流单独记 EOF。
 
 进程退出与尾部输出到达之间有竞态：把两者混为一谈会丢掉最后一段输出。
@@ -253,13 +268,13 @@ class SessionRegistry:
 | 方法 | 唯一允许的调用者 |
 |---|---|
 | `read_stream` | 读线程 |
-| `ingest_stream` / `refresh` / `snapshot` / `resize` / `mark_eof` | 所有者线程 |
+| `ingest_stream` / `refresh` / 屏幕视图读取 / `resize` / `mark_eof` | 所有者线程 |
 | `send` | 写线程 |
 
 两条硬不变量：
 
 1. `ingest_stream()` 内部 `_feed_model()` 与 `journal.append()` **相邻执行**（同线程、中间无 IO 与 await）→ `fed_offset == journal.end` 恒成立；
-2. 因此 `snapshot()` 渲染期间不可能有 `ingest_stream()` 插入 → 快照恰是"重放 `[0, end)` 之后"的状态，与对齐点同源。
+2. 因此读取屏幕（`screen_text()` / `rebuild_bytes()` 等）期间不可能有 `ingest_stream()` 插入 → 读到的恰是"重放 `[0, end)` 之后"的状态，与对齐点同源。
 
 core 里因此**没有任何锁**。
 
@@ -300,7 +315,7 @@ session.close()
 
 ### 11.2 视图
 
-只有字节视图（全量 / 最后 N 行 / 最后 N 字节 / 指定范围 / offset 增量 / 正则），**每流独立**。没有屏幕视图、没有 `snapshot()`、没有 `resize()`。
+只有字节视图（全量 / 最后 N 行 / 最后 N 字节 / 指定范围 / offset 增量 / 正则），**每流独立**。没有屏幕视图、没有 `rebuild_bytes()`、没有 `resize()`。
 
 ### 11.3 输入与 stdin
 
@@ -340,4 +355,4 @@ class ProcessHost(HostLifecycle, Protocol):
 | 宿主实现（PTY / 子进程 / 进程树） | 运行时层（runtime） | 唯一碰原生扩展与平台 API |
 | 线程、事件循环、桥 | 运行时层（runtime） | 并发与阻塞 I/O |
 
-核心层只把**原料**交给上层：字节日志（`read_all` / `read_range` / `journal_for`）、offset 区间（`ingest_stream` 的返回值）、对齐决策（`attach_plan`）、退出与排空（`exit_code` / `drained` / `eof_streams`）、生命周期状态。
+核心层只把**原料**交给上层：字节日志（`read_all` / `read_range` / `journal_for`）、offset 区间（`ingest_stream` 的返回值）、对齐决策（`attach_plan`）、屏幕视图（`screen_text` / `full_text` / `screen_cells` / `render_svg` / `render_image`）、重建字节（`rebuild_bytes`）、退出与排空（`exit_code` / `drained` / `eof_streams`）、生命周期状态。

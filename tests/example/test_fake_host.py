@@ -56,8 +56,17 @@ def test_ingest_accumulates_a_plain_text_screen():
     host = FakeHost(_spec(PTY), FakeProgram(title="demo"))
     host.ingest(b"hello ")
     host.ingest(b"world")
-    assert host.snapshot() == b"hello world"
+    assert host.rebuild_bytes() == b"hello world"
+    assert host.screen_text() == "hello world"
+    assert host.full_text() == "hello world"  # 假宿主没有滚动历史
     assert host.metadata().title == "demo"
+
+
+def test_screen_cells_splits_lines():
+    host = FakeHost(_spec(PTY), FakeProgram())
+    assert host.screen_cells() == ()  # 空屏幕没有行
+    host.ingest(b"ab\nc")
+    assert host.screen_cells() == (("a", "b"), ("c",))
 
 
 def test_kill_marks_exited():

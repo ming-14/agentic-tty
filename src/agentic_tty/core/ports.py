@@ -98,12 +98,33 @@ class TerminalHost(HostLifecycle, Protocol):
         """把 PTY 与终端模型一起改成 `cols × rows`。"""
         ...
 
-    def snapshot(self) -> bytes:
-        """生成重建用字节（RIS + scrollback 重放 + 可见区 + 模式恢复）。"""
+    def rebuild_bytes(self) -> bytes:
+        """生成**重建字节**（RIS + 模式恢复 + scrollback + 可见区）。
+
+        把它喂进一个空的终端模型即可还原到当前状态，供订阅者游标落后到已裁剪
+        区间时重同步（`plan_attach → Rebuild`）。**它不是给调用方看的屏幕内容**——
+        要屏幕内容用 `screen_text()` / `full_text()`。
+        """
         ...
 
-    def metadata(self) -> HostMetadata:
-        """当前元数据快照。"""
+    def screen_text(self) -> str:
+        """**可见屏幕**的纯文本（行用 `\\n` 连接，去尾部空白）。"""
+        ...
+
+    def full_text(self) -> str:
+        """**全量输出**：含滚动历史的可见文本（历史区 + 可见区）。
+
+        注意它与字节流全量（字节日志）是两回事：这里已经是终端模型解析后的可见
+        文本，字节流那边是未经解析的原始字节。
+        """
+        ...
+
+    def screen_cells(self) -> tuple[tuple[str, ...], ...]:
+        """**可见屏幕**的字符格栅：每行是一串字符格。
+
+        宽字符占两格，其续格为空串；行按实际内容长度给出，未铺满整宽。
+        按格取用（如"可见屏幕第 N 列"）由上层处理。
+        """
         ...
 
     def render_svg(self) -> str:
@@ -115,6 +136,10 @@ class TerminalHost(HostLifecycle, Protocol):
 
         `scale` 是字符格的像素缩放；`fmt` ∈ `png` / `jpg` / `jpeg` / `bmp`。
         """
+        ...
+
+    def metadata(self) -> HostMetadata:
+        """当前元数据快照。"""
         ...
 
 
