@@ -9,10 +9,9 @@
 模式三选一：`fake` 跑示例假程序（命令框下拉即假程序名）；`pty` / `subprocess`
 跑真命令（命令框直接输入）。
 
-右侧「屏幕」页显示 pty 会话的可见屏幕：`image` 格式走 `Session.render_image`
-（终端模型直接出位图），`svg` 格式走 `Session.render_svg` 再经 resvg 栅格化——
-**Tk 的 PhotoImage 只吃位图，没有 SVG 解码器**。「SVG 源码」页是同一块屏幕的矢量
-源码。
+右侧「屏幕」/「SVG 源码」页是 **pty 专属**（其他模式藏掉）：`image` 格式走
+`Session.render_image`（终端模型直接出位图），`svg` 格式走 `Session.render_svg`
+再经 resvg 栅格化——**Tk 的 PhotoImage 只吃位图，没有 SVG 解码器**。
 """
 
 from __future__ import annotations
@@ -121,8 +120,8 @@ class App:
         self._notebook = ttk.Notebook(right)
         self._notebook.pack(fill=tk.BOTH, expand=True)
 
-        image_tab = ttk.Frame(self._notebook)
-        format_row = ttk.Frame(image_tab)
+        self._image_tab = ttk.Frame(self._notebook)
+        format_row = ttk.Frame(self._image_tab)
         format_row.grid(row=0, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 2))
         ttk.Label(format_row, text="格式").pack(side=tk.LEFT)
         self._format = tk.StringVar(value=_FORMAT_IMAGE)
@@ -140,20 +139,24 @@ class App:
             foreground="#888780",
         ).pack(side=tk.LEFT, padx=6)
 
-        self._image_canvas = tk.Canvas(image_tab, highlightthickness=0)
-        image_h = ttk.Scrollbar(image_tab, orient=tk.HORIZONTAL, command=self._image_canvas.xview)
-        image_v = ttk.Scrollbar(image_tab, orient=tk.VERTICAL, command=self._image_canvas.yview)
+        self._image_canvas = tk.Canvas(self._image_tab, highlightthickness=0)
+        image_h = ttk.Scrollbar(
+            self._image_tab, orient=tk.HORIZONTAL, command=self._image_canvas.xview
+        )
+        image_v = ttk.Scrollbar(
+            self._image_tab, orient=tk.VERTICAL, command=self._image_canvas.yview
+        )
         self._image_canvas.configure(xscrollcommand=image_h.set, yscrollcommand=image_v.set)
         self._image_canvas.grid(row=1, column=0, sticky="nsew")
         image_v.grid(row=1, column=1, sticky="ns")
         image_h.grid(row=2, column=0, sticky="ew")
-        image_tab.rowconfigure(1, weight=1)
-        image_tab.columnconfigure(0, weight=1)
+        self._image_tab.rowconfigure(1, weight=1)
+        self._image_tab.columnconfigure(0, weight=1)
 
         self._svg = tk.Text(self._notebook, wrap=tk.NONE, font=("Consolas", 9))
         self._view = tk.Text(self._notebook, wrap=tk.NONE, font=("Consolas", 10))
         self._raw = tk.Text(self._notebook, wrap=tk.NONE, font=("Consolas", 9))
-        self._notebook.add(image_tab, text="屏幕")
+        self._notebook.add(self._image_tab, text="屏幕")
         self._notebook.add(self._svg, text="SVG 源码")
         self._notebook.add(self._view, text="视图")
         self._notebook.add(self._raw, text="原始字节")
@@ -183,10 +186,10 @@ class App:
         self._rows.insert(0, "24")
         self._rows.pack(side=tk.LEFT)
         ttk.Button(size_row, text="应用", command=self._resize).pack(side=tk.LEFT, padx=4)
-        ttk.Button(size_row, text="保存 SVG", command=self._save_svg).pack(
-            side=tk.LEFT, padx=(12, 0)
-        )
-        ttk.Button(size_row, text="保存 PNG", command=self._save_png).pack(side=tk.LEFT, padx=4)
+        self._save_svg_btn = ttk.Button(size_row, text="保存 SVG", command=self._save_svg)
+        self._save_svg_btn.pack(side=tk.LEFT, padx=(12, 0))
+        self._save_png_btn = ttk.Button(size_row, text="保存 PNG", command=self._save_png)
+        self._save_png_btn.pack(side=tk.LEFT, padx=4)
 
         self._status = tk.StringVar(value="就绪")
         ttk.Label(self._root, textvariable=self._status, relief=tk.SUNKEN, anchor=tk.W).pack(
@@ -245,7 +248,7 @@ class App:
         self._modes[session.uid] = mode
         self._selected = session.uid
         self._status.set(f"已创建 {' '.join(argv)}（{mode}）uid={session.uid[:8]}")
-        self._focus_default_tab()
+        self._sync_screen_tabs()
         self._refresh_tree()
         self._refresh_detail()
 
@@ -299,13 +302,19 @@ class App:
             return
         selection = self._tree.selection()
         self._selected = selection[0] if selection else None
-        self._focus_default_tab()
+        self._sync_screen_tabs()
         self._refresh_detail()
 
-    def _focus_default_tab(self) -> None:
-        """选中 pty 会话时默认停在「屏幕」页——它的屏幕视图就是位图。"""
-        if self._modes.get(self._selected) is ExampleMode.PTY:
-            self._notebook.select(0)
+    def _sync_screen_tabs(self) -> None:
+        """「屏幕」/「SVG 源码」页与导出按钮都是 pty 专属：其他模式藏掉 / 禁用。"""
+        is_pty = self._modes.get(self._selected) is ExampleMode.PTY
+        state = "normal" if is_pty else "hidden"
+        self._notebook.tab(self._image_tab, state=state)
+        self._notebook.tab(self._svg, state=state)
+        for button in (self._save_svg_btn, self._save_png_btn):
+            button.state(["!disabled"] if is_pty else ["disabled"])
+        if is_pty:
+            self._notebook.select(self._image_tab)
 
     # ════════════════════════════════════════════════════════════
     # 刷新
@@ -336,6 +345,7 @@ class App:
     def _refresh_detail(self) -> None:
         session = self._sessions.get(self._selected) if self._selected else None
         if session is None:
+            self._sync_screen_tabs()
             self._set_text(self._view, "")
             self._set_text(self._raw, "")
             self._set_text(self._svg, "")
@@ -354,7 +364,9 @@ class App:
         )
 
     def _refresh_screen_views(self, session: Session) -> None:
-        """屏幕页 / SVG 源码页：屏幕或格式没变就跳过重渲染（渲染不便宜）。"""
+        """屏幕页 / SVG 源码页（pty 专属）：屏幕或格式没变就跳过重渲染。"""
+        if self._modes.get(session.uid) is not ExampleMode.PTY:
+            return
         fmt = self._format.get()
         key = (session.uid, session.journal.end_offset, fmt)
         if key == self._rendered_key:
@@ -362,22 +374,23 @@ class App:
         self._rendered_key = key
         try:
             self._svg_source = session.render_svg()
-            self._screen_note = ""
-        except Exception as exc:  # 子进程没有屏幕
+        except Exception as exc:  # 宿主已关闭等
             self._svg_source = None
             self._screen_note = f"<无屏幕视图: {exc}>"
-        self._set_text(self._svg, self._svg_source or self._screen_note)
-        self._set_image(*self._render_screen(session, fmt))
+            self._set_text(self._svg, self._screen_note)
+            self._set_image(None, self._screen_note)
+            return
+        self._screen_note = ""
+        self._set_text(self._svg, self._svg_source)
+        self._set_image(*self._render_screen(session, fmt, self._svg_source))
 
-    def _render_screen(self, session: Session, fmt: str) -> tuple[bytes | None, str]:
-        """屏幕页的位图：`image` 由终端模型直接出，`svg` 先出矢量再经 resvg 栅格化。"""
-        if self._svg_source is None:  # 该会话根本没有屏幕
-            return None, self._screen_note
+    def _render_screen(self, session: Session, fmt: str, svg: str) -> tuple[bytes | None, str]:
+        """屏幕位图：`image` 由终端模型直接出，`svg` 先出矢量再经 resvg 栅格化。"""
         try:
             if fmt == _FORMAT_SVG:
-                return resvg_py.svg_to_bytes(svg_string=self._svg_source, zoom=_ZOOM), ""
+                return resvg_py.svg_to_bytes(svg_string=svg, zoom=_ZOOM), ""
             return session.render_image(scale=_ZOOM, fmt="png"), ""
-        except Exception as exc:  # 假宿主不渲染位图 / SVG 为空
+        except Exception as exc:  # SVG 为空 / 宿主已关闭
             return None, f"<无屏幕位图: {exc}>"
 
     def _on_format_change(self) -> None:

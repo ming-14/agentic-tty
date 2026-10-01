@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from agentic_tty.core.ports import PTY, SUBPROCESS, SessionSpec
 from agentic_tty.example.fake_host import FakeHost, FakeProgram
 
@@ -67,17 +65,3 @@ def test_kill_marks_exited():
     assert host.try_wait() is None
     host.kill()
     assert host.try_wait() == 0
-
-
-def test_render_svg_wraps_escaped_screen_text():
-    host = FakeHost(_spec(PTY), FakeProgram())
-    host.ingest(b"a & <b>")
-    assert host.render_svg() == (
-        '<svg xmlns="http://www.w3.org/2000/svg"><text>a &amp; &lt;b&gt;</text></svg>'
-    )
-
-
-def test_render_image_is_not_supported():
-    host = FakeHost(_spec(PTY), FakeProgram())
-    with pytest.raises(NotImplementedError):
-        host.render_image()

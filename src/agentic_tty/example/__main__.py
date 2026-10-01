@@ -5,8 +5,8 @@
     python -m agentic_tty.example --run "cmd /c dir"    # 跑一条真命令（子进程）
     python -m agentic_tty.example --run "cmd" --mode pty --save-screen out/
 
-有屏幕的形态（`pty` / `fake`）把可见屏幕导出成 SVG + PNG——命令行没法"显示"
-图片，只能落成文件；`subprocess` 是纯字节流，直接打印双流。
+`pty` 模式把可见屏幕导出成 SVG + PNG（命令行没法"显示"图片，只能落成文件）；
+`fake` / `subprocess` 没有屏幕视图，直接打印双流。
 
 场景里的 `_wait_for` 只是**演示用轮询**——真正的"返回条件引擎"属于命令层，
 核心层不做匹配。
@@ -107,18 +107,14 @@ def _run_demos() -> int:
 
 
 def _export_screen(session: Session, out_dir: Path) -> None:
-    """把可见屏幕落成 SVG + 位图（命令行没法直接显示图片）。"""
+    """把 pty 会话的可见屏幕落成 SVG + 位图（命令行没法直接显示图片）。"""
     print("屏幕已导出：")
     out_dir.mkdir(parents=True, exist_ok=True)
     svg_path = out_dir / "screen.svg"
     svg_path.write_text(session.render_svg(), encoding="utf-8")
-    print(f"  SVG → {svg_path}")
     png_path = out_dir / "screen.png"
-    try:
-        png_path.write_bytes(session.render_image(scale=2.0, fmt="png"))
-    except Exception as exc:  # 假宿主不渲染位图
-        print(f"  PNG → 不可用: {exc}")
-        return
+    png_path.write_bytes(session.render_image(scale=2.0, fmt="png"))
+    print(f"  SVG → {svg_path}")
     print(f"  PNG → {png_path}")
 
 
@@ -130,14 +126,14 @@ def _run_command(mode: ExampleMode, command: str, timeout: float, out_dir: Path)
     session, runner = _open(mode, argv)
     try:
         runner.run_until_drained(time.monotonic() + timeout)
-        if mode is ExampleMode.SUBPROCESS:
+        if mode is ExampleMode.PTY:
+            _export_screen(session, out_dir)  # 屏幕视图是 pty 专属
+        else:
             for stream in session.streams():
                 data = session.read_all(stream)
                 if data:
                     print(f"── {stream} ──")
                     print(data.decode("utf-8", errors="replace"), end="")
-        else:
-            _export_screen(session, out_dir)
         print(f"\n[状态] {session.state}  退出码 {session.exit_code}")
     finally:
         _close(session, runner)
@@ -165,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--save-screen",
         metavar="DIR",
-        help="pty / fake 模式把屏幕导出到该目录（默认系统临时目录）",
+        help="pty 模式把屏幕导出到该目录（默认系统临时目录）",
     )
     args = parser.parse_args(argv)
     configure()
