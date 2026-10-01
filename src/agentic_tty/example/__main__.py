@@ -3,8 +3,10 @@
     python -m agentic_tty.example                       # 三个假程序场景
     python -m agentic_tty.example --gui                 # Tk 管理台
     python -m agentic_tty.example --run "cmd /c dir"    # 跑一条真命令（子进程）
-    python -m agentic_tty.example --run "cmd" --mode pty
-    python -m agentic_tty.example --run repl --mode fake
+    python -m agentic_tty.example --run "cmd" --mode pty --save-screen out/
+
+有屏幕的形态（`pty` / `fake`）把可见屏幕导出成 SVG + PNG——命令行没法"显示"
+图片，只能落成文件；`subprocess` 是纯字节流，直接打印双流。
 
 场景里的 `_wait_for` 只是**演示用轮询**——真正的"返回条件引擎"属于命令层，
 核心层不做匹配。
@@ -15,7 +17,9 @@ from __future__ import annotations
 import argparse
 import shlex
 import sys
+import tempfile
 import time
+from pathlib import Path
 
 from ..core.ports import Stream
 from ..core.session.base import Session
@@ -102,7 +106,23 @@ def _run_demos() -> int:
 # ════════════════════════════════════════════════════════════════
 
 
-def _run_command(mode: ExampleMode, command: str, timeout: float) -> int:
+def _export_screen(session: Session, out_dir: Path) -> None:
+    """把可见屏幕落成 SVG + 位图（命令行没法直接显示图片）。"""
+    print("屏幕已导出：")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    svg_path = out_dir / "screen.svg"
+    svg_path.write_text(session.render_svg(), encoding="utf-8")
+    print(f"  SVG → {svg_path}")
+    png_path = out_dir / "screen.png"
+    try:
+        png_path.write_bytes(session.render_image(scale=2.0, fmt="png"))
+    except Exception as exc:  # 假宿主不渲染位图
+        print(f"  PNG → 不可用: {exc}")
+        return
+    print(f"  PNG → {png_path}")
+
+
+def _run_command(mode: ExampleMode, command: str, timeout: float, out_dir: Path) -> int:
     argv = shlex.split(command)
     if not argv:
         print("--run 需要一条命令", file=sys.stderr)
@@ -117,14 +137,7 @@ def _run_command(mode: ExampleMode, command: str, timeout: float) -> int:
                     print(f"── {stream} ──")
                     print(data.decode("utf-8", errors="replace"), end="")
         else:
-            # 真 PTY 能直接给可见屏幕；假宿主没有，退回快照
-            screen = getattr(session.host, "screen_text", None)
-            text = (
-                screen()
-                if callable(screen)
-                else session.snapshot().decode("utf-8", errors="replace")
-            )
-            print(text, end="")
+            _export_screen(session, out_dir)
         print(f"\n[状态] {session.state}  退出码 {session.exit_code}")
     finally:
         _close(session, runner)
@@ -137,7 +150,11 @@ def _run_command(mode: ExampleMode, command: str, timeout: float) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="agentic-tty-example")
     parser.add_argument("--gui", action="store_true", help="打开 Tk 管理台")
-    parser.add_argument("--run", metavar="COMMAND", help="跑一条命令并打印输出")
+    parser.add_argument(
+        "--run",
+        metavar="COMMAND",
+        help="跑一条命令：有屏幕的形态导出屏幕，subprocess 打印双流",
+    )
     parser.add_argument(
         "--mode",
         choices=[m.value for m in ExampleMode],
@@ -145,6 +162,11 @@ def main(argv: list[str] | None = None) -> int:
         help="fake 跑示例假程序；pty / subprocess 跑真命令",
     )
     parser.add_argument("--timeout", type=float, default=20.0)
+    parser.add_argument(
+        "--save-screen",
+        metavar="DIR",
+        help="pty / fake 模式把屏幕导出到该目录（默认系统临时目录）",
+    )
     args = parser.parse_args(argv)
     configure()
     if args.gui:
@@ -152,7 +174,12 @@ def main(argv: list[str] | None = None) -> int:
 
         return gui_main()
     if args.run:
-        return _run_command(ExampleMode(args.mode), args.run, args.timeout)
+        out_dir = (
+            Path(args.save_screen)
+            if args.save_screen
+            else Path(tempfile.gettempdir()) / "agentic-tty-screen"
+        )
+        return _run_command(ExampleMode(args.mode), args.run, args.timeout, out_dir)
     return _run_demos()
 
 

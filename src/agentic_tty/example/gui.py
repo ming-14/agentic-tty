@@ -8,13 +8,25 @@
 
 模式三选一：`fake` 跑示例假程序（命令框下拉即假程序名）；`pty` / `subprocess`
 跑真命令（命令框直接输入）。
+
+右侧「屏幕」页显示 pty 会话的可见屏幕：`image` 格式走 `Session.render_image`
+（终端模型直接出位图），`svg` 格式走 `Session.render_svg` 再经 resvg 栅格化——
+**Tk 的 PhotoImage 只吃位图，没有 SVG 解码器**。「SVG 源码」页是同一块屏幕的矢量
+源码。
 """
 
 from __future__ import annotations
 
+import base64
 import shlex
 import tkinter as tk
-from tkinter import messagebox, ttk
+from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
+
+try:
+    import resvg_py
+except ImportError as exc:  # 依赖缺失就说清楚怎么补，不静默降级
+    raise ImportError("Tk 管理台渲染 SVG 需要 resvg-py：pip install -e .[gui]") from exc
 
 from ..core.session.base import Session
 from ..foundation.logs import get_logger
@@ -28,6 +40,10 @@ _TICK_MS = 20
 # 每多少个 tick 刷一次界面（20ms × 8 ≈ 160ms，避免文本频繁重排）
 _REFRESH_EVERY = 8
 _RAW_TAIL = 2000
+# 屏幕位图相对字符格基准（8×17 px）的缩放
+_ZOOM = 2.0
+_FORMAT_IMAGE = "image"
+_FORMAT_SVG = "svg"
 
 
 class App:
@@ -41,6 +57,11 @@ class App:
         self._selected: str | None = None
         self._ticks = 0
         self._refreshing = False
+        # 屏幕视图：屏幕没变（日志末尾没动）就不重渲染——位图渲染不便宜
+        self._rendered_key: tuple[str, int, str] | None = None
+        self._photo: tk.PhotoImage | None = None
+        self._svg_source: str | None = None  # None = 该会话没有屏幕视图
+        self._screen_note = ""  # 没有屏幕视图时的提示文字
         self._build_ui()
         self._root.after(_TICK_MS, self._tick)
 
@@ -99,8 +120,41 @@ class App:
 
         self._notebook = ttk.Notebook(right)
         self._notebook.pack(fill=tk.BOTH, expand=True)
+
+        image_tab = ttk.Frame(self._notebook)
+        format_row = ttk.Frame(image_tab)
+        format_row.grid(row=0, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 2))
+        ttk.Label(format_row, text="格式").pack(side=tk.LEFT)
+        self._format = tk.StringVar(value=_FORMAT_IMAGE)
+        for text, value in (("image", _FORMAT_IMAGE), ("svg", _FORMAT_SVG)):
+            ttk.Radiobutton(
+                format_row,
+                text=text,
+                value=value,
+                variable=self._format,
+                command=self._on_format_change,
+            ).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Label(
+            format_row,
+            text="（image = 模型直接出位图；svg = 出矢量再栅格化）",
+            foreground="#888780",
+        ).pack(side=tk.LEFT, padx=6)
+
+        self._image_canvas = tk.Canvas(image_tab, highlightthickness=0)
+        image_h = ttk.Scrollbar(image_tab, orient=tk.HORIZONTAL, command=self._image_canvas.xview)
+        image_v = ttk.Scrollbar(image_tab, orient=tk.VERTICAL, command=self._image_canvas.yview)
+        self._image_canvas.configure(xscrollcommand=image_h.set, yscrollcommand=image_v.set)
+        self._image_canvas.grid(row=1, column=0, sticky="nsew")
+        image_v.grid(row=1, column=1, sticky="ns")
+        image_h.grid(row=2, column=0, sticky="ew")
+        image_tab.rowconfigure(1, weight=1)
+        image_tab.columnconfigure(0, weight=1)
+
+        self._svg = tk.Text(self._notebook, wrap=tk.NONE, font=("Consolas", 9))
         self._view = tk.Text(self._notebook, wrap=tk.NONE, font=("Consolas", 10))
         self._raw = tk.Text(self._notebook, wrap=tk.NONE, font=("Consolas", 9))
+        self._notebook.add(image_tab, text="屏幕")
+        self._notebook.add(self._svg, text="SVG 源码")
         self._notebook.add(self._view, text="视图")
         self._notebook.add(self._raw, text="原始字节")
 
@@ -129,6 +183,10 @@ class App:
         self._rows.insert(0, "24")
         self._rows.pack(side=tk.LEFT)
         ttk.Button(size_row, text="应用", command=self._resize).pack(side=tk.LEFT, padx=4)
+        ttk.Button(size_row, text="保存 SVG", command=self._save_svg).pack(
+            side=tk.LEFT, padx=(12, 0)
+        )
+        ttk.Button(size_row, text="保存 PNG", command=self._save_png).pack(side=tk.LEFT, padx=4)
 
         self._status = tk.StringVar(value="就绪")
         ttk.Label(self._root, textvariable=self._status, relief=tk.SUNKEN, anchor=tk.W).pack(
@@ -187,18 +245,18 @@ class App:
         self._modes[session.uid] = mode
         self._selected = session.uid
         self._status.set(f"已创建 {' '.join(argv)}（{mode}）uid={session.uid[:8]}")
+        self._focus_default_tab()
         self._refresh_tree()
         self._refresh_detail()
 
     def _close_selected(self) -> None:
         uid = self._selected
-        session = self._sessions.get(uid) if uid else None
-        runner = self._runners.pop(uid, None) if uid else None
+        session = self._sessions.pop(uid, None) if uid else None
         if session is None:
             return
-        self._sessions.pop(uid, None)
         self._modes.pop(uid, None)
         session.close()  # 先强杀进程树再关宿主（核心层内部顺序）
+        runner = self._runners.pop(uid, None)
         if runner is not None:
             runner.stop()
         self._selected = None
@@ -241,7 +299,13 @@ class App:
             return
         selection = self._tree.selection()
         self._selected = selection[0] if selection else None
+        self._focus_default_tab()
         self._refresh_detail()
+
+    def _focus_default_tab(self) -> None:
+        """选中 pty 会话时默认停在「屏幕」页——它的屏幕视图就是位图。"""
+        if self._modes.get(self._selected) is ExampleMode.PTY:
+            self._notebook.select(0)
 
     # ════════════════════════════════════════════════════════════
     # 刷新
@@ -274,14 +338,98 @@ class App:
         if session is None:
             self._set_text(self._view, "")
             self._set_text(self._raw, "")
+            self._set_text(self._svg, "")
+            self._svg_source = None
+            self._screen_note = "未选中会话"
+            self._set_image(None, self._screen_note)
+            self._rendered_key = None
             return
         self._set_text(self._view, self._render_view(session))
         self._set_text(self._raw, self._render_raw(session))
+        self._refresh_screen_views(session)
         drained = "已排空" if session.drained else "进行中"
         self._status.set(
             f"{session.spec.argv[0]} · {self._modes.get(session.uid, '')} · {session.state} · "
             f"{drained} · exit={session.exit_code} · uid={session.uid[:8]}"
         )
+
+    def _refresh_screen_views(self, session: Session) -> None:
+        """屏幕页 / SVG 源码页：屏幕或格式没变就跳过重渲染（渲染不便宜）。"""
+        fmt = self._format.get()
+        key = (session.uid, session.journal.end_offset, fmt)
+        if key == self._rendered_key:
+            return
+        self._rendered_key = key
+        try:
+            self._svg_source = session.render_svg()
+            self._screen_note = ""
+        except Exception as exc:  # 子进程没有屏幕
+            self._svg_source = None
+            self._screen_note = f"<无屏幕视图: {exc}>"
+        self._set_text(self._svg, self._svg_source or self._screen_note)
+        self._set_image(*self._render_screen(session, fmt))
+
+    def _render_screen(self, session: Session, fmt: str) -> tuple[bytes | None, str]:
+        """屏幕页的位图：`image` 由终端模型直接出，`svg` 先出矢量再经 resvg 栅格化。"""
+        if self._svg_source is None:  # 该会话根本没有屏幕
+            return None, self._screen_note
+        try:
+            if fmt == _FORMAT_SVG:
+                return resvg_py.svg_to_bytes(svg_string=self._svg_source, zoom=_ZOOM), ""
+            return session.render_image(scale=_ZOOM, fmt="png"), ""
+        except Exception as exc:  # 假宿主不渲染位图 / SVG 为空
+            return None, f"<无屏幕位图: {exc}>"
+
+    def _on_format_change(self) -> None:
+        self._rendered_key = None  # 格式变了，强制重渲染
+        self._refresh_detail()
+
+    def _set_image(self, data: bytes | None, note: str) -> None:
+        self._image_canvas.delete("all")
+        self._photo = None  # 必须留引用，否则 Tk 会把图回收掉
+        if data is None:
+            self._image_canvas.create_text(12, 12, anchor="nw", text=note, fill="#888780")
+            self._image_canvas.configure(scrollregion=(0, 0, 0, 0))
+            return
+        # Tk 的 PhotoImage 只吃位图（8.6 起原生支持 PNG）
+        self._photo = tk.PhotoImage(data=base64.b64encode(data).decode("ascii"))
+        self._image_canvas.create_image(0, 0, anchor="nw", image=self._photo)
+        self._image_canvas.configure(scrollregion=(0, 0, self._photo.width(), self._photo.height()))
+
+    def _save_svg(self) -> None:
+        if self._svg_source is None:
+            messagebox.showinfo("保存 SVG", self._screen_note or "没有 SVG 可保存")
+            return
+        path = filedialog.asksaveasfilename(
+            title="保存屏幕 SVG",
+            defaultextension=".svg",
+            initialfile="screen.svg",
+            filetypes=[("SVG", "*.svg")],
+        )
+        if not path:
+            return
+        Path(path).write_text(self._svg_source, encoding="utf-8")
+        self._status.set(f"已保存 SVG → {path}")
+
+    def _save_png(self) -> None:
+        session = self._sessions.get(self._selected) if self._selected else None
+        if session is None:
+            return
+        try:
+            data = session.render_image(scale=_ZOOM, fmt="png")
+        except Exception as exc:
+            messagebox.showinfo("保存 PNG", f"无屏幕位图: {exc}")
+            return
+        path = filedialog.asksaveasfilename(
+            title="保存屏幕 PNG",
+            defaultextension=".png",
+            initialfile="screen.png",
+            filetypes=[("PNG", "*.png")],
+        )
+        if not path:
+            return
+        Path(path).write_bytes(data)
+        self._status.set(f"已保存 PNG → {path}")
 
     def _render_view(self, session: Session) -> str:
         mode = self._modes.get(session.uid)
@@ -295,7 +443,8 @@ class App:
         return self._screen_text(session)
 
     def _screen_text(self, session: Session) -> str:
-        # 真宿主能直接给可见屏幕纯文本；假宿主没有，退回 snapshot
+        # 文本视图还没进端口（要等命令层"返回数据"过滤的设计）：真宿主有
+        # screen_text，假宿主退回纯文本尾部。
         screen = getattr(session.host, "screen_text", None)
         if callable(screen):
             try:
