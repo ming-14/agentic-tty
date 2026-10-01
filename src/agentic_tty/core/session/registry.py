@@ -84,10 +84,20 @@ class SessionRegistry:
     def list(self) -> list[Session]:
         return list(self._sessions.values())
 
-    def close(self, uid: str) -> None:
+    def detach(self, uid: str) -> Session:
+        """把会话从注册表摘除，但**不做任何释放**。
+
+        供上层做"两阶段释放"（见架构设计 §11）：先同步摘除——会话立刻从列表消失、
+        不再被轮询、不再扇出——再把耗时的关闭交给别的线程。宿主关闭在部分平台上会
+        长时间阻塞，压在事件循环上会冻住所有会话。
+        """
         session = self._sessions.pop(uid, None)
         if session is None:
             raise SessionNotFound(uid)
+        return session
+
+    def close(self, uid: str) -> None:
+        session = self.detach(uid)
         session.close()
         _logger.info("会话已从注册表移除 uid=%s", uid)
 

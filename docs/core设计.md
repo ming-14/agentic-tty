@@ -275,9 +275,14 @@ class SessionRegistry:
     def get(self, uid: str) -> Session: ...               # 不存在抛 SessionNotFound
     def find(self, uid: str) -> Session | None: ...
     def list(self) -> list[Session]: ...
+    def detach(self, uid: str) -> Session: ...            # 只摘除，不释放；`close` 由它拼成
     def close(self, uid: str) -> None: ...
     def close_all(self) -> None: ...
 ```
+
+`detach` 是给"两阶段释放"留的（见架构设计 §11）：宿主关闭在部分平台上会长时间阻塞，
+压着事件循环会冻住所有会话，所以上层要能**先把会话从列表里摘掉**（不再被轮询、不再扇出），
+再把耗时的关闭交给别的线程。`close` 就是"摘除 + 关闭"的合体，两者共用同一条摘除路径。
 
 ## 9. 线程归属（不变量）
 
