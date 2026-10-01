@@ -19,26 +19,30 @@ import shlex
 import sys
 import tempfile
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 from ..core.ports import Stream
 from ..core.session.base import Session
+from ..core.session.registry import SessionRegistry
 from ..core.views import last_lines
 from ..foundation.logs import configure
 from ..runtime.runner import SessionRunner
-from .sessions import ExampleMode, create_session
+from .sessions import ExampleMode, create_registry, session_spec
 
 
-def _open(mode: ExampleMode, argv) -> tuple[Session, SessionRunner]:
-    session = create_session(mode, argv)
+def _open(
+    registry: SessionRegistry, mode: ExampleMode, argv: Sequence[str]
+) -> tuple[Session, SessionRunner]:
+    session = registry.create(session_spec(mode, argv))
     session.start()
     runner = SessionRunner(session)
     runner.start()
     return session, runner
 
 
-def _close(session: Session, runner: SessionRunner) -> None:
-    session.close()  # 先强杀进程树再关宿主（核心层内部顺序）
+def _close(registry: SessionRegistry, session: Session, runner: SessionRunner) -> None:
+    registry.close(session.uid)  # 会话收尾：先强杀进程树再关宿主（核心层内部顺序）
     runner.stop()
 
 
@@ -61,36 +65,39 @@ def _wait_for(runner: SessionRunner, session: Session, needle: bytes, timeout: f
 
 def _demo_build() -> None:
     print("== 假会话：跑完读输出 ==")
-    session, runner = _open(ExampleMode.FAKE, ("build",))
+    registry = create_registry()
+    session, runner = _open(registry, ExampleMode.FAKE, ("build",))
     finished = runner.run_until_drained(time.monotonic() + 5.0)
     print(f"  已结束 = {finished}   退出码 = {session.exit_code}   状态 = {session.state}")
     print("  输出尾部：")
     for line in last_lines(session.read_all(Stream.STDOUT), 4).splitlines():
         print(f"    {line}")
-    _close(session, runner)
+    _close(registry, session, runner)
     print()
 
 
 def _demo_streams() -> None:
     print("== 假会话：stdout / stderr 分离 ==")
-    session, runner = _open(ExampleMode.FAKE, ("noisy",))
+    registry = create_registry()
+    session, runner = _open(registry, ExampleMode.FAKE, ("noisy",))
     runner.run_until_drained(time.monotonic() + 5.0)
     print(f"  stdout = {session.read_all(Stream.STDOUT).decode().strip()!r}")
     print(f"  stderr = {session.read_all(Stream.STDERR).decode().strip()!r}")
-    _close(session, runner)
+    _close(registry, session, runner)
     print()
 
 
 def _demo_repl() -> None:
     print("== 假会话：等提示符 → 发输入 → 读回显 ==")
-    session, runner = _open(ExampleMode.FAKE, ("repl",))
+    registry = create_registry()
+    session, runner = _open(registry, ExampleMode.FAKE, ("repl",))
     print(f"  等提示符 = {_wait_for(runner, session, b'> ', 5.0)}")
     runner.submit_input(b"hello\n")
     print(f"  等回显 = {_wait_for(runner, session, b'echo: hello', 5.0)}")
     print("  stdout：")
     for line in session.read_all(Stream.STDOUT).decode().splitlines():
         print(f"    {line}")
-    _close(session, runner)
+    _close(registry, session, runner)
     print()
 
 
@@ -103,7 +110,8 @@ def _demo_process_tree() -> None:
         "print(g.pid, flush=True);"
         "time.sleep(2)"
     )
-    session, runner = _open(ExampleMode.SUBPROCESS, (sys.executable, "-c", code))
+    registry = create_registry()
+    session, runner = _open(registry, ExampleMode.SUBPROCESS, (sys.executable, "-c", code))
     try:
         print(f"  起后：成员 {len(session.descendants())} 个")
         members: tuple[int, ...] = ()
@@ -116,7 +124,7 @@ def _demo_process_tree() -> None:
         runner.run_until_drained(time.monotonic() + 5.0)
         print(f"  结束后：成员 {len(session.descendants())} 个   退出码 = {session.exit_code}")
     finally:
-        _close(session, runner)
+        _close(registry, session, runner)
     print()
 
 
@@ -150,7 +158,8 @@ def _run_command(mode: ExampleMode, command: str, timeout: float, out_dir: Path)
     if not argv:
         print("--run 需要一条命令", file=sys.stderr)
         return 2
-    session, runner = _open(mode, argv)
+    registry = create_registry()
+    session, runner = _open(registry, mode, argv)
     try:
         runner.run_until_drained(time.monotonic() + timeout)
         if mode is ExampleMode.PTY:
@@ -163,7 +172,7 @@ def _run_command(mode: ExampleMode, command: str, timeout: float, out_dir: Path)
                     print(data.decode("utf-8", errors="replace"), end="")
         print(f"\n[状态] {session.state}  退出码 {session.exit_code}")
     finally:
-        _close(session, runner)
+        _close(registry, session, runner)
     return 0
 
 

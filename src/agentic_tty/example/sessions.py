@@ -1,13 +1,13 @@
-"""示例层的会话装配：把 example 的模式映射到会话与宿主。
+"""示例层的会话装配：模式 → (会话类, 宿主工厂)，交给 core 的注册表创建。
 
-模式标签由 example 自己定义（`ExampleMode`），core 只把 `SessionSpec.mode` 当开放
-字符串透传、不做校验：
+模式标签由 example 自己定义（`ExampleMode`，pty / subprocess 的值直接取自 core 的
+内置标签），core 只把 `SessionSpec.mode` 当开放字符串透传：
 
 - `fake`       → `ProcessSession` + `FakeHost`：脚本化的假子进程（双流、无终端模型）。
 - `pty`        → `TerminalSession` + `PtyHost`：runtime 的真 PTY 宿主。
 - `subprocess` → `ProcessSession` + `SubprocessHost`：runtime 的真子进程宿主。
 
-因此选 `pty` 永远得到真 PTY，假宿主只由 `fake` 模式产生。
+会话类与宿主工厂**成对**注册，因此选 `pty` 永远得到真 PTY，假宿主只由 `fake` 模式产生。
 """
 
 from __future__ import annotations
@@ -15,11 +15,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from enum import StrEnum
 
+from ..core import ports
 from ..core.ports import SessionSpec
 from ..core.process.session import ProcessSession
-from ..core.session.base import Session
+from ..core.session.registry import SessionKind, SessionRegistry
 from ..core.terminal.session import TerminalSession
-from ..foundation.ids import new_uid
 from ..runtime.host_factory import create_host
 from .fake_host import FakeHost
 from .programs import PROGRAMS
@@ -31,8 +31,13 @@ class ExampleMode(StrEnum):
     """示例层的模式。"""
 
     FAKE = "fake"
-    PTY = "pty"
-    SUBPROCESS = "subprocess"
+    PTY = ports.PTY
+    SUBPROCESS = ports.SUBPROCESS
+
+
+def session_spec(mode: ExampleMode, argv: Sequence[str]) -> SessionSpec:
+    """把示例层的模式与命令行拼成 core 的会话描述。"""
+    return SessionSpec(mode=mode.value, argv=tuple(argv))
 
 
 def _fake_host_factory(spec: SessionSpec) -> FakeHost:
@@ -43,18 +48,17 @@ def _fake_host_factory(spec: SessionSpec) -> FakeHost:
     return FakeHost(spec, program)
 
 
-def create_session(
-    mode: ExampleMode,
-    argv: Sequence[str],
-    *,
-    journal_budget_bytes: int = DEFAULT_JOURNAL_BUDGET,
-) -> Session:
-    """按 example 模式装配会话（未启动）。"""
-    spec = SessionSpec(mode=mode.value, argv=tuple(argv))
-    if mode is ExampleMode.PTY:
-        return TerminalSession(
-            new_uid(), spec, create_host, journal_budget_bytes=journal_budget_bytes
-        )
-    # fake 与 subprocess 都是子进程形态：双流、无终端模型，只有宿主来源不同
-    host_factory = _fake_host_factory if mode is ExampleMode.FAKE else create_host
-    return ProcessSession(new_uid(), spec, host_factory, journal_budget_bytes=journal_budget_bytes)
+def create_registry(*, journal_budget_bytes: int = DEFAULT_JOURNAL_BUDGET) -> SessionRegistry:
+    """装配示例层的注册表：三种模式各自声明会话类与宿主工厂。
+
+    只有 `fake` 带专属宿主工厂（假宿主），另两种用装配层注入的真宿主工厂。
+    """
+    return SessionRegistry(
+        create_host,
+        kinds={
+            ExampleMode.FAKE: SessionKind(ProcessSession, _fake_host_factory),
+            ExampleMode.PTY: SessionKind(TerminalSession),
+            ExampleMode.SUBPROCESS: SessionKind(ProcessSession),
+        },
+        journal_budget_bytes=journal_budget_bytes,
+    )

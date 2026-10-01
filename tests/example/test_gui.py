@@ -12,7 +12,7 @@ pytest.importorskip("resvg_py")  # GUI 的 SVG 渲染依赖
 
 from agentic_tty.core.ports import Stream  # noqa: E402
 from agentic_tty.example.gui import App  # noqa: E402
-from agentic_tty.example.sessions import ExampleMode, create_session  # noqa: E402
+from agentic_tty.example.sessions import ExampleMode, session_spec  # noqa: E402
 from agentic_tty.runtime.runner import SessionRunner  # noqa: E402
 
 
@@ -34,7 +34,7 @@ def _pump_until(root: tk.Tk, app: App, uid: str, predicate, timeout: float = 5.0
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         root.update()
-        if predicate(app._sessions[uid]):
+        if predicate(app._registry.get(uid)):
             return True
         time.sleep(0.01)
     return False
@@ -45,11 +45,12 @@ def test_create_session_pumps_to_completion(root):
     app._command.set("build")
     app._mode.set(ExampleMode.FAKE.value)
     app._create_session()
-    assert len(app._sessions) == 1
-    uid = next(iter(app._sessions))
+    sessions = app._registry.list()
+    assert len(sessions) == 1
+    uid = sessions[0].uid
 
     assert _pump_until(root, app, uid, lambda s: s.drained)
-    session = app._sessions[uid]
+    session = app._registry.get(uid)
     assert session.exit_code == 0
     assert b"build OK" in session.read_all(Stream.STDOUT)
     assert app._render_view(session).startswith("── stdout ──")
@@ -61,18 +62,18 @@ def test_send_input_and_close(root):
     app._command.set("repl")
     app._mode.set(ExampleMode.FAKE.value)
     app._create_session()
-    uid = next(iter(app._sessions))
+    uid = app._registry.list()[0].uid
 
     app._input.insert(0, "hi")
     app._send_input(newline=True)
     assert _pump_until(root, app, uid, lambda s: b"echo: hi" in s.read_all(Stream.STDOUT))
 
     # 假会话没有屏幕视图，视图就是双流
-    assert "echo: hi" in app._render_view(app._sessions[uid])
+    assert "echo: hi" in app._render_view(app._registry.get(uid))
 
     app._selected = uid
     app._close_selected()
-    assert app._sessions == {}
+    assert app._registry.list() == []
     app.on_close()
 
 
@@ -98,7 +99,7 @@ def test_pty_only_controls_hidden_for_fake(root):
     app._command.set("repl")
     app._mode.set(ExampleMode.FAKE.value)
     app._create_session()
-    app._selected = next(iter(app._sessions))
+    app._selected = app._registry.list()[0].uid
     app._refresh_detail()
 
     assert app._notebook.tab(app._image_tab, "state") == "hidden"
@@ -113,7 +114,9 @@ def test_pty_only_controls_hidden_for_fake(root):
 def test_screen_image_fits_canvas(root):
     """屏幕按画布大小缩放铺满，画布独占一行（没有滚动条）。"""
     app = App(root)
-    session = create_session(ExampleMode.PTY, (sys.executable, "-c", "print('x')"))
+    session = app._registry.create(
+        session_spec(ExampleMode.PTY, (sys.executable, "-c", "print('x')"))
+    )
     app._image_canvas.winfo_width = lambda: 600
     app._image_canvas.winfo_height = lambda: 300
 
@@ -129,11 +132,11 @@ def test_process_tab_shows_tree_members(root):
     app._command.set("repl")
     app._mode.set(ExampleMode.FAKE.value)
     app._create_session()
-    uid = next(iter(app._sessions))
+    uid = app._registry.list()[0].uid
     app._selected = uid
 
     # 假宿主的进程树成员由测试直接设（不接真进程）
-    host = app._sessions[uid].host
+    host = app._registry.get(uid).host
     assert host is not None
     host.descendants_pids = (101, 202)
     app._refresh_tree()
@@ -150,7 +153,7 @@ def test_process_tab_shows_tree_members(root):
 def test_processes_helper_returns_none_when_unobservable(root):
     """未启动的会话观测不到进程树：返回 None 而不是抛给界面。"""
     app = App(root)
-    session = create_session(ExampleMode.FAKE, ("repl",))  # 没 start → 没有宿主
+    session = app._registry.create(session_spec(ExampleMode.FAKE, ("repl",)))  # 没 start
     assert app._processes(session) is None
     app.on_close()
 
@@ -169,13 +172,13 @@ def _pty_available() -> bool:
 def test_screen_views_for_real_pty(root):
     """真 PTY：屏幕页 / SVG 源码页 / 尺寸控件可用，image 与 svg 都落成位图。"""
     app = App(root)
-    session = create_session(ExampleMode.PTY, (sys.executable, "-c", "print('gui-svg')"))
+    session = app._registry.create(
+        session_spec(ExampleMode.PTY, (sys.executable, "-c", "print('gui-svg')"))
+    )
     session.start()
     runner = SessionRunner(session)
     runner.start()
-    app._sessions[session.uid] = session
     app._runners[session.uid] = runner
-    app._modes[session.uid] = ExampleMode.PTY
     app._selected = session.uid
     app._sync_pty_controls()
 

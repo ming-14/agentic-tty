@@ -32,12 +32,13 @@ except ImportError as exc:  # 依赖缺失就说清楚怎么补，不静默降�
     raise ImportError("Tk 管理台渲染 SVG 需要 resvg-py：pip install -e .[gui]") from exc
 
 from ..core.session.base import Session
+from ..core.session.registry import SessionRegistry
 from ..core.terminal.session import TerminalSession
 from ..foundation.logs import get_logger
 from ..runtime.monitor import windows_of
 from ..runtime.runner import SessionRunner
 from .programs import PROGRAMS
-from .sessions import ExampleMode, create_session
+from .sessions import ExampleMode, create_registry, session_spec
 
 _logger = get_logger("example.gui")
 
@@ -54,13 +55,16 @@ _FORMAT_SVG = "svg"
 
 
 class App:
-    """管理台。"""
+    """管理台。
+
+    会话表就是 core 的注册表（`SessionRegistry`）：`uid → 会话` 与模式标签都由它持有，
+    界面只额外持有每个会话的运行时驱动（读 / 写线程）。
+    """
 
     def __init__(self, root: tk.Tk) -> None:
         self._root = root
-        self._sessions: dict[str, Session] = {}
+        self._registry: SessionRegistry = create_registry()
         self._runners: dict[str, SessionRunner] = {}
-        self._modes: dict[str, ExampleMode] = {}
         self._selected: str | None = None
         self._ticks = 0
         self._refreshing = False
@@ -239,17 +243,16 @@ class App:
         mode = ExampleMode(self._mode.get())
         # 命令按 shell 语义拆分，支持 "cmd.exe /c dir" 这种整串
         argv = tuple(shlex.split(text)) or (text,)
+        session = self._registry.create(session_spec(mode, argv))
         try:
-            session = create_session(mode, argv)
             session.start()
         except Exception as exc:
+            self._registry.close(session.uid)  # 起不来就别留在会话表里
             messagebox.showerror("创建会话失败", str(exc))
             return
         runner = SessionRunner(session)
         runner.start()
-        self._sessions[session.uid] = session
         self._runners[session.uid] = runner
-        self._modes[session.uid] = mode
         self._selected = session.uid
         self._status.set(f"已创建 {' '.join(argv)}（{mode}）uid={session.uid[:8]}")
         self._sync_pty_controls()
@@ -258,16 +261,15 @@ class App:
 
     def _close_selected(self) -> None:
         uid = self._selected
-        session = self._sessions.pop(uid, None) if uid else None
+        session = self._registry.find(uid) if uid else None
         if session is None:
             return
-        self._modes.pop(uid, None)
-        session.close()  # 先强杀进程树再关宿主（核心层内部顺序）
-        runner = self._runners.pop(uid, None)
+        self._registry.close(session.uid)  # 会话收尾：先强杀进程树再关宿主
+        runner = self._runners.pop(session.uid, None)
         if runner is not None:
             runner.stop()
         self._selected = None
-        self._status.set(f"已关闭 uid={uid[:8]}")
+        self._status.set(f"已关闭 uid={session.uid[:8]}")
         self._refresh_tree()
         self._refresh_detail()
 
@@ -290,7 +292,7 @@ class App:
         self._status.set("已入队 Ctrl+C")
 
     def _resize(self) -> None:
-        session = self._sessions.get(self._selected) if self._selected else None
+        session = self._registry.find(self._selected) if self._selected else None
         if session is None:
             return
         try:
@@ -311,7 +313,7 @@ class App:
 
     def _sync_pty_controls(self) -> None:
         """屏幕页 / SVG 源码页 / 导出按钮 / 尺寸控件都是 pty 专属：其他模式藏掉或禁用。"""
-        session = self._sessions.get(self._selected) if self._selected else None
+        session = self._registry.find(self._selected) if self._selected else None
         is_pty = isinstance(session, TerminalSession)
         state = "normal" if is_pty else "hidden"
         self._notebook.tab(self._image_tab, state=state)
@@ -336,27 +338,27 @@ class App:
         try:
             for item in self._tree.get_children():
                 self._tree.delete(item)
-            for uid, session in self._sessions.items():
+            for session in self._registry.list():
                 members = self._processes(session)
                 self._tree.insert(
                     "",
                     tk.END,
-                    iid=uid,
+                    iid=session.uid,
                     values=(
                         session.spec.argv[0] if session.spec.argv else "",
-                        self._modes.get(uid, ""),
+                        session.mode,
                         str(session.state),
                         "-" if session.exit_code is None else session.exit_code,
                         "-" if members is None else len(members),
                     ),
                 )
-            if self._selected in self._sessions:
+            if self._selected and self._registry.find(self._selected) is not None:
                 self._tree.selection_set(self._selected)
         finally:
             self._refreshing = False
 
     def _refresh_detail(self) -> None:
-        session = self._sessions.get(self._selected) if self._selected else None
+        session = self._registry.find(self._selected) if self._selected else None
         if session is None:
             self._sync_pty_controls()
             self._set_text(self._view, "")
@@ -374,7 +376,7 @@ class App:
         self._refresh_screen_views(session)
         drained = "已排空" if session.drained else "进行中"
         self._status.set(
-            f"{session.spec.argv[0]} · {self._modes.get(session.uid, '')} · {session.state} · "
+            f"{session.spec.argv[0]} · {session.mode} · {session.state} · "
             f"{drained} · exit={session.exit_code} · uid={session.uid[:8]}"
         )
 
@@ -452,7 +454,7 @@ class App:
         self._status.set(f"已保存 SVG → {path}")
 
     def _save_png(self) -> None:
-        session = self._sessions.get(self._selected) if self._selected else None
+        session = self._registry.find(self._selected) if self._selected else None
         if session is None:
             return
         try:
@@ -513,7 +515,7 @@ class App:
         host = session.host
         root = host.pid if host is not None else None
         lines = [
-            f"模式 {self._modes.get(session.uid, '')} · 状态 {session.state}"
+            f"模式 {session.mode} · 状态 {session.state}"
             f" · 退出码 {'-' if session.exit_code is None else session.exit_code}",
             f"根进程 pid {root if root is not None else '-'}",
         ]
@@ -546,17 +548,10 @@ class App:
 
     def on_close(self) -> None:
         """窗口关闭：收尾所有会话（与守护进程退出的语义一致）。"""
-        for uid, session in list(self._sessions.items()):
-            try:
-                session.close()
-            except Exception:
-                _logger.exception("关闭会话异常 uid=%s", uid)
-            runner = self._runners.get(uid)
-            if runner is not None:
-                runner.stop()
-        self._sessions.clear()
+        self._registry.close_all()  # 会话收尾：先强杀进程树再关宿主
+        for runner in list(self._runners.values()):
+            runner.stop()
         self._runners.clear()
-        self._modes.clear()
         self._root.destroy()
 
 

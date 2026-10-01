@@ -1,12 +1,15 @@
-"""会话注册表：按 uid 索引，按模式标签选择会话实现。
+"""会话注册表：按 uid 索引，按模式标签选择会话形态。
 
 模式是**开放字符串**（见 `ports.SessionSpec.mode`）：注册表不写死 pty / subprocess，
-而是查一份 `标签 → 会话类` 的映射；默认给内置两种，接入方可传入自己的映射。
+而是查一份 `标签 → 会话形态` 的映射。**形态 = 会话类 + 宿主工厂**，两者必须成对
+注册——拆成两份映射各自维护，就会出现"假宿主配真会话类"这类只在运行期才炸的组合。
+缺省给内置两种形态，接入方可传入自己的映射。
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 from ...foundation.ids import new_uid
 from ...foundation.logs import get_logger
@@ -20,9 +23,22 @@ _logger = get_logger("core.registry")
 
 DEFAULT_JOURNAL_BUDGET = 8 << 20
 
-DEFAULT_SESSION_CLASSES: dict[str, type[Session]] = {
-    PTY: TerminalSession,
-    SUBPROCESS: ProcessSession,
+
+@dataclass(frozen=True, slots=True)
+class SessionKind:
+    """一种会话形态：会话类 + 该形态的宿主工厂。
+
+    `host_factory` 留空表示用注册表的默认工厂：内置两种形态的宿主都由装配层注入
+    （运行时层的真 PTY / 真子进程），core 因此不必 import 任何宿主实现。
+    """
+
+    session_class: type[Session]
+    host_factory: HostFactory | None = None
+
+
+DEFAULT_KINDS: dict[str, SessionKind] = {
+    PTY: SessionKind(TerminalSession),
+    SUBPROCESS: SessionKind(ProcessSession),
 }
 
 
@@ -33,21 +49,26 @@ class SessionRegistry:
         self,
         host_factory: HostFactory,
         *,
-        session_classes: Mapping[str, type[Session]] | None = None,
+        kinds: Mapping[str, SessionKind] | None = None,
         journal_budget_bytes: int = DEFAULT_JOURNAL_BUDGET,
     ) -> None:
-        self._host_factory = host_factory
-        self._classes = dict(session_classes or DEFAULT_SESSION_CLASSES)
+        self._default_host_factory = host_factory
+        self._kinds = dict(kinds or DEFAULT_KINDS)
         self._budget = journal_budget_bytes
         self._sessions: dict[str, Session] = {}
 
     def create(self, spec: SessionSpec) -> Session:
         """创建会话对象（未启动）。"""
-        cls = self._classes.get(spec.mode)
-        if cls is None:
+        kind = self._kinds.get(spec.mode)
+        if kind is None:
             raise CoreError(f"未知会话模式: {spec.mode!r}")
         uid = new_uid()
-        session = cls(uid, spec, self._host_factory, journal_budget_bytes=self._budget)
+        session = kind.session_class(
+            uid,
+            spec,
+            kind.host_factory or self._default_host_factory,
+            journal_budget_bytes=self._budget,
+        )
         self._sessions[uid] = session
         return session
 

@@ -6,7 +6,7 @@ from agentic_tty.core.errors import CoreError, SessionNotFound
 from agentic_tty.core.ports import PTY, SUBPROCESS, SessionSpec
 from agentic_tty.core.process.session import ProcessSession
 from agentic_tty.core.session.base import Session
-from agentic_tty.core.session.registry import SessionRegistry
+from agentic_tty.core.session.registry import SessionKind, SessionRegistry
 from agentic_tty.core.terminal.session import TerminalSession
 from agentic_tty.example.fake_host import FakeHost, FakeProgram
 
@@ -29,10 +29,10 @@ def test_unknown_mode_is_rejected():
         _registry().create(SessionSpec(mode="nope", argv=("x",)))
 
 
-def test_session_classes_are_injectable():
-    """模式标签是开放的：接入方可自带 `标签 → 会话类` 映射。"""
+def test_kinds_are_injectable():
+    """模式标签是开放的：接入方可自带 `标签 → 会话形态`（会话类 + 宿主工厂）映射。"""
     registry = SessionRegistry(
-        lambda spec: FakeHost(spec, FakeProgram()), session_classes={"custom": Session}
+        lambda spec: FakeHost(spec, FakeProgram()), kinds={"custom": SessionKind(Session)}
     )
     session = registry.create(SessionSpec(mode="custom", argv=("x",)))
     assert type(session) is Session

@@ -246,16 +246,25 @@ class Session:
 
 ## 8. 注册表
 
+**会话形态 = 会话类 + 宿主工厂，成对注册**：同一个模式标签的会话类与宿主来源必须
+一起声明。拆成两份映射各自维护，就会出现"假宿主配真会话类"这类只在运行期才炸的组合。
+
 ```python
+@dataclass(frozen=True, slots=True)
+class SessionKind:
+    session_class: type[Session]
+    host_factory: HostFactory | None = None   # 留空 = 用注册表的默认工厂
+
+
 class SessionRegistry:
     def __init__(
         self,
         host_factory: HostFactory,
         *,
-        session_classes: Mapping[str, type[Session]] | None = None,
+        kinds: Mapping[str, SessionKind] | None = None,
         journal_budget_bytes: int = 8 << 20,
     ) -> None: ...
-    # session_classes：`模式标签 → 会话类`，缺省给内置两种；接入方可自带映射
+    # kinds：`模式标签 → 会话形态`，缺省给内置两种；接入方可自带映射
 
     def create(self, spec: SessionSpec) -> Session: ...   # 查映射；未知标签报错
     def get(self, uid: str) -> Session: ...               # 不存在抛 SessionNotFound
