@@ -10,6 +10,7 @@ import contextlib
 import threading
 import time
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from uuid import uuid4
 
 import pytest
@@ -55,7 +56,8 @@ class FakeHandler:
 
     def poll(self) -> list[Reply]:
         replies = [
-            Reply(ok_response(item.type, item.mid, {"deferred": True})) for item in self.deferred
+            Reply(ok_response(item.type, item.mid, {"deferred": True}), request=item)
+            for item in self.deferred
         ]
         self.deferred.clear()
         return replies
@@ -247,6 +249,20 @@ def test_deferred_reply_goes_back_to_the_right_client(tmp_path):
             assert second.request("ping").payload.output["data"] == {"type": "ping"}
             reply = first.await_reply(deferred.mid)
             assert reply.payload.output["data"] == {"deferred": True}
+        finally:
+            first.close()
+            second.close()
+
+
+def test_same_mid_on_two_connections_routes_by_request(tmp_path):
+    """`mid` 只在一条连接内有意义：两条连接撞上同一个 mid，也不能互相串响应。"""
+    with serve(tmp_path) as (daemon, _):
+        first, second = Client(daemon.address), Client(daemon.address)
+        try:
+            first.send(replace(make_request("defer"), mid="same-mid"))
+            second.send(replace(make_request("defer"), mid="same-mid"))
+            assert first.await_reply("same-mid").payload.output["data"] == {"deferred": True}
+            assert second.await_reply("same-mid").payload.output["data"] == {"deferred": True}
         finally:
             first.close()
             second.close()

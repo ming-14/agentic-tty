@@ -65,7 +65,9 @@ class Daemon:
         self._listener: Listener | None = None
         self._handler: RequestHandler | None = None
         self._connections: dict[int, ClientConnection] = {}
-        self._routes: dict[str, ClientConnection] = {}
+        # 延迟响应的归属：键是请求对象的身份（id），值同时持有请求本身——
+        # `mid` 只在一条连接内有意义，不能当全局键；持有对象也杜绝了 id 被回收复用的风险。
+        self._routes: dict[int, tuple[ClientConnection, Envelope]] = {}
         self._next_id = itertools.count(1)
         self._stop_requested = threading.Event()
         self._started = False
@@ -232,7 +234,7 @@ class Daemon:
             return
         reply = self._handle(envelope)
         if reply is None:
-            self._routes[envelope.mid] = client  # 已登记等待，稍后由 poll 交出
+            self._routes[id(envelope)] = (client, envelope)  # 已登记等待，稍后由 poll 交出
         elif not client.submit(reply):
             _logger.warning("响应投不进 peer=%s（客户端不读了），断开", client.peer)
             client.close()
@@ -267,10 +269,15 @@ class Daemon:
 
     def _dispatch(self, replies: list[Reply]) -> None:
         for reply in replies:
-            client = self._routes.pop(reply.envelope.mid, None)
-            if client is None:
-                _logger.warning("响应找不到归属 mid=%s（客户端已断开）", reply.envelope.mid)
+            requested = reply.request
+            route = self._routes.pop(id(requested), None) if requested is not None else None
+            if route is None:
+                _logger.warning(
+                    "响应找不到归属 mid=%s（处理层未带原始请求或客户端已断开）",
+                    reply.envelope.mid,
+                )
                 continue
+            client, _ = route
             if not client.submit(reply):
                 _logger.warning("响应投不进 peer=%s（客户端不读了），断开", client.peer)
                 client.close()
@@ -280,8 +287,10 @@ class Daemon:
             if not client.closed:
                 continue
             del self._connections[key]
-            for mid in [m for m, owner in self._routes.items() if owner is client]:
-                del self._routes[mid]
+            for route_key in [
+                k for k, (owner, _request) in self._routes.items() if owner is client
+            ]:
+                del self._routes[route_key]
             client.close()  # 幂等；确保底层 socket 也收掉，对端能立刻看到断开
             if not client.join(_REAP_TIMEOUT):
                 _logger.warning("peer=%s 的线程未在 %.1fs 内收工", client.peer, _REAP_TIMEOUT)

@@ -466,10 +466,10 @@ class ExampleService:
         if outcome is not None:
             data["wait"] = outcome
         envelope = ok_response(request.type, request.mid, data, kind=produced.kind)
-        return Reply(envelope, stream=produced.stream, binary=produced.binary)
+        return Reply(envelope, stream=produced.stream, binary=produced.binary, request=request)
 
     def _fail(self, request: Envelope, code: str, message: str) -> Reply:
-        return Reply(failed_response(request.type, request.mid, code, message))
+        return Reply(failed_response(request.type, request.mid, code, message), request=request)
 
     def _evaluate(self, pending: _Pending) -> dict[str, Any] | None:
         """判定一个等待；返回结果字典，未命中返回 None。

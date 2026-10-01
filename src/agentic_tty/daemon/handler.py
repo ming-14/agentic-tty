@@ -21,11 +21,16 @@ class Reply:
 
     `binary` 不为空时，字节帧的键是 `envelope.mid`——客户端据此把这段字节挂回它
     发起的那条请求。
+
+    `request` 是这条响应归属的**原始请求对象**（`handle` 收到的那个）。延迟响应
+    必须带上它：`mid` 只在一条连接内有意义，守护进程靠请求身份把响应送回对的那条
+    连接，而不是靠可能撞车的 `mid`。
     """
 
     envelope: Envelope
     stream: str = "stdout"
     binary: bytes | None = None
+    request: Envelope | None = None
 
 
 @runtime_checkable
@@ -36,7 +41,8 @@ class RequestHandler(Protocol):
         """处理一条请求。
 
         返回 `None` 表示**已登记等待**，响应稍后由 `poll` 交出——等待不能在这里阻塞，
-        否则一个慢等待会把所有会话冻住。
+        否则一个慢等待会把所有会话冻住。`poll` 交出的延迟响应必须带上本方法收到的
+        那个请求对象（`Reply.request`），否则守护进程无法判断它该回到哪条连接。
         """
         ...
 
