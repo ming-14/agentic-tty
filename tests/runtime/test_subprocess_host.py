@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import sys
 
+import pytest
+
 from agentic_tty.core.ports import SUBPROCESS, SessionSpec
+from agentic_tty.runtime.errors import HostSpawnError, MonitorUnavailable
 from agentic_tty.runtime.subprocess_host import SubprocessHost
 
 
@@ -86,9 +89,22 @@ def test_env_is_passed_through():
 
 
 def test_spawn_failure_raises():
-    import pytest
-
-    from agentic_tty.runtime.errors import HostSpawnError
-
     with pytest.raises(HostSpawnError):
         SubprocessHost(_spec(["definitely-not-a-real-program-xyz"]))
+
+
+def test_job_assignment_failure_falls_back_to_pid_termination(monkeypatch):
+    """入作业失败后不能再拿作业当身份：空作业会让 kill 变成没杀、成员观测谎报空列表。"""
+    if sys.platform != "win32":
+        pytest.skip("作业对象是 Windows 专有路径")
+    from agentic_tty.runtime import subprocess_host as module
+
+    monkeypatch.setattr(module, "assign_job", lambda job, pid: False)
+    host = SubprocessHost(_spec(_py("import time;time.sleep(30)")))
+    try:
+        with pytest.raises(MonitorUnavailable):
+            host.descendants()  # 没有作业身份，就必须显式报"观测不到"
+        host.kill()
+        assert host.wait_exit(3.0) is not None
+    finally:
+        host.close()

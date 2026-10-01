@@ -96,9 +96,13 @@ class SubprocessHost:
         if job is not None:
             try:
                 if not assign_job(job, self._proc.pid):
+                    # 入作业失败就必须丢掉作业身份：留着它会让 kill 走作业分支（空作业 = 没杀）、
+                    # descendants 误报空列表。退回按 pid 终止，观测由 MonitorUnavailable 报错。
                     _logger.warning(
-                        "子进程加入作业对象失败，进程树将只能按 pid 终止 pid=%s", self._proc.pid
+                        "子进程加入作业对象失败，改用按 pid 终止 pid=%s", self._proc.pid
                     )
+                    close_job(job)
+                    job = None
                 # 入作业成败都必须恢复，否则挂起的子进程永远不会运行
                 resume_process(self._proc.pid)
             except Exception:
