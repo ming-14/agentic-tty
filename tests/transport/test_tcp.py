@@ -95,6 +95,23 @@ def test_accept_timeout_returns_none(listener: Listener):
     assert listener.accept(timeout=0.05) is None
 
 
+def test_accept_with_zero_timeout_polls_instead_of_failing(listener: Listener):
+    """`timeout=0` 是非阻塞轮询（抛 BlockingIOError），不能当成监听点坏了——
+    所有者循环就靠它每轮看一眼有没有新连接。"""
+    assert listener.accept(timeout=0) is None
+    assert listener.accept(timeout=0) is None
+    client = registry.connect(listener.address.raw, timeout=_DEADLINE)
+    try:
+        accepted = None
+        deadline = time.monotonic() + _DEADLINE
+        while accepted is None and time.monotonic() < deadline:
+            accepted = listener.accept(timeout=0)
+        assert accepted is not None
+        accepted.close()
+    finally:
+        client.close()
+
+
 def test_peer_close_is_reported_as_closed(listener: Listener):
     client = registry.connect(listener.address.raw, timeout=_DEADLINE)
     server = _accept(listener)

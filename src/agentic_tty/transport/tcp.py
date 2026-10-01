@@ -85,7 +85,9 @@ class TcpListener:
         try:
             self._sock.settimeout(timeout)
             conn, peer = self._sock.accept()
-        except TimeoutError:
+        except (TimeoutError, BlockingIOError):
+            # 本轮没有待接受的连接。`timeout=0`（非阻塞轮询）走的是 BlockingIOError
+            # 那条路，必须先于下面接住，否则会被当成"监听点坏了"。
             return None
         except OSError as exc:
             raise ConnectionClosed(f"接受连接失败: {exc}") from exc
