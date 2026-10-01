@@ -39,6 +39,25 @@ def _drive(root: tk.Tk, seconds: float) -> None:
         time.sleep(0.005)
 
 
+def _drive_until_photo(root: tk.Tk, app: ClientApp, timeout: float = 30.0) -> bool:
+    """等到屏幕位图画出来。
+
+    位图渲染是守护进程里最重的一次调用，可能远慢于 200ms 的刷新步长；等待期间
+    每秒主动补发一次刷新，别把成败押在某个 tick 恰好落在渲染完成之后。
+    """
+    deadline = time.monotonic() + timeout
+    next_request = 0.0
+    while time.monotonic() < deadline:
+        if app._photo is not None:
+            return True
+        now = time.monotonic()
+        if now >= next_request:
+            app._refresh()
+            next_request = now + 1.0
+        _drive(root, 0.05)
+    return app._photo is not None
+
+
 def _drive_until(root: tk.Tk, predicate, timeout: float = 20.0) -> bool:
     """跑到条件成立为止。
 
@@ -76,9 +95,7 @@ def test_connect_create_and_render_the_screen(root, demo_daemon):
             f"会话没出现在列表里: {app._status.get()}"
         )
         # 屏幕页是默认页：位图由守护进程渲染好、经字节帧送过来，客户端只负责显示
-        assert _drive_until(root, lambda: app._photo is not None), (
-            f"屏幕位图没渲染出来: {app._status.get()}"
-        )
+        assert _drive_until_photo(root, app), f"屏幕位图没渲染出来: {app._status.get()}"
     finally:
         app.on_close()
     assert app._channel is None

@@ -21,7 +21,9 @@ from agentic_tty.protocol.messages import data_of
 from agentic_tty.transport import registry as transports
 from agentic_tty.transport.channel import Channel, decode_control
 
-DEADLINE = 10.0
+# e2e 的等待上限：真 PTY + 真守护进程线程，位图渲染这类调用在机器有负载时
+# 可以远慢于正常值。这只是上限，正常路径是毫秒级。
+DEADLINE = 20.0
 
 
 def has_native_host() -> bool:
