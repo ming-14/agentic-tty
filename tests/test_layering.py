@@ -25,8 +25,10 @@ _ALLOWED: dict[str, frozenset[str]] = {
     "daemon": frozenset(
         {"foundation", "protocol", "core", "runtime", "service", "transport", "daemon"}
     ),
-    # 示例层是核心层的测试驱动与各层的占位：经 transport 演示客户端，但不走 service
-    "example": frozenset({"foundation", "protocol", "core", "runtime", "transport", "example"}),
+    # 示例层是各层的占位：既在进程内直连核心层当测试驱动，也演示守护进程与客户端这一对
+    "example": frozenset(
+        {"foundation", "protocol", "core", "runtime", "transport", "daemon", "example"}
+    ),
 }
 
 # 核心链路不允许触碰的第三方（原生扩展 / web 框架）
@@ -102,3 +104,16 @@ def test_core_does_not_touch_restricted_third_party():
         for name in sorted(third):
             violations.append(f"{path.relative_to(SRC)}: {package} 不允许 import {name}")
     assert not violations, "核心链路触碰了受限依赖:\n" + "\n".join(violations)
+
+
+def test_example_client_stays_a_pure_client():
+    """`example/client.py` 是"客户端链止于 transport"的活证明。
+
+    客户端一旦偷用 `core` / `runtime` / `service`，这个证明就作废了。它待在 `example`
+    包里，而示例层的允许集本来就有 `core` 与 `runtime`（管理台要用），包级规则管不住它，
+    所以单列一条。
+    """
+    path = SRC / "example" / "client.py"
+    deps, _ = _deps(path)
+    allowed = {"foundation", "protocol", "transport"}
+    assert deps <= allowed, f"{path.relative_to(SRC)} 越出客户端链: {sorted(deps - allowed)}"
