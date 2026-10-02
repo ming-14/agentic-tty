@@ -8,21 +8,14 @@
 - Linux：子进程自成进程组（`start_new_session`），强杀时按进程组发信号。
 
 **成员枚举**（`descendants()`）供上层观测"谁起来了、谁没了"，是**轮询式**的：
-调用方比对前后两次结果即可得出启动 / 终止事件。代价是**可能漏掉两次轮询之间
-"起又没"的短命进程**。
-
-**为什么不用事件式**：Windows 的作业对象确实原生支持进程事件——`SetInformationJobObject`
-绑一个完成端口即可收到 `JOB_OBJECT_MSG_NEW_PROCESS` / `EXIT_PROCESS` /
-`ACTIVE_PROCESS_ZERO`（实测 pid 在 `lpOverlapped` 里，孙进程也在内）。但 Linux
-没有等价能力（netlink `PROC_EVENTS` 要 `CAP_NET_ADMIN`，普通守护进程拿不到），
-做了就会变成"Windows 精确、Linux 会漏"的平台行为分裂，而这条返回条件的语义
-必须两边一致；再加上要额外一条等待线程 + 一条事件桥。将来若确实需要进程级
-精确事件（进程审计、进程级超时），再单独评估。
+调用方比对前后两次结果即可得出启动 / 终止事件，代价是**可能漏掉两次轮询之间
+"起又没"的短命进程**——事件式观测在 Linux 上不可得（netlink `PROC_EVENTS` 需
+`CAP_NET_ADMIN`），而这条返回条件的跨平台语义必须一致，故只提供轮询式。
 
 作业对象在 spawn **之前**建好（`create_job()`），句柄交给宿主在创建子进程时直接
 入作业（PTY 走 `PROC_THREAD_ATTRIBUTE_JOB_LIST`，子进程走 `CREATE_SUSPENDED` →
-入作业 → `resume_process()`），因此**不存在"创建后再赋值"的时间窗**——那条窗口
-曾让子进程在入作业前 fork 出的孙进程逃出作业，从此既枚举不到也杀不到。
+入作业 → `resume_process()`），因此**不存在"创建后再赋值"的时间窗**——窗口期内
+fork 出的孙进程会逃出作业，从此既枚举不到也杀不到。
 """
 
 from __future__ import annotations

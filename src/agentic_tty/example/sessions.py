@@ -21,8 +21,8 @@ from ..core.process.session import ProcessSession
 from ..core.session.registry import SessionKind, SessionRegistry
 from ..core.terminal.session import TerminalSession
 from ..runtime.host_factory import create_host
-from .fake_host import FakeHost
 from .programs import PROGRAMS
+from .runtime_fakehost.fake_host import FakeHost
 
 DEFAULT_JOURNAL_BUDGET = 1 << 20
 

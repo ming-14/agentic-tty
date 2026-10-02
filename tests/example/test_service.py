@@ -8,7 +8,7 @@ from agentic_tty.core.ports import PTY, SUBPROCESS, SessionSpec
 from agentic_tty.core.process.session import ProcessSession
 from agentic_tty.core.terminal.session import TerminalSession
 from agentic_tty.daemon.handler import RequestHandler
-from agentic_tty.example.fake_host import FakeHost, FakeProgram
+from agentic_tty.example.runtime_fakehost.fake_host import FakeHost, FakeProgram
 from agentic_tty.example.service import (
     BadRequest,
     ExampleService,
