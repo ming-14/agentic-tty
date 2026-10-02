@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import base64
+import re
 import shlex
 import tkinter as tk
 from pathlib import Path
@@ -31,17 +32,16 @@ try:
 except ImportError as exc:  # 依赖缺失就说清楚怎么补，不静默降级
     raise ImportError("Tk 管理台渲染 SVG 需要 resvg-py：pip install -e .[gui]") from exc
 
-from ..core.session.base import Session
-from ..core.session.registry import SessionRegistry
-from ..core.terminal.session import TerminalSession
-from ..foundation.logs import get_logger
-from ..protocol.messages import DEFAULT_CELL_HEIGHT, DEFAULT_CELL_WIDTH
-from ..runtime.monitor import windows_of
-from ..runtime.runner import SessionRunner
+from ...core.session.base import Session
+from ...core.session.registry import SessionRegistry
+from ...core.terminal.session import TerminalSession
+from ...foundation.logs import get_logger
+from ...runtime.monitor import windows_of
+from ...runtime.runner import SessionRunner
 from .programs import PROGRAMS
 from .sessions import ExampleMode, create_registry, session_spec
 
-_logger = get_logger("example.gui")
+_logger = get_logger("example.core_test.gui")
 
 _TICK_MS = 20
 # 每多少个 tick 刷一次界面（20ms × 8 ≈ 160ms，避免文本频繁重排）
@@ -51,6 +51,16 @@ _RAW_TAIL = 2000
 _EXPORT_SCALE = 2.0
 _FORMAT_IMAGE = "image"
 _FORMAT_SVG = "svg"
+
+
+def _svg_size(svg: str) -> tuple[int, int] | None:
+    """渲染结果自带的像素尺寸（1.0 倍）——根元素上写着 width / height。"""
+    root = svg.split(">", 1)[0]
+    width = re.search(r'\bwidth="([\d.]+)"', root)
+    height = re.search(r'\bheight="([\d.]+)"', root)
+    if width is None or height is None:
+        return None
+    return int(float(width.group(1))), int(float(height.group(1)))
 
 
 class App:
@@ -399,36 +409,51 @@ class App:
         )
 
     def _refresh_screen_views(self, session: Session) -> None:
-        """屏幕页 / SVG 源码页（pty 专属）：屏幕、格式或画布尺寸没变就跳过重渲染。"""
+        """屏幕页 / SVG 源码页（pty 专属）：屏幕、格式或画布尺寸没变就跳过重渲染。
+
+        先出 SVG，再从**渲染结果自己**读 1.0 倍的像素尺寸——渲染器把尺寸写在输出里，
+        不必去别处问"字符格基准是多少"。出 SVG 只要 ~1ms，贵的是后面的栅格化
+        （~25ms），所以缓存挡的是栅格化那一步。
+        """
         if not isinstance(session, TerminalSession):
             return
         fmt = self._format.get()
-        scale = self._fit_scale(session)
-        key = (session.uid, session.journal.end_offset, fmt, round(scale, 4))
-        if key == self._rendered_key:
-            return
-        self._rendered_key = key
         try:
-            self._svg_source = session.render_svg()
+            svg = session.render_svg()
         except Exception as exc:  # 宿主已关闭等
+            self._rendered_key = None
             self._svg_source = None
             self._screen_note = f"<无屏幕视图: {exc}>"
             self._set_text(self._svg, self._screen_note)
             self._set_image(None, self._screen_note)
             return
+        size = _svg_size(svg)
+        if size is None:
+            self._rendered_key = None
+            self._svg_source = svg
+            self._screen_note = "<渲染结果里没有尺寸，无法铺满画布>"
+            self._set_text(self._svg, svg)
+            self._set_image(None, self._screen_note)
+            return
+        scale = self._fit_scale(size)
+        key = (session.uid, session.journal.end_offset, fmt, round(scale, 4))
+        if key == self._rendered_key:
+            return
+        self._rendered_key = key
+        self._svg_source = svg
         self._screen_note = ""
         self._set_text(self._svg, self._svg_source)
         self._set_image(*self._render_screen(session, fmt, self._svg_source, scale))
 
-    def _fit_scale(self, session: TerminalSession) -> float:
+    def _fit_scale(self, size: tuple[int, int]) -> float:
         """让屏幕正好铺满画布（不出现滚动条）。画布还没量出尺寸时按 1× 画。"""
+        base_width, base_height = size
+        if base_width <= 0 or base_height <= 0:
+            return 1.0
         width, height = self._image_canvas.winfo_width(), self._image_canvas.winfo_height()
         if width <= 1 or height <= 1:
             return 1.0
-        return min(
-            width / (session.cols * DEFAULT_CELL_WIDTH),
-            height / (session.rows * DEFAULT_CELL_HEIGHT),
-        )
+        return min(width / base_width, height / base_height)
 
     def _render_screen(
         self, session: Session, fmt: str, svg: str, scale: float

@@ -11,8 +11,8 @@ tk = pytest.importorskip("tkinter")
 pytest.importorskip("resvg_py")  # GUI 的 SVG 渲染依赖
 
 from agentic_tty.core.ports import Stream  # noqa: E402
-from agentic_tty.example.gui import App  # noqa: E402
-from agentic_tty.example.sessions import ExampleMode, session_spec  # noqa: E402
+from agentic_tty.example.core_test.gui import App  # noqa: E402
+from agentic_tty.example.core_test.sessions import ExampleMode, session_spec  # noqa: E402
 from agentic_tty.runtime.runner import SessionRunner  # noqa: E402
 
 
@@ -114,14 +114,11 @@ def test_pty_only_controls_hidden_for_fake(root):
 def test_screen_image_fits_canvas(root):
     """屏幕按画布大小缩放铺满，画布独占一行（没有滚动条）。"""
     app = App(root)
-    session = app._registry.create(
-        session_spec(ExampleMode.PTY, (sys.executable, "-c", "print('x')"))
-    )
     app._image_canvas.winfo_width = lambda: 600
     app._image_canvas.winfo_height = lambda: 300
 
-    # 80×24 字符 × 8×17 px 基准 → 按较小的一维贴合
-    assert app._fit_scale(session) == pytest.approx(min(600 / (80 * 8), 300 / (24 * 17)))
+    # 1.0 倍的尺寸由渲染结果自带：80×24 字符 → 640×408。按较小的一维贴合画布。
+    assert app._fit_scale((640, 408)) == pytest.approx(min(600 / 640, 300 / 408))
     assert app._image_tab.grid_slaves(row=1) == [app._image_canvas]
     app.on_close()
 

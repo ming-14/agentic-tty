@@ -1,5 +1,8 @@
-"""示例层：adapter 的占位，也是核心层的测试驱动。
+"""示例层：连到某一层、专门测那一层能力的消费者。
 
-依赖 foundation / core / runtime，用一个 Tk 管理台把核心层跑起来——起会话、看屏幕、
-发输入、观测进程树；`python -m agentic_tty.example` 打开。
+一格一个层，格与格之间互不相干：`core_test/`（连核心层，Tk 测试台）、
+`service.py` + `daemon.py`（服务端那一格）、`client.py`（客户端那一格）。
+**只依赖别人，不被任何一层依赖。**
+
+`python -m agentic_tty.example.core_test` 打开核心层的测试台。
 """

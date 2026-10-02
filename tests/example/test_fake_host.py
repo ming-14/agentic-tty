@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from agentic_tty.core.ports import PTY, SUBPROCESS, SessionSpec
-from agentic_tty.example.runtime_fakehost.fake_host import FakeHost, FakeProgram
+from agentic_tty.example.core_test.runtime_fakehost.fake_host import FakeHost, FakeProgram
 
 _MAX = 65536
 

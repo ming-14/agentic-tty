@@ -40,7 +40,7 @@ from ..protocol.messages import (
 )
 from ..runtime.runner import SessionRunner
 from ..runtime.shell import default_shell
-from .sessions import create_registry
+from .core_test.sessions import create_registry
 
 _logger = get_logger("example.service")
 

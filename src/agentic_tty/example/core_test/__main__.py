@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import sys
 
-from ..foundation.logs import configure
+from ...foundation.logs import configure
 from .gui import main
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from ...core.ports import HostMetadata, SessionSpec
+from ....core.ports import HostMetadata, SessionSpec
 
 _POLL_INTERVAL = 0.002
 

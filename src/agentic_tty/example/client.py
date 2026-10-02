@@ -2,7 +2,7 @@
 
     python -m agentic_tty.example.client [--uri tcp://127.0.0.1:8765]
 
-和 `example.gui` 那个管理台正好成对照——**管理台在进程内直连核心层，这个客户端只走网线**。
+和 `example.core_test.gui` 那个管理台正好成对照——**管理台在进程内直连核心层，这个客户端只走网线**。
 它因此是这个工程里"客户端链"的活证明：只依赖 `foundation + protocol + transport`，
 `service` / `core` / `runtime` 一概够不着（有分层测试拦着）。
 

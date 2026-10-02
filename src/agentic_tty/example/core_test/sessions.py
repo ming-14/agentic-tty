@@ -15,12 +15,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from enum import StrEnum
 
-from ..core import ports
-from ..core.ports import SessionSpec
-from ..core.process.session import ProcessSession
-from ..core.session.registry import SessionKind, SessionRegistry
-from ..core.terminal.session import TerminalSession
-from ..runtime.host_factory import create_host
+from ...core import ports
+from ...core.ports import SessionSpec
+from ...core.process.session import ProcessSession
+from ...core.session.registry import SessionKind, SessionRegistry
+from ...core.terminal.session import TerminalSession
+from ...runtime.host_factory import create_host
 from .programs import PROGRAMS
 from .runtime_fakehost.fake_host import FakeHost
 

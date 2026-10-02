@@ -7,7 +7,7 @@ from agentic_tty.core.ports import PTY, SUBPROCESS, SessionSpec, Stream
 from agentic_tty.core.session.base import Session
 from agentic_tty.core.session.registry import SessionRegistry
 from agentic_tty.core.session.state import SessionState
-from agentic_tty.example.runtime_fakehost.fake_host import FakeHost, FakeProgram
+from agentic_tty.example.core_test.runtime_fakehost.fake_host import FakeHost, FakeProgram
 
 
 def _registry(program: FakeProgram | None = None) -> SessionRegistry:
