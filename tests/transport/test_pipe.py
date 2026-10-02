@@ -19,6 +19,8 @@ from agentic_tty.transport import registry as transports
 from agentic_tty.transport.errors import ConnectionClosed, TransportError
 
 _DEADLINE = 10.0
+_SRC = str(Path(__file__).resolve().parents[2] / "src")
+"""子进程要能 import 本包：给它源码目录，别指望测试是从哪儿启动的。"""
 
 _CHILD = """
 import sys
@@ -163,9 +165,7 @@ def test_real_process_can_connect(name, tmp_path: Path):
     listener = transports.listen(_uri(name))
     child = None
     try:
-        child = subprocess.Popen(
-            [sys.executable, str(child_script), _uri(name), str(Path.cwd() / "src")]
-        )
+        child = subprocess.Popen([sys.executable, str(child_script), _uri(name), _SRC])
         conn = listener.accept(timeout=_DEADLINE)
         assert conn is not None
         try:
