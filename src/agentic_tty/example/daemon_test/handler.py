@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -26,6 +28,8 @@ from ...runtime.shell import default_shell
 
 _RAW_TAIL = 2000
 """原始字节页每路只取尾部——`read_all` 会把整个保留区复制一遍。"""
+_RELEASE_JOIN_SECONDS = 5.0
+"""收尾时等后台释放线程的上限；到点就放手，别挡收尾。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +64,7 @@ class KernelHandler:
         )
         self._runners: dict[str, SessionRunner] = {}
         self._uids: dict[str, str] = {}
+        self._releasing: list[threading.Thread] = []
         self.pumps = 0
         """推进过的轮数——验证"所有者循环确实在跑"。"""
 
@@ -101,6 +106,10 @@ class KernelHandler:
                 self._close(sid)
             except Exception:  # 收尾时一个会话失败不该挡别的
                 pass
+        deadline = time.monotonic() + _RELEASE_JOIN_SECONDS
+        for thread in self._releasing:
+            thread.join(max(0.0, deadline - time.monotonic()))
+        self._releasing.clear()
 
     # ════════════════════════════════════════════════════════════
     # 动作
@@ -146,14 +155,30 @@ class KernelHandler:
         return self._summary(req.sid)
 
     def _close(self, sid: str) -> None:
+        """摘除会话：**同步摘除 ＋ 线程里释放**。
+
+        宿主关闭在部分平台上会长时间阻塞（Windows 上要等控制台客户端退出，可达数百秒），
+        压在所有者线程上会冻住所有会话。摘除之后把耗时的释放交给别的线程。
+        """
         uid = self._uids.pop(sid, None)
         if uid is None:
             raise CoreError(f"会话不存在: {sid}")
         runner = self._runners.pop(uid, None)
         session = self._registry.detach(uid)
-        session.close()
-        if runner is not None:
-            runner.stop()
+        self._releasing = [thread for thread in self._releasing if thread.is_alive()]
+        thread = threading.Thread(
+            target=self._release, args=(session, runner), name=f"release-{sid}", daemon=True
+        )
+        thread.start()
+        self._releasing.append(thread)
+
+    @staticmethod
+    def _release(session: Session, runner: SessionRunner | None) -> None:
+        try:
+            session.close()  # 先强杀进程树再关宿主，可能要等
+        finally:
+            if runner is not None:
+                runner.stop()
 
     def _resize(self, req: Request) -> dict[str, Any]:
         self._terminal(req.sid).resize(req.cols, req.rows)

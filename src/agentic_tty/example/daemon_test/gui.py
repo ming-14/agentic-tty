@@ -70,6 +70,8 @@ class App:
         self._ticks = 0
         self._sid_seq = 0
         self._selected: str | None = None
+        self._sized_for: str | None = None
+        """尺寸框已经为哪个会话填过一次——只在换会话时填，别把用户正在输入的宽高擦掉。"""
         self._sessions: dict[str, dict] = {}
         self._detail: dict | None = None
         # 请求 → 用途：答复回来时靠请求对象的身份认出它属于哪一次询问
@@ -288,7 +290,10 @@ class App:
         elif purpose == "export":
             self._write_export(answer.data.get("blob"))
         elif purpose == "create":
+            # 只记选中：新会话的行还没进树（列表是异步取回来的），这时碰树会报错。
+            # 下一轮 `_apply_sessions` 会把树的选中与 `_selected` 对齐。
             self._selected = str(answer.data.get("sid") or "")
+            self._sized_for = None
             self._status.set(f"已创建 {self._selected}")
         elif purpose == "resize":
             self._status.set(f"尺寸已改为 {answer.data.get('cols')}×{answer.data.get('rows')}")
@@ -489,6 +494,9 @@ class App:
 
     def _send_input(self, newline: bool = False) -> None:
         """输入走字节帧：它本身就是一次操作，不需要配对的控制请求。"""
+        if self._thread is None:
+            self._status.set("守护进程没在跑——先点「启动」")
+            return
         if self._selected is None:
             self._status.set("先选一个会话")
             return
@@ -505,8 +513,9 @@ class App:
             self._status.set("守护进程已在收尾，这段输入被放弃了")
 
     def _send_interrupt(self) -> None:
-        if self._selected is not None:
-            self._daemon.submit_input(self._selected, b"\x03")  # Ctrl+C
+        if self._thread is None or self._selected is None:
+            return
+        self._daemon.submit_input(self._selected, b"\x03")  # Ctrl+C
 
     def _resize(self) -> None:
         if self._selected is None:
@@ -547,9 +556,14 @@ class App:
             self._clear_detail()
 
     def _sync_pty_controls(self, detail: dict | None) -> None:
-        """屏幕页 / SVG 源码页 / 导出按钮 / 尺寸控件都是 pty 专属：其他模式藏掉或禁用。"""
+        """屏幕页 / SVG 源码页 / 导出按钮 / 尺寸控件都是 pty 专属：其他模式藏掉或禁用。
+
+        尺寸框只在**换会话**时填一次：每次刷新都填，会把用户正在输入的宽高擦掉。
+        """
         is_pty = bool(detail and detail.get("is_terminal"))
-        if is_pty:
+        sid = str(detail.get("sid")) if detail else None
+        if is_pty and sid is not None and sid != self._sized_for:
+            self._sized_for = sid
             self._cols.delete(0, tk.END)
             self._cols.insert(0, str(detail.get("cols") or 80))
             self._rows.delete(0, tk.END)
