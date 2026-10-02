@@ -16,10 +16,8 @@ class DaemonConfig:
 
     name: str = "agentic-tty"
     """单实例锁名与运行时目录名。带命名空间，多用户与测试可以共存。"""
-    listen: str = "tcp://127.0.0.1:0"
-    """监听地址。端口写 0 = 让内核挑，实际地址从 `Daemon.address` 取。"""
     runtime_dir: Path | None = None
-    """运行时目录（pid / 锁 / 端点 / 日志）；留空取平台默认。"""
+    """运行时目录（pid / 锁 / 日志）；留空取平台默认。"""
 
     tick_interval: float = 0.005
     """所有者循环每轮之间的间隔。"""
@@ -29,11 +27,7 @@ class DaemonConfig:
     """整体收尾预算；超时就不再等，把剩下的交给入口处理。"""
 
     inbound_maxsize: int = 256
-    """每连接的入站帧队列长度（满了读线程等待，背压传到对端 TCP 缓冲）。"""
-    outbound_maxsize: int = 256
-    """每连接的出站响应队列长度（满了说明这个客户端不读了）。"""
-    accept_batch: int = 16
-    """每轮最多接入几条新连接（公平性：不让接入饿死会话推进）。"""
+    """入站队列长度（消费者线程投递、所有者线程消费）；满了投递方等待，背压传回消费者。"""
 
     write_log_file: bool = True
     """是否同时写轮转日志文件。"""

@@ -28,7 +28,7 @@ def test_request_without_conditions_is_answered_immediately():
     service = ExampleService()
     reply = service.handle(make_request("get_daemon_status"))
     assert reply is not None
-    assert reply.envelope.payload.output["ok"] is True
+    assert reply.answer.envelope.payload.output["ok"] is True
     assert service.poll() == []
 
 
@@ -36,7 +36,7 @@ def test_unknown_command_is_reported_not_ignored():
     service = ExampleService()
     reply = service.handle(make_request("nope"))
     assert reply is not None
-    failure = error_of(reply.envelope)
+    failure = error_of(reply.answer.envelope)
     assert failure is not None and failure.code == "UnknownCommand"
 
 
@@ -45,7 +45,7 @@ def test_conditions_are_rejected_on_commands_that_never_wait():
     request = make_request("get_daemon_status", condition={"timeout": 1})
     reply = service.handle(request)
     assert reply is not None
-    failure = error_of(reply.envelope)
+    failure = error_of(reply.answer.envelope)
     assert failure is not None and failure.code == "BadRequest"
 
 
@@ -55,7 +55,7 @@ def test_waiting_needs_an_existing_session():
     request = make_request("read_terminal", op={"sid": "ghost"}, condition={"timeout": 60})
     reply = service.handle(request)
     assert reply is not None
-    failure = error_of(reply.envelope)
+    failure = error_of(reply.answer.envelope)
     assert failure is not None and failure.code == "NoSuchSession"
 
 
@@ -64,7 +64,7 @@ def test_unimplemented_condition_is_a_request_error():
     request = make_request("read_terminal", op={"sid": "s"}, condition={"matched": "x"})
     reply = service.handle(request)
     assert reply is not None
-    assert error_of(reply.envelope).code == "BadRequest"
+    assert error_of(reply.answer.envelope).code == "BadRequest"
 
 
 @pytest.mark.parametrize(
@@ -97,7 +97,7 @@ def test_bad_request_from_a_command_becomes_a_failure_reply():
     service = ExampleService()
     reply = service.handle(make_request("create_terminal", op={"sid": "s"}))
     assert reply is not None
-    failure = error_of(reply.envelope)
+    failure = error_of(reply.answer.envelope)
     assert failure is not None and failure.code == "BadRequest"
 
 
@@ -105,7 +105,7 @@ def test_remove_session_requires_a_target():
     service = ExampleService()
     reply = service.handle(make_request("remove_session"))
     assert reply is not None
-    assert error_of(reply.envelope).code == "BadRequest"
+    assert error_of(reply.answer.envelope).code == "BadRequest"
 
 
 def test_pty_idle_probe_skips_screen_render_without_new_bytes(monkeypatch):
@@ -163,5 +163,5 @@ def test_ok_response_helper_matches_what_the_service_returns():
     """服务用的是 protocol 里的那套响应约定，别在这儿另起一套。"""
     reply = ExampleService().handle(make_request("list_sessions"))
     assert reply is not None
-    assert reply.envelope.payload.output["ok"] is True
+    assert reply.answer.envelope.payload.output["ok"] is True
     assert ok_response("x", "m").payload.output["ok"] is True

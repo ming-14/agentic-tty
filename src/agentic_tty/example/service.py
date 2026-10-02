@@ -16,7 +16,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from ..core.errors import CoreError
 from ..core.ports import PTY, SessionSpec, Stream
@@ -50,6 +50,18 @@ _RELEASE_JOIN_SECONDS = 5.0
 # 返回条件词汇的唯一来源是 protocol.Condition；按取值形态分两组（秒数 / 布尔）
 _WAIT_DURATIONS = (Condition.IDLE, Condition.TIMEOUT)
 _WAIT_FLAGS = (Condition.ENDED, Condition.CRASHED)
+
+
+@dataclass(frozen=True, slots=True)
+class Answer:
+    """本层产出的答复：一条控制信封，外加可选的字节负载与它的流标签。
+
+    守护进程只把它当作**不透明对象**搬回消费者；怎么把它发到线上是接入那一层的事。
+    """
+
+    envelope: Envelope
+    stream: str = "stdout"
+    binary: bytes | None = None
 
 
 class ExampleServiceError(AgenticTtyError):
@@ -196,8 +208,13 @@ class ExampleService:
     # RequestHandler
     # ════════════════════════════════════════════════════════════
 
-    def handle(self, envelope: Envelope) -> Reply | None:
-        """处理一条请求；返回 `None` 表示已登记等待，稍后由 `poll` 交出响应。"""
+    def handle(self, request: object) -> Reply | None:
+        """处理一条请求；返回 `None` 表示已登记等待，稍后由 `poll` 交出答复。
+
+        接缝上的报文是不透明的 `object`——本层就是与线协议打交道的那一层，所以这里把
+        它当 `Envelope` 用。往接缝里喂别的东西是装配错误，不在这里兜。
+        """
+        envelope = cast(Envelope, request)
         entry = self._command(envelope)
         if isinstance(entry, Reply):
             return entry
@@ -234,6 +251,21 @@ class ExampleService:
                 replies.append(self._reply(pending.request, pending.entry, outcome))
         self._pending = remaining
         return replies
+
+    def pending(self) -> int:
+        """还有多少条请求压着等（守护进程 draining 时靠它判断要不要等）。"""
+        return len(self._pending)
+
+    def failure(self, request: object, error: BaseException) -> Reply:
+        """`handle` 抛了异常时由守护进程转过来：组一条明确的失败答复。
+
+        失败长什么样是本层的事——守护进程不认识报文，只负责把这条答复带回去。
+        """
+        envelope = cast(Envelope, request)
+        failed = failed_response(
+            envelope.type, envelope.mid, "InternalError", f"命令处理异常: {error}"
+        )
+        return Reply(request=request, answer=Answer(failed))
 
     def on_input(self, key: str, data: bytes) -> None:
         """把一段字节交给会话的写线程（`key` 是 sid）。"""
@@ -468,10 +500,12 @@ class ExampleService:
         if outcome is not None:
             data["wait"] = outcome
         envelope = ok_response(request.type, request.mid, data, kind=produced.kind)
-        return Reply(envelope, stream=produced.stream, binary=produced.binary, request=request)
+        answer = Answer(envelope, stream=produced.stream, binary=produced.binary)
+        return Reply(request=request, answer=answer)
 
     def _fail(self, request: Envelope, code: str, message: str) -> Reply:
-        return Reply(failed_response(request.type, request.mid, code, message), request=request)
+        envelope = failed_response(request.type, request.mid, code, message)
+        return Reply(request=request, answer=Answer(envelope))
 
     def _evaluate(self, pending: _Pending) -> dict[str, Any] | None:
         """判定一个等待；返回结果字典，未命中返回 None。

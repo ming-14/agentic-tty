@@ -1,10 +1,12 @@
 """请求处理层的接缝：守护进程对它的全部要求。
 
-`daemon/` 的机制只认这个协议，不知道 `sid`、等待引擎、订阅的存在。谁来实现它都行
-——生产环境是 `service`，演示里是 `example_daemon`。这和核心层用 `HostFactory` 倒置
-宿主是同一手法。
+守护进程只做"把消费者投进来的请求交给它、把它交出的答复回调给消费者"，**不认识请求和
+答复里装的是什么**——那是消费者（开服务器的那一层）与线协议之间的事。所以这里的类型
+一律不透明：`object` 进、`object` 出，守护进程连拆开看一眼都不干。
 
-**所有方法都只在所有者线程上被调用**，所以实现里不需要任何锁。
+这和核心层用 `HostFactory` 倒置宿主是同一手法：换请求处理层不用动 `daemon` 的机制一行。
+
+**所有方法都只在所有者线程上被调用**，实现里不需要任何锁。
 """
 
 from __future__ import annotations
@@ -12,46 +14,52 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-from ..protocol.envelope import Envelope
-
 
 @dataclass(frozen=True, slots=True)
 class Reply:
-    """一条待发出的响应：控制帧，外加可选的字节帧负载。
+    """一条待交回消费者的答复。
 
-    `binary` 不为空时，字节帧的键是 `envelope.mid`——客户端据此把这段字节挂回它
-    发起的那条请求。
+    `request` 是它归属的**原始请求对象**（`handle` 收到的那个）。延迟答复必须带上它：
+    消费者靠请求的身份把答复送回对的那条连接——`mid` 只在一条连接内才有意义，不能当键。
 
-    `request` 是这条响应归属的**原始请求对象**（`handle` 收到的那个）。延迟响应
-    必须带上它：`mid` 只在一条连接内有意义，守护进程靠请求身份把响应送回对的那条
-    连接，而不是靠可能撞车的 `mid`。
+    `answer` 的内容守护进程一概不解释，原样交回。
     """
 
-    envelope: Envelope
-    stream: str = "stdout"
-    binary: bytes | None = None
-    request: Envelope | None = None
+    request: object
+    answer: object = None
 
 
 @runtime_checkable
 class RequestHandler(Protocol):
     """请求处理层。"""
 
-    def handle(self, envelope: Envelope) -> Reply | None:
+    def handle(self, request: object) -> Reply | None:
         """处理一条请求。
 
-        返回 `None` 表示**已登记等待**，响应稍后由 `poll` 交出——等待不能在这里阻塞，
-        否则一个慢等待会把所有会话冻住。`poll` 交出的延迟响应必须带上本方法收到的
-        那个请求对象（`Reply.request`），否则守护进程无法判断它该回到哪条连接。
+        返回 `None` 表示**已登记等待**，答复稍后由 `poll` 交出——等待不能在这里阻塞，
+        否则一个慢等待会把所有会话冻住。`poll` 交出的延迟答复必须带上本方法收到的那个
+        请求对象（`Reply.request`）。
         """
         ...
 
     def poll(self) -> list[Reply]:
-        """交出此刻已经可以回答的响应（可能为空）。"""
+        """交出此刻已经可以回答的答复（可能为空）。"""
+        ...
+
+    def pending(self) -> int:
+        """还有多少条请求压着等（draining 时靠它判断要不要等）。"""
+        ...
+
+    def failure(self, request: object, error: BaseException) -> Reply:
+        """`handle` 抛了异常：把它变成一条明确的失败答复。
+
+        守护进程不会替本层组答复（它不认识报文），但也不能让消费者干等，所以异常
+        一律走这里。失败长什么样由本层决定。
+        """
         ...
 
     def on_input(self, key: str, data: bytes) -> None:
-        """接下一段上行字节；`key` 是会话 `sid`。"""
+        """接下一段上行字节；`key` 的语义由消费者定（如会话 sid）。"""
         ...
 
     def pump(self) -> None:
