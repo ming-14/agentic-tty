@@ -8,9 +8,10 @@
 from __future__ import annotations
 
 import os
+import time
 from types import ModuleType
 
-from ..core.ports import HostMetadata, SessionSpec
+from ..core.ports import HostMetadata, SessionSpec, Stream
 from ..foundation.logs import get_logger
 from .errors import DependencyMissing, HostSpawnError
 from .process_tree import ProcessTree, close_job, create_job
@@ -18,6 +19,33 @@ from .process_tree import ProcessTree, close_job, create_job
 _logger = get_logger("runtime.pty_host")
 
 _pywezterm: ModuleType | None = None
+
+# ConPTY 拿不到真 EOF：排空之后阻塞读永不返回，带超时的读只会等到超时返 b""，
+# 所以"读空"与"排空"是两回事。退出信号（进程句柄）又比最后一段输出早约 15ms
+# ——字节要经 conhost 中继，负载下能迟到 200ms 以上。于是排空只能按"退出之后
+# 静默多久"判定：静默不够长就会把尾巴永久丢在管道里。
+_DRAIN_QUIET = 0.3
+
+
+class _DrainQuiet:
+    """按"最后一次读到字节"计静默：退出之后静默够了，才算这一路排空。"""
+
+    def __init__(self, quiet: float) -> None:
+        self._quiet = quiet
+        self._since: float | None = None
+
+    def note_data(self) -> None:
+        self._since = None  # 来过字节：静默重新计
+
+    def settled(self, exited: bool) -> bool:
+        now = time.monotonic()
+        if not exited:
+            self._since = None
+            return False
+        if self._since is None:
+            self._since = now
+            return False
+        return now - self._since >= self._quiet
 
 
 def require_pywezterm() -> ModuleType:
@@ -62,6 +90,7 @@ class PtyHost:
             raise HostSpawnError(f"启动 PTY 失败 {list(spec.argv)}: {exc}") from exc
         self._tree = ProcessTree(pid, job)
         self._closed = False
+        self._drain = _DrainQuiet(_DRAIN_QUIET)
 
     # ── HostLifecycle ──────────────────────────────────────────
 
@@ -70,7 +99,10 @@ class PtyHost:
         return None if self._closed else self._pty.child_pid()
 
     def read(self, max_bytes: int = 65536, timeout: float | None = 0.2) -> bytes:
-        return self._pty.read(max_bytes, timeout=timeout)
+        data = self._pty.read(max_bytes, timeout=timeout)
+        if data:
+            self._drain.note_data()
+        return data
 
     def write(self, data: bytes) -> None:
         if not self._closed:
@@ -78,6 +110,12 @@ class PtyHost:
 
     def try_wait(self) -> int | None:
         return self._pty.try_wait()
+
+    def poll_eof(self, stream: Stream = Stream.STDOUT) -> bool:
+        """本路是否已排空：ConPTY 没有真 EOF，退出之后还要再静默一段才算。"""
+        if self._closed:
+            return True
+        return self._drain.settled(self._pty.try_wait() is not None)
 
     def kill(self) -> None:
         self._tree.kill()

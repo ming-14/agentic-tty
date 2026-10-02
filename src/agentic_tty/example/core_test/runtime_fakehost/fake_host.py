@@ -11,7 +11,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from ....core.ports import HostMetadata, SessionSpec
+from ....core.ports import HostMetadata, SessionSpec, Stream
 
 _POLL_INTERVAL = 0.002
 
@@ -80,6 +80,14 @@ class FakeHost:
         if not self._exited and self._exit_at is not None and time.monotonic() >= self._exit_at:
             self._exited = True
         return self._program.exit_code if self._exited else None
+
+    def poll_eof(self, stream: Stream = Stream.STDOUT) -> bool:
+        """本路是否已排空（测试替身：已退出且该路的脚本化输出已取完）。"""
+        if self._closed:
+            return True
+        self.try_wait()  # 退出按脚本时间推进，不靠别人来问
+        queue = self._err if stream is Stream.STDERR else self._out
+        return self._exited and not queue
 
     def kill(self) -> None:
         self._exited = True

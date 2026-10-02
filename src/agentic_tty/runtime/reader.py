@@ -4,8 +4,12 @@
 
 读用**带超时**的方式而不是纯阻塞：PTY 在子进程退出后并不会返回 EOF，纯阻塞读
 会永久挂住一个线程。因此收工条件有两条：宿主已释放（会话已关闭）直接收工；
-或**进程已退出且本轮读空**——退出后输出是有限的，一次空读即表示已排空，
-此时投一个 `eof=True` 的块，由所有者线程记账（`mark_eof`）。
+或宿主自己说这一路已排空（`poll_eof()`）——本线程投一个 `eof=True` 的块，
+由所有者线程记账（`mark_eof`）。
+
+排空由宿主判定而不是本线程推测：退出与"最后一段输出到达"之间差多少，只有宿主
+知道自己的 IO 形态（PTY 经 conhost 中继、没有真 EOF；子进程管道读空即真 EOF）。
+本线程只负责搬与问。
 """
 
 from __future__ import annotations
@@ -60,7 +64,8 @@ class StreamReader:
     def _run(self) -> None:
         uid = self._session.uid
         while not self._stop.is_set():
-            if self._session.host is None:
+            host = self._session.host
+            if host is None:
                 # 宿主已释放（会话已关闭）：收工。
                 # （这里只**读** `exit_code` / `host` 两个不可变引用，不改会话状态；
                 #   状态改动一律经 EOF 块回到所有者线程做。）
@@ -78,8 +83,7 @@ class StreamReader:
                 ):
                     return
                 continue
-            if self._session.exit_code is not None:
-                # 进程已退出且本轮读空 → 该路已排空。
+            if host.poll_eof(self._stream):
                 self._bridge.put(
                     Chunk(uid=uid, stream=self._stream, data=b"", eof=True),
                     stop_check=self._stop.is_set,

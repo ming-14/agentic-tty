@@ -62,7 +62,7 @@ class HostLifecycle(Protocol):
     def read(self, max_bytes: int = 65536, timeout: float | None = 0.2) -> bytes:
         """从主输出流读取至多 `max_bytes` 字节。**只允许读线程调用，不碰终端模型。**
 
-        空返回值表示本轮无数据（超时），不代表 EOF；EOF 由 `try_wait()` 判断。
+        空返回值表示本轮无数据（超时），不代表 EOF；是否排空问 `poll_eof()`。
         """
         ...
 
@@ -75,6 +75,15 @@ class HostLifecycle(Protocol):
 
     def try_wait(self) -> int | None:
         """非阻塞查询退出码；None 表示仍在运行。"""
+        ...
+
+    def poll_eof(self, stream: Stream = Stream.STDOUT) -> bool:
+        """本路输出是否已排空（不会再有字节到达）。**只允许读线程调用。**
+
+        排空只有宿主自己判得准：PTY 的输出经 conhost 中继，阻塞读永不返回、
+        拿不到真 EOF，只能按"退出后静默多久"判定；子进程管道读空就是真 EOF。
+        判定权因此在宿主，驱动方只取结果，不从"已退出 + 本轮读空"去推测。
+        """
         ...
 
     def kill(self) -> None:

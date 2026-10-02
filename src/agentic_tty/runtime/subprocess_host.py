@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 
-from ..core.ports import SessionSpec
+from ..core.ports import SessionSpec, Stream
 from ..foundation.logs import get_logger
 from .errors import HostSpawnError
 from .process_tree import (
@@ -133,6 +133,16 @@ class SubprocessHost:
 
     def try_wait(self) -> int | None:
         return self._proc.poll()
+
+    def poll_eof(self, stream: Stream = Stream.STDOUT) -> bool:
+        """本路是否已排空：管道读空就是真 EOF，进程退出后不必再静默。
+
+        退出后管道里剩下的字节仍然可读，读线程会先取走它们；等到一次读空，
+        退出才等价于排空。
+        """
+        if self._closed:
+            return True
+        return self._proc.poll() is not None
 
     def kill(self) -> None:
         self._tree.kill()

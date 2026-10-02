@@ -31,7 +31,11 @@ def _echo_argv() -> list[str]:
 
 
 def _drain(host, deadline_s: float = 5.0) -> bytes:
-    """带截止时间地读空（PTY 在进程退出后不返回 EOF，不能无限等）。"""
+    """带截止时间地读空。
+
+    PTY 在进程退出后不返回 EOF，不能无限等；排空由宿主判定（`poll_eof`），
+    与生产驱动循环（`StreamReader`）用的是同一条判据。
+    """
     deadline = time.monotonic() + deadline_s
     raw = b""
     while time.monotonic() < deadline:
@@ -40,7 +44,7 @@ def _drain(host, deadline_s: float = 5.0) -> bytes:
             raw += chunk
             host.ingest(chunk)
             continue
-        if host.try_wait() is not None:
+        if host.poll_eof():
             break
     return raw
 

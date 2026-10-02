@@ -78,6 +78,7 @@ class HostLifecycle(Protocol):
     def read(self, max_bytes: int = 65536, timeout: float | None = 0.2) -> bytes: ...
     def write(self, data: bytes) -> None: ...
     def try_wait(self) -> int | None: ...
+    def poll_eof(self, stream: Stream = Stream.STDOUT) -> bool: ...
     def kill(self) -> None: ...
     def descendants(self) -> tuple[int, ...]: ...
     def close(self) -> None: ...
@@ -243,8 +244,9 @@ class Session:
 - `drained` = "不再会有输出到达"：已关闭的会话宿主已释放，恒为真；否则要求进程已退出——有外部驱动（读线程 / 泵）时还要等所有流 EOF，没有外部驱动的会话则退出即结束。
 - **EOF 不等于退出**：程序可以先关掉 stdout/stderr 而继续运行（守护进程、`exec`），所以每个流单独记 EOF。
 - **读空不等于 EOF**：`read_stream` 的空返回值只表示本轮无数据（超时）。宿主已释放（从未启动或已关闭）时它明确报错，不静默返回空——否则驱动方会把"没有宿主"当成"暂时没输出"而空转。
+- **排空由宿主判定，不由驱动方推测**：`poll_eof(stream)` 问的是"这一路还会不会有字节到达"，只有宿主知道自己的 IO 形态——PTY 的输出经 conhost 中继、拿不到真 EOF（排空后阻塞读永不返回），只能按"退出后静默多久"判；子进程管道读空就是真 EOF。驱动方取结果后打 EOF 标记。
 
-进程退出与尾部输出到达之间有竞态：把两者混为一谈会丢掉最后一段输出。
+进程退出与尾部输出到达之间有竞态：把两者混为一谈会丢掉最后一段输出。Windows ConPTY 上这个间隔实测约 15ms，负载下 conhost 中继可迟到 200ms 以上——所以"已退出 + 本轮读空"不能当排空，那段字节可能还在管道里，一投 EOF 就永久丢了。
 
 ## 8. 注册表
 
@@ -312,7 +314,7 @@ while not session.drained:
             session.ingest_stream(stream, chunk)
             # ← 命令层在这里把 chunk 喂给它的等待引擎做条件匹配
     session.refresh()
-    if session.exit_code is not None and <本轮两路都读空>:
+    if <本轮两路都读空> and all(session.host.poll_eof(s) for s in session.streams()):
         for stream in session.streams():
             session.mark_eof(stream)
 
