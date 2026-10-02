@@ -12,10 +12,14 @@
 from __future__ import annotations
 
 from .errors import UnsupportedScheme
+from .pipe import PipeTransport
 from .stream import Connection, Listener, Transport, parse_address
 from .tcp import TcpTransport
 
-_TRANSPORTS: dict[str, Transport] = {TcpTransport.scheme: TcpTransport()}
+_TRANSPORTS: dict[str, Transport] = {
+    TcpTransport.scheme: TcpTransport(),
+    PipeTransport.scheme: PipeTransport(),
+}
 
 
 def register(transport: Transport) -> None:

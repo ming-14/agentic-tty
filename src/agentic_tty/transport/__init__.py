@@ -7,6 +7,8 @@
 
 - `stream.py`  抽象：一条双向字节流 / 一个监听器 / 地址
 - `tcp.py`     TCP 实现（同机 loopback 与跨机是同一份代码）
+- `pipe.py`    本机管道实现（Windows 命名管道 / POSIX `AF_UNIX`）——**不是网络**，
+               守护进程用它挂接入点，同机的消费者连进来；一个名字上可以有多条连接
 - `registry.py` 按地址 scheme 分派——**加新传输方式只动这里**
 - `channel.py` 把字节连接包成"收发帧"，帧格式本身在 `protocol`
 
