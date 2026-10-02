@@ -83,7 +83,7 @@ DEFAULT_CELL_HEIGHT = 17
 class SessionInfo:
     """一条会话的对外快照。
 
-    **只有 `sid`，没有 `uid`**：`uid` 是核心层内部的标识，出了 service 就该消失。
+    **只有 `sid`，没有 `uid`**：`uid` 是核心层内部的标识，不该出现在核心层之外。
 
     `cols` / `rows` 只有终端会话才有——客户端要靠它把屏幕缩放到自己的画布。
     """

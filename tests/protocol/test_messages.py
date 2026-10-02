@@ -113,7 +113,7 @@ def test_session_size_is_optional():
 
 
 def test_session_info_never_carries_uid():
-    """uid 是核心层内部的，出了 service 就该消失。"""
+    """uid 是核心层内部的，不该出现在核心层之外。"""
     assert (
         "uid"
         not in SessionInfo.from_dict(
