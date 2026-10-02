@@ -107,13 +107,19 @@ def test_core_does_not_touch_restricted_third_party():
 
 
 def test_example_client_stays_a_pure_client():
-    """`example/client.py` 是"客户端链止于 transport"的活证明。
+    """客户端那一格只许依赖公共层——包级规则管不住它，所以单列一条。
 
-    客户端一旦偷用 `core` / `runtime` / `service`，这个证明就作废了。它待在 `example`
-    包里，而示例层的允许集本来就有 `core` 与 `runtime`（管理台要用），包级规则管不住它，
-    所以单列一条。
+    `example` 的允许集里有 `core` / `runtime` / `daemon`（验证台要直接接核心层），
+    而客户端那一格不许碰它们。当前 `example/` 下没有客户端包，这条直接跳过；
+    等客户端那一格回来（它依赖 `foundation + protocol + transport`），断言自动生效。
     """
-    path = SRC / "example" / "client.py"
-    deps, _ = _deps(path)
-    allowed = {"foundation", "protocol", "transport"}
-    assert deps <= allowed, f"{path.relative_to(SRC)} 越出客户端链: {sorted(deps - allowed)}"
+    for package in sorted((SRC / "example").iterdir()):
+        if not package.is_dir() or not (package / "__init__.py").exists():
+            continue
+        if package.name in {"core_test", "daemon_test"}:  # 验证台：直连核心层是它的职责
+            continue
+        for path in sorted(package.rglob("*.py")):
+            deps, _ = _deps(path)
+            allowed = {"foundation", "protocol", "transport"}
+            extra = sorted(deps - allowed)
+            assert not extra, f"{path.relative_to(SRC)} 越出客户端链: {extra}"
