@@ -15,16 +15,10 @@ _ALLOWED: dict[str, frozenset[str]] = {
     "core": frozenset({"foundation", "core"}),
     # 运行时层是唯一可以碰原生扩展与平台 API 的层
     "runtime": frozenset({"foundation", "core", "runtime"}),
-    # 开发接口：用例编排，不认识传输与适配器
-    "service": frozenset({"foundation", "protocol", "core", "runtime", "service"}),
-    # 外网兼容层：只搬字节与帧，不认识业务（客户端链也止于这里）
-    "transport": frozenset({"foundation", "protocol", "transport"}),
-    # 接入层：客户端形态只用 transport + protocol，进程内挂载形态才用得上 service
-    "adapters": frozenset({"foundation", "protocol", "service", "transport", "adapters"}),
-    # 装配层：摸得到它要装配的一切，但不该认识适配器
-    "daemon": frozenset(
-        {"foundation", "protocol", "core", "runtime", "service", "transport", "daemon"}
-    ),
+    # 只搬字节，不认识帧（帧在 protocol，缝合靠装配方注入）
+    "transport": frozenset({"foundation", "transport"}),
+    # 只认注入的请求处理接缝：不 import core，也不 import protocol / transport
+    "daemon": frozenset({"foundation", "runtime", "daemon"}),
     # 示例层是各层的占位：既在进程内直连核心层当测试驱动，也演示守护进程与客户端这一对
     "example": frozenset(
         {"foundation", "protocol", "core", "runtime", "transport", "daemon", "example"}
