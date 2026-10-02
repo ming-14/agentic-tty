@@ -9,11 +9,15 @@ TCP 没有消息边界，还会把一次发送切开、把几次发送粘起来�
 
 控制帧是 JSON 信封；字节帧是"流标签 + 键 + 原始字节"——字节不走 JSON，否则要给
 每个字节做 base64（膨胀三分之一，也抹平"字节流才是真源"）。单帧上限见 `_MAX_PAYLOAD`。
+
+解码器只做"字节 → 帧"，字节从哪来由装配方注入给 `FrameReader`——因此这一层始终
+不认识连接、超时、socket。
 """
 
 from __future__ import annotations
 
 import struct
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from .errors import FrameError
@@ -106,6 +110,39 @@ class FrameDecoder:
             del self._buf[:total]
             frames.append(_decode_payload(kind, payload))
         return frames
+
+
+class FrameReader:
+    """从注入的字节源反复取字节，凑齐一帧交一帧。
+
+    字节源是装配方给的一个"返回 bytes 的函数"，所以这里**不认识连接、超时、
+    socket**——只认识"一段新到的字节"。
+
+    **抛过 `FrameError` 之后这个 reader 就作废**：帧流已经不可能再往前走——要么错位
+    了，要么卡在一个永远读不完的帧上；作废后 `read()` 一律再抛，调用方没有"忘记断连"
+    的余地。注意 `EnvelopeError` 与它属同一类（`ProtocolError`）——信封是在 `read()`
+    返回之后由调用方解的，reader 看不见，所以"这条流作废"在调用方那一侧同样要成立。
+    """
+
+    def __init__(self, read: Callable[[], bytes]) -> None:
+        self._read = read
+        self._decoder = FrameDecoder()
+        self._broken = False
+
+    @property
+    def broken(self) -> bool:
+        """是否已作废（作废后只能断开重连）。"""
+        return self._broken
+
+    def read(self) -> list[ControlFrame | BytesFrame]:
+        """取一轮字节，返回这次凑齐的全部帧（可能为空）。"""
+        if self._broken:
+            raise FrameError("帧流已作废，必须断开重连")
+        try:
+            return self._decoder.feed(self._read())
+        except FrameError:
+            self._broken = True
+            raise
 
 
 def _decode_payload(kind: int, payload: bytes) -> ControlFrame | BytesFrame:
