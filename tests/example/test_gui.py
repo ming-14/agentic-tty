@@ -11,30 +11,11 @@ tk = pytest.importorskip("tkinter")
 pytest.importorskip("resvg_py")  # GUI 的 SVG 渲染依赖
 
 from agentic_tty.core.ports import Stream  # noqa: E402
-from agentic_tty.core.process.session import ProcessSession  # noqa: E402
 from agentic_tty.core.runtime.runner import SessionRunner  # noqa: E402
-from agentic_tty.core.session.registry import SessionRegistry  # noqa: E402
+from agentic_tty.example.core_test import render  # noqa: E402
 from agentic_tty.example.core_test.gui import App  # noqa: E402
-from agentic_tty.example.core_test.programs import PROGRAMS  # noqa: E402
-from agentic_tty.example.core_test.runtime_fakehost import (  # noqa: E402
-    FakeHost,
-    FakeProgram,
-)
 from agentic_tty.example.core_test.sessions import ExampleMode, session_spec  # noqa: E402
-
-
-@pytest.fixture
-def root():
-    try:
-        widget = tk.Tk()
-    except tk.TclError as exc:  # 无显示环境
-        pytest.skip(f"无法创建 Tk 窗口: {exc}")
-    widget.withdraw()
-    yield widget
-    try:
-        widget.destroy()
-    except tk.TclError:
-        pass
+from agentic_tty.example.ui import Page, ViewRange  # noqa: E402
 
 
 def _pump_until(root: tk.Tk, app: App, uid: str, predicate, timeout: float = 5.0) -> bool:
@@ -49,8 +30,8 @@ def _pump_until(root: tk.Tk, app: App, uid: str, predicate, timeout: float = 5.0
 
 def test_create_session_pumps_to_completion(root):
     app = App(root)
-    app._command.set("build")
-    app._mode.set(ExampleMode.FAKE.value)
+    app._bar.command.set("build")
+    app._bar.mode.set(ExampleMode.FAKE.value)
     app._create_session()
     sessions = app._registry.list()
     assert len(sessions) == 1
@@ -60,23 +41,19 @@ def test_create_session_pumps_to_completion(root):
     session = app._registry.get(uid)
     assert session.exit_code == 0
     assert b"build OK" in session.read_all(Stream.STDOUT)
-    assert app._render_view(session).startswith("── stdout ──")
     app.on_close()
 
 
 def test_send_input_and_close(root):
     app = App(root)
-    app._command.set("repl")
-    app._mode.set(ExampleMode.FAKE.value)
+    app._bar.command.set("repl")
+    app._bar.mode.set(ExampleMode.FAKE.value)
     app._create_session()
     uid = app._registry.list()[0].uid
 
-    app._input.insert(0, "hi")
+    app._input.text = "hi"
     app._send_input(newline=True)
     assert _pump_until(root, app, uid, lambda s: b"echo: hi" in s.read_all(Stream.STDOUT))
-
-    # 假会话没有屏幕视图，视图就是双流
-    assert "echo: hi" in app._render_view(app._registry.get(uid))
 
     app._selected = uid
     app._close_selected()
@@ -86,55 +63,63 @@ def test_send_input_and_close(root):
 
 def test_mode_change_swaps_command_source(root):
     app = App(root)
-    assert app._mode.get() == ExampleMode.FAKE.value
-    assert "repl" in app._command["values"]
+    assert app._bar.mode.get() == ExampleMode.FAKE.value
+    assert "repl" in app._bar.command["values"]
 
-    app._mode.set(ExampleMode.PTY.value)
+    app._bar.mode.set(ExampleMode.PTY.value)
     app._on_mode_change()
-    assert not app._command["values"]  # Tk 把空列表读回成 ""
-    assert app._command.get() == ""
+    assert not app._bar.command["values"]  # Tk 把空列表读回成 ""
+    assert app._bar.command.get() == ""
 
-    app._mode.set(ExampleMode.FAKE.value)
+    app._bar.mode.set(ExampleMode.FAKE.value)
     app._on_mode_change()
-    assert "build" in app._command["values"]
+    assert "build" in app._bar.command["values"]
     app.on_close()
 
 
 def test_pty_only_controls_hidden_for_fake(root):
     """屏幕页 / SVG 源码页 / 导出按钮 / 尺寸控件都是 pty 专属：其他模式藏掉或禁用。"""
     app = App(root)
-    app._command.set("repl")
-    app._mode.set(ExampleMode.FAKE.value)
+    app._bar.command.set("repl")
+    app._bar.mode.set(ExampleMode.FAKE.value)
     app._create_session()
     app._selected = app._registry.list()[0].uid
     app._refresh_detail()
 
-    assert app._notebook.tab(app._image_tab, "state") == "hidden"
-    assert app._notebook.tab(app._svg, "state") == "hidden"
-    assert app._svg_source is None
-    for widget in (app._save_svg_btn, app._save_png_btn, app._resize_btn, app._cols, app._rows):
+    assert app._tabs.page_state(Page.SCREEN) == "hidden"
+    assert app._tabs.page_state(Page.SVG) == "hidden"
+    assert app._screen.svg_source is None
+    for widget in (
+        app._size.save_svg_btn,
+        app._size.save_png_btn,
+        app._size.apply_btn,
+        app._size.cols,
+        app._size.rows,
+    ):
         assert "disabled" in widget.state()
-    assert not any(app._image_canvas.type(i) == "image" for i in app._image_canvas.find_all())
+    assert not any(
+        app._screen.canvas.type(i) == "image" for i in app._screen.canvas.find_all()
+    )
     app.on_close()
 
 
 def test_screen_image_fits_canvas(root):
     """屏幕按画布大小缩放铺满，画布独占一行（没有滚动条）。"""
     app = App(root)
-    app._image_canvas.winfo_width = lambda: 600
-    app._image_canvas.winfo_height = lambda: 300
+    app._screen.canvas.winfo_width = lambda: 600
+    app._screen.canvas.winfo_height = lambda: 300
 
     # 1.0 倍的尺寸由渲染结果自带：80×24 字符 → 640×408。按较小的一维贴合画布。
-    assert app._fit_scale((640, 408)) == pytest.approx(min(600 / 640, 300 / 408))
-    assert app._image_tab.grid_slaves(row=1) == [app._image_canvas]
+    assert app._screen.fit_scale((640, 408)) == pytest.approx(min(600 / 640, 300 / 408))
+    assert app._screen.tab.grid_slaves(row=1) == [app._screen.canvas]
     app.on_close()
 
 
 def test_process_tab_shows_tree_members(root):
     """「进程」页所有模式都有：会话树那列是成员数，页内列出成员 pid。"""
     app = App(root)
-    app._command.set("repl")
-    app._mode.set(ExampleMode.FAKE.value)
+    app._bar.command.set("repl")
+    app._bar.mode.set(ExampleMode.FAKE.value)
     app._create_session()
     uid = app._registry.list()[0].uid
     app._selected = uid
@@ -146,24 +131,39 @@ def test_process_tab_shows_tree_members(root):
     app._refresh_tree()
     app._refresh_detail()
 
-    assert app._notebook.tab(app._procs, "state") == "normal"  # 不是 pty 专属
-    assert app._tree.item(uid, "values")[4] == "2"
-    text = app._procs.get("1.0", "end-1c")
+    assert app._tabs.page_state(Page.PROCS) == "normal"  # 不是 pty 专属
+    assert app._tree.values(uid)[4] == "2"
+    text = app._tabs.text(Page.PROCS).get("1.0", "end-1c")
     assert "进程树成员 2 个" in text
     assert "pid 101" in text and "pid 202" in text
     app.on_close()
 
 
-def test_processes_helper_returns_none_when_unobservable(root):
-    """未启动的会话观测不到进程树：返回 None 而不是抛给界面。"""
+def test_view_page_reads_its_range(root, fake_registry, monkeypatch):
+    """「视图」页的范围单选直接决定喂给 core 的是哪一项返回数据。"""
+    seen: list[bool] = []
+    original = render.view_text
+
+    def spy(session, *, full: bool) -> str:
+        seen.append(full)
+        return original(session, full=full)
+
+    monkeypatch.setattr(render, "view_text", spy)
+
     app = App(root)
-    session = ProcessSession(
-        "uid-bare",
-        session_spec(ExampleMode.FAKE, ("repl",)),
-        lambda spec: FakeHost(spec, PROGRAMS["repl"]),
-        journal_budget_bytes=1 << 16,
-    )
-    assert app._processes(session) is None
+    app._registry = fake_registry
+    session = fake_registry.create(session_spec(ExampleMode.SUBPROCESS, ("repl",)))
+    app._selected = session.uid
+
+    app._tabs.view_mode.set(ViewRange.FULL)
+    app._refresh_detail()
+    app._tabs.view_mode.set(ViewRange.SCREEN)
+    app._refresh_detail()
+
+    assert seen == [True, False]
+    page = app._tabs.text(Page.VIEW)
+    assert page.get("1.0", "end-1c").startswith("── stdout ──")
+    fake_registry.close(session.uid)
     app.on_close()
 
 
@@ -193,36 +193,30 @@ def test_screen_views_for_real_pty(root):
     assert _pump_until(root, app, session.uid, lambda s: s.drained)
     app._refresh_detail()
 
-    assert app._notebook.tab(app._image_tab, "state") == "normal"
-    assert "disabled" not in app._save_png_btn.state()
-    assert "disabled" not in app._resize_btn.state()
-    assert app._svg_source.startswith("<svg") and "gui-svg" in app._svg_source
-    assert any(app._image_canvas.type(i) == "image" for i in app._image_canvas.find_all())
+    assert app._tabs.page_state(Page.SCREEN) == "normal"
+    assert "disabled" not in app._size.save_png_btn.state()
+    assert "disabled" not in app._size.apply_btn.state()
+    assert app._screen.svg_source.startswith("<svg") and "gui-svg" in app._screen.svg_source
+    assert any(
+        app._screen.canvas.type(i) == "image" for i in app._screen.canvas.find_all()
+    )
 
     # 切到 svg 格式：走 resvg 栅格化，同样落成一张位图
-    app._format.set("svg")
-    app._refresh_detail()
-    assert any(app._image_canvas.type(i) == "image" for i in app._image_canvas.find_all())
+    app._screen.format = "svg"
+    assert any(
+        app._screen.canvas.type(i) == "image" for i in app._screen.canvas.find_all()
+    )
 
-    app._cols.delete(0, "end")
-    app._cols.insert(0, "100")
-    app._rows.delete(0, "end")
-    app._rows.insert(0, "30")
+    app._size.set_size(100, 30)
     app._resize()
     assert (session.cols, session.rows) == (100, 30)
     app.on_close()
 
 
-def _fake_registry() -> SessionRegistry:
-    """用假宿主装配的注册表：测界面接线不必起真进程。"""
-    return SessionRegistry(lambda spec: FakeHost(spec, FakeProgram()))
-
-
-def test_send_input_encodes_newline_per_mode(root):
+def test_send_input_encodes_newline_per_mode(root, fake_registry):
     """回车编码由消费者做：PTY 是 CR、子进程是 LF（core 只收字节）。"""
     app = App(root)
-    registry = _fake_registry()
-    app._registry = registry
+    app._registry = fake_registry
     sent: list[bytes] = []
 
     class _Spy:
@@ -234,71 +228,55 @@ def test_send_input_encodes_newline_per_mode(root):
             pass
 
     for mode, expected in ((ExampleMode.PTY, b"hi\r"), (ExampleMode.SUBPROCESS, b"hi\n")):
-        session = registry.create(session_spec(mode, ("x",)))
+        session = fake_registry.create(session_spec(mode, ("x",)))
         app._selected = session.uid
         app._runners[session.uid] = _Spy()  # type: ignore[assignment]
-        app._input.delete(0, tk.END)
-        app._input.insert(0, "hi")
+        app._input.text = "hi"
         app._send_input(newline=True)
         assert sent[-1] == expected
-        registry.close(session.uid)
+        fake_registry.close(session.uid)
     app.on_close()
 
 
-def test_close_stdin_reaches_host(root):
+def test_close_stdin_reaches_host(root, fake_registry):
     """「关 stdin」只对子进程有效，且真的传到宿主。"""
     app = App(root)
-    registry = _fake_registry()
-    app._registry = registry
-    session = registry.create(session_spec(ExampleMode.SUBPROCESS, ("x",)))
+    app._registry = fake_registry
+    session = fake_registry.create(session_spec(ExampleMode.SUBPROCESS, ("x",)))
     app._selected = session.uid
     app._close_stdin()
     assert session.host.stdin_closed
-    registry.close(session.uid)
+    fake_registry.close(session.uid)
     app.on_close()
 
 
-def test_cells_and_rebuild_are_rendered(root):
-    """「格栅」页与「原始字节」页里的重建字节都出得来。"""
-    app = App(root)
-    registry = _fake_registry()
-    app._registry = registry
-    session = registry.create(session_spec(ExampleMode.PTY, ("x",)))
-    session.ingest_stream(Stream.STDOUT, b"ab\ncd")
-    assert app._render_cells(session) == "ab\ncd"
-    assert "重建字节" in app._render_raw(session)
-    registry.close(session.uid)
-    app.on_close()
-
-
-def test_kill_keeps_the_session(root):
+def test_kill_keeps_the_session(root, fake_registry):
     """「强杀」只杀进程、保留会话——与「关闭选中」不同。"""
     app = App(root)
-    registry = _fake_registry()
-    app._registry = registry
-    session = registry.create(session_spec(ExampleMode.SUBPROCESS, ("x",)))
+    app._registry = fake_registry
+    session = fake_registry.create(session_spec(ExampleMode.SUBPROCESS, ("x",)))
     app._selected = session.uid
     app._kill_selected()
     assert session.exit_code is not None  # 假宿主强杀后立刻可见
-    assert registry.find(session.uid) is session  # 仍在表里
-    registry.close(session.uid)
+    assert fake_registry.find(session.uid) is session  # 仍在表里
+    fake_registry.close(session.uid)
     app.on_close()
 
 
-def test_subscription_page_collects_new_output(root):
+def test_subscription_page_collects_new_output(root, fake_registry):
     """「订阅流」页用 core 的 `Subscription` 按游标取增量（订阅机制的用法）。"""
     app = App(root)
-    registry = _fake_registry()
-    app._registry = registry
-    session = registry.create(session_spec(ExampleMode.SUBPROCESS, ("x",)))
+    app._registry = fake_registry
+    session = fake_registry.create(session_spec(ExampleMode.SUBPROCESS, ("x",)))
     app._selected = session.uid
     app._refresh_detail()  # 建订阅：游标从当前末尾起
-    assert app._sub.get("1.0", "end-1c").startswith("── 订阅自 offset")
+    page = app._tabs.text(Page.SUB)
+    assert page.get("1.0", "end-1c").startswith("── 订阅自 offset")
 
     session.ingest_stream(Stream.STDOUT, b"hello")
     app._refresh_detail()  # 拉增量
-    assert "hello" in app._sub.get("1.0", "end-1c")
+    assert "hello" in page.get("1.0", "end-1c")
     assert app._subscription is not None
     assert app._subscription.next_offset == session.journal.end_offset
-    registry.close(session.uid)
+    fake_registry.close(session.uid)
     app.on_close()

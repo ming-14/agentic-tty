@@ -41,17 +41,43 @@ def _module_path(path: Path) -> str:
     return path.relative_to(SRC).as_posix()
 
 
-def _resolve_relative(path: Path, node: ast.ImportFrom) -> str | None:
+def _module_of(path: Path, node: ast.ImportFrom) -> str | None:
+    """把相对导入解析成完整模块路径（`ui/screen.py` 里的 `.common` → `example.ui.common`）。"""
     parts = list(path.relative_to(SRC).parts[:-1])
     up = node.level - 1
     if up > len(parts):
         return None
     base = parts[: len(parts) - up]
-    if base:
-        return base[0]
     if node.module:
-        return node.module.split(".")[0]
-    return None
+        base += node.module.split(".")
+    return ".".join(base) if base else None
+
+
+def _resolve_relative(path: Path, node: ast.ImportFrom) -> str | None:
+    module = _module_of(path, node)
+    return module.split(".")[0] if module else None
+
+
+def _example_peers(path: Path) -> set[str]:
+    """该文件引用到的 `example.<格>`：包内相对引用与绝对引用都算。"""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    modules: list[str | None] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.level:
+                modules.append(_module_of(path, node))
+            elif node.module:
+                modules.append(node.module)
+        elif isinstance(node, ast.Import):
+            modules.extend(alias.name for alias in node.names)
+    peers: set[str] = set()
+    for module in modules:
+        parts = module.split(".") if module else []
+        if parts[:1] == ["agentic_tty"]:
+            parts = parts[1:]
+        if len(parts) >= 2 and parts[0] == "example":
+            peers.add(parts[1])
+    return peers
 
 
 def _deps(path: Path) -> tuple[set[str], set[str]]:
@@ -119,10 +145,10 @@ def test_nothing_depends_on_example():
 
 
 def test_example_client_stays_a_pure_client():
-    """客户端那一格只许依赖公共层——包级规则管不住它，所以单列一条。
+    """客户端那一格只许依赖公共层，也不许伸手进别的格——包级规则管不住它，单列一条。
 
-    当前 `example/` 下只有验证台（直连核心层是它们的职责），这条自动跳过；
-    等客户端那一格回来（它依赖 `foundation + protocol + transport`），断言自动生效。
+    `core_test/` 与 `daemon_test/` 是验证台（直连各自那层是职责所在），跳过；剩下的格
+    （如共享控件 `ui/`）既不能依赖核心层与消费者，也不能引用别的格。
     """
     for package in sorted((SRC / "example").iterdir()):
         if not package.is_dir() or not (package / "__init__.py").exists():
@@ -131,5 +157,8 @@ def test_example_client_stays_a_pure_client():
             continue
         for path in sorted(package.rglob("*.py")):
             deps, _ = _deps(path)
-            extra = sorted(deps - {"foundation", "protocol", "transport"})
+            # "example" 是包内引用的自指，格与格之间由下面那条单独管
+            extra = sorted(deps - {"foundation", "protocol", "transport", "example"})
             assert not extra, f"{path.relative_to(SRC)} 越出客户端链: {extra}"
+            peers = _example_peers(path) - {package.name}
+            assert not peers, f"{path.relative_to(SRC)} 伸手进了别的格: {sorted(peers)}"
