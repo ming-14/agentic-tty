@@ -20,6 +20,7 @@ import tkinter as tk
 from pathlib import Path
 from queue import Empty, Queue
 from tkinter import filedialog, messagebox, ttk
+from tkinter import font as tkfont
 
 try:
     import resvg_py
@@ -47,6 +48,13 @@ _STOP_TIMEOUT = 2.0
 _NAME = "agentic-tty-daemon-test"
 
 
+def _fixed_font(size: int) -> tkfont.Font:
+    """平台默认等宽字体的副本——不硬编码 Consolas 这类平台专有字体（Linux 上没有）。"""
+    font = tkfont.nametofont("TkFixedFont").copy()
+    font.configure(size=size)
+    return font
+
+
 def _svg_size(svg: str) -> tuple[int, int] | None:
     """渲染结果自带的像素尺寸（1.0 倍）——根元素上写着 width / height。"""
     root = svg.split(">", 1)[0]
@@ -62,6 +70,8 @@ class App:
 
     def __init__(self, root: tk.Tk) -> None:
         self._root = root
+        self._mono = _fixed_font(10)
+        self._mono_small = _fixed_font(9)
         self._config = DaemonConfig(name=_NAME, runtime_dir=default_runtime_dir(_NAME))
         self._handler = KernelHandler()
         self._replies: Queue[Reply] = Queue()
@@ -193,10 +203,10 @@ class App:
         self._image_tab.rowconfigure(1, weight=1)
         self._image_tab.columnconfigure(0, weight=1)
 
-        self._svg = tk.Text(self._notebook, wrap=tk.NONE, font=("Consolas", 9))
-        self._view = tk.Text(self._notebook, wrap=tk.NONE, font=("Consolas", 10))
-        self._raw = tk.Text(self._notebook, wrap=tk.NONE, font=("Consolas", 9))
-        self._procs = tk.Text(self._notebook, wrap=tk.NONE, font=("Consolas", 10))
+        self._svg = tk.Text(self._notebook, wrap=tk.NONE, font=self._mono_small)
+        self._view = tk.Text(self._notebook, wrap=tk.NONE, font=self._mono)
+        self._raw = tk.Text(self._notebook, wrap=tk.NONE, font=self._mono_small)
+        self._procs = tk.Text(self._notebook, wrap=tk.NONE, font=self._mono)
         self._notebook.add(self._image_tab, text="屏幕")
         self._notebook.add(self._svg, text="SVG 源码")
         self._notebook.add(self._view, text="视图")

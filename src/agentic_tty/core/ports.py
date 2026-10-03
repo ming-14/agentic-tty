@@ -36,7 +36,11 @@ class SessionSpec:
 
 @dataclass(frozen=True, slots=True)
 class HostMetadata:
-    """终端模型解析出的元数据。"""
+    """终端元数据。
+
+    `title` 目前恒为占位值——底层 `pywezterm` 的标题接口不工作（见 `PtyHost.metadata`）。
+    `cwd` 优先取 OSC 7（程序自己 `cd` 之后的真实目录），拿不到则退回会话创建时的目录。
+    """
 
     title: str | None = None
     cwd: str | None = None

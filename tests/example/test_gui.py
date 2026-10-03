@@ -13,9 +13,13 @@ pytest.importorskip("resvg_py")  # GUI 的 SVG 渲染依赖
 from agentic_tty.core.ports import Stream  # noqa: E402
 from agentic_tty.core.process.session import ProcessSession  # noqa: E402
 from agentic_tty.core.runtime.runner import SessionRunner  # noqa: E402
+from agentic_tty.core.session.registry import SessionRegistry  # noqa: E402
 from agentic_tty.example.core_test.gui import App  # noqa: E402
 from agentic_tty.example.core_test.programs import PROGRAMS  # noqa: E402
-from agentic_tty.example.core_test.runtime_fakehost.fake_host import FakeHost  # noqa: E402
+from agentic_tty.example.core_test.runtime_fakehost import (  # noqa: E402
+    FakeHost,
+    FakeProgram,
+)
 from agentic_tty.example.core_test.sessions import ExampleMode, session_spec  # noqa: E402
 
 
@@ -206,4 +210,76 @@ def test_screen_views_for_real_pty(root):
     app._rows.insert(0, "30")
     app._resize()
     assert (session.cols, session.rows) == (100, 30)
+    app.on_close()
+
+
+def _fake_registry() -> SessionRegistry:
+    """用假宿主装配的注册表：测界面接线不必起真进程。"""
+    return SessionRegistry(lambda spec: FakeHost(spec, FakeProgram()))
+
+
+def test_send_input_encodes_newline_per_mode(root):
+    """回车编码由消费者做：PTY 是 CR、子进程是 LF（core 只收字节）。"""
+    app = App(root)
+    registry = _fake_registry()
+    app._registry = registry
+    sent: list[bytes] = []
+
+    class _Spy:
+        def submit_input(self, data: bytes) -> bool:
+            sent.append(data)
+            return True
+
+        def stop(self, timeout: float = 2.0) -> None:
+            pass
+
+    for mode, expected in ((ExampleMode.PTY, b"hi\r"), (ExampleMode.SUBPROCESS, b"hi\n")):
+        session = registry.create(session_spec(mode, ("x",)))
+        app._selected = session.uid
+        app._runners[session.uid] = _Spy()  # type: ignore[assignment]
+        app._input.delete(0, tk.END)
+        app._input.insert(0, "hi")
+        app._send_input(newline=True)
+        assert sent[-1] == expected
+        registry.close(session.uid)
+    app.on_close()
+
+
+def test_close_stdin_reaches_host(root):
+    """「关 stdin」只对子进程有效，且真的传到宿主。"""
+    app = App(root)
+    registry = _fake_registry()
+    app._registry = registry
+    session = registry.create(session_spec(ExampleMode.SUBPROCESS, ("x",)))
+    app._selected = session.uid
+    app._close_stdin()
+    assert session.host.stdin_closed
+    registry.close(session.uid)
+    app.on_close()
+
+
+def test_cells_and_rebuild_are_rendered(root):
+    """「格栅」页与「原始字节」页里的重建字节都出得来。"""
+    app = App(root)
+    registry = _fake_registry()
+    app._registry = registry
+    session = registry.create(session_spec(ExampleMode.PTY, ("x",)))
+    session.ingest_stream(Stream.STDOUT, b"ab\ncd")
+    assert app._render_cells(session) == "ab\ncd"
+    assert "重建字节" in app._render_raw(session)
+    registry.close(session.uid)
+    app.on_close()
+
+
+def test_kill_keeps_the_session(root):
+    """「强杀」只杀进程、保留会话——与「关闭选中」不同。"""
+    app = App(root)
+    registry = _fake_registry()
+    app._registry = registry
+    session = registry.create(session_spec(ExampleMode.SUBPROCESS, ("x",)))
+    app._selected = session.uid
+    app._kill_selected()
+    assert session.exit_code is not None  # 假宿主强杀后立刻可见
+    assert registry.find(session.uid) is session  # 仍在表里
+    registry.close(session.uid)
     app.on_close()

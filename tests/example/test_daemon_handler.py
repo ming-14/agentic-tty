@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from agentic_tty.core.ports import PTY
 from agentic_tty.core.session.registry import SessionRegistry
-from agentic_tty.example.core_test.runtime_fakehost.fake_host import FakeHost, FakeProgram
+from agentic_tty.example.core_test.runtime_fakehost import FakeHost, FakeProgram
 from agentic_tty.example.daemon_test.handler import Answer, KernelHandler, Request
 
 

@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from .runtime_fakehost.fake_host import FakeProgram
+from .runtime_fakehost import FakeProgram
 
 
 def _respond(line: bytes) -> bytes:

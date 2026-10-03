@@ -44,6 +44,10 @@ def _tk_available() -> bool:
 
 def test_windows_of_empty_input_and_console_process():
     assert windows_of([]) == ()
+    if sys.platform != "win32":
+        # 没有实现的平台用 None 表达"查不到"，与"确实没有窗口"的空元组分开
+        assert windows_of({os.getpid()}) is None
+        return
     # 控制台进程的窗口属于 conhost 而非程序本身，不能被误判成"弹了 GUI"
     assert windows_of({os.getpid()}) == ()
 

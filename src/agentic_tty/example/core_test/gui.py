@@ -7,15 +7,16 @@
 宿主的读由 core.runtime 的读线程代劳（`SessionRunner`），界面线程从不阻塞。
 
 模式三选一：`fake` 跑示例假程序（命令框下拉即假程序名）；`pty` / `subprocess`
-跑真命令（命令框直接输入）。
+跑真命令（命令框直接输入，留空 = 平台默认 shell）。
 
-右侧「屏幕」/「SVG 源码」页是 **pty 专属**（其他模式藏掉）：`image` 格式走
-`Session.render_image`（终端模型直接出位图），`svg` 格式走 `Session.render_svg`
+右侧「屏幕」/「SVG 源码」/「格栅」页是 **pty 专属**（其他模式藏掉）：`image` 格式
+走 `Session.render_image`（终端模型直接出位图），`svg` 格式走 `Session.render_svg`
 再经 resvg 栅格化——**Tk 的 PhotoImage 只吃位图，没有 SVG 解码器**。屏幕按画布
-大小缩放铺满，不出滚动条。
+大小缩放铺满，不出滚动条。「视图」页可在「可见屏幕」与「全量输出」之间切换，
+「原始字节」页尾部附重建字节。
 
 「进程」页**所有模式都有**：会话树里那列"进程"是进程树成员数，页内列出成员 pid，
-以及（Windows）该会话名下探测到的可见窗口。
+以及该会话名下的可见窗口（窗口探测只有 Windows 有实现，其他平台明确标"不支持"）。
 """
 
 from __future__ import annotations
@@ -23,17 +24,24 @@ from __future__ import annotations
 import base64
 import re
 import shlex
+import threading
+import time
 import tkinter as tk
+from collections.abc import Callable
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from tkinter import font as tkfont
 
 try:
     import resvg_py
 except ImportError as exc:  # 依赖缺失就说清楚怎么补，不静默降级
     raise ImportError("Tk 管理台渲染 SVG 需要 resvg-py：pip install -e .[gui]") from exc
 
+from ...core.process.session import ProcessSession
+from ...core.runtime.host_factory import check_dependencies
 from ...core.runtime.monitor import windows_of
 from ...core.runtime.runner import SessionRunner
+from ...core.runtime.shell import default_shell
 from ...core.session.base import Session
 from ...core.session.registry import SessionRegistry
 from ...core.terminal.session import TerminalSession
@@ -51,6 +59,25 @@ _RAW_TAIL = 2000
 _EXPORT_SCALE = 2.0
 _FORMAT_IMAGE = "image"
 _FORMAT_SVG = "svg"
+_VIEW_SCREEN = "screen"
+_VIEW_FULL = "full"
+# 收尾时等释放线程的上限；到点就放手，别挡关窗
+_RELEASE_JOIN_SECONDS = 5.0
+
+
+def _safe(getter: Callable[[], str]) -> str:
+    """终端视图取值；宿主已关闭等异常转成一行提示。"""
+    try:
+        return getter()
+    except Exception as exc:
+        return f"<不可用: {exc}>"
+
+
+def _fixed_font(size: int) -> tkfont.Font:
+    """平台默认等宽字体的副本——不硬编码 Consolas 这类平台专有字体（Linux 上没有）。"""
+    font = tkfont.nametofont("TkFixedFont").copy()
+    font.configure(size=size)
+    return font
 
 
 def _svg_size(svg: str) -> tuple[int, int] | None:
@@ -84,8 +111,11 @@ class App:
 
     def __init__(self, root: tk.Tk) -> None:
         self._root = root
+        self._mono = _fixed_font(10)
+        self._mono_small = _fixed_font(9)
         self._registry: SessionRegistry = create_registry()
         self._runners: dict[str, SessionRunner] = {}
+        self._releasing: list[threading.Thread] = []
         self._selected: str | None = None
         self._ticks = 0
         # 屏幕视图：屏幕 / 格式 / 画布尺寸没变就不重渲染——位图渲染不便宜
@@ -123,7 +153,10 @@ class App:
         self._command.set("repl")
         self._command.pack(side=tk.LEFT)
         ttk.Button(top, text="创建会话", command=self._create_session).pack(side=tk.LEFT, padx=6)
-        ttk.Button(top, text="关闭选中", command=self._close_selected).pack(side=tk.LEFT)
+        ttk.Button(top, text="强杀", command=self._kill_selected).pack(side=tk.LEFT)
+        ttk.Button(top, text="关闭选中", command=self._close_selected).pack(
+            side=tk.LEFT, padx=(4, 0)
+        )
         ttk.Label(
             top,
             text="（fake 下拉选假程序；pty / subprocess 直接输入真命令）",
@@ -180,13 +213,37 @@ class App:
         self._image_tab.rowconfigure(1, weight=1)
         self._image_tab.columnconfigure(0, weight=1)
 
-        self._svg = tk.Text(self._notebook, wrap=tk.NONE, font=("Consolas", 9))
-        self._view = tk.Text(self._notebook, wrap=tk.NONE, font=("Consolas", 10))
-        self._raw = tk.Text(self._notebook, wrap=tk.NONE, font=("Consolas", 9))
-        self._procs = tk.Text(self._notebook, wrap=tk.NONE, font=("Consolas", 10))
+        self._svg = tk.Text(self._notebook, wrap=tk.NONE, font=self._mono_small)
+
+        # 「视图」页可切「可见屏幕」/「全量输出」——core 的两项返回数据，语义不同
+        self._view_tab = ttk.Frame(self._notebook)
+        view_row = ttk.Frame(self._view_tab)
+        view_row.pack(fill=tk.X, padx=6, pady=(4, 0))
+        ttk.Label(view_row, text="范围").pack(side=tk.LEFT)
+        self._view_mode = tk.StringVar(value=_VIEW_SCREEN)
+        for text, value in (("可见屏幕", _VIEW_SCREEN), ("全量输出", _VIEW_FULL)):
+            ttk.Radiobutton(
+                view_row,
+                text=text,
+                value=value,
+                variable=self._view_mode,
+                command=self._refresh_detail,
+            ).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Label(
+            view_row,
+            text="（全量输出 = 含滚动历史的可见文本）",
+            foreground="#888780",
+        ).pack(side=tk.LEFT, padx=6)
+        self._view = tk.Text(self._view_tab, wrap=tk.NONE, font=self._mono)
+        self._view.pack(fill=tk.BOTH, expand=True)
+
+        self._cells = tk.Text(self._notebook, wrap=tk.NONE, font=self._mono)
+        self._raw = tk.Text(self._notebook, wrap=tk.NONE, font=self._mono_small)
+        self._procs = tk.Text(self._notebook, wrap=tk.NONE, font=self._mono)
         self._notebook.add(self._image_tab, text="屏幕")
         self._notebook.add(self._svg, text="SVG 源码")
-        self._notebook.add(self._view, text="视图")
+        self._notebook.add(self._view_tab, text="视图")
+        self._notebook.add(self._cells, text="格栅")
         self._notebook.add(self._raw, text="原始字节")
         self._notebook.add(self._procs, text="进程")
 
@@ -203,6 +260,8 @@ class App:
         ttk.Button(entry_row, text="Ctrl+C", command=self._send_interrupt).pack(
             side=tk.LEFT, padx=(4, 0)
         )
+        self._close_stdin_btn = ttk.Button(entry_row, text="关 stdin", command=self._close_stdin)
+        self._close_stdin_btn.pack(side=tk.LEFT, padx=(4, 0))
 
         size_row = ttk.Frame(right)
         size_row.pack(fill=tk.X, pady=(4, 0))
@@ -247,6 +306,14 @@ class App:
     # 操作
     # ════════════════════════════════════════════════════════════
 
+    def _selected_session(self) -> Session | None:
+        """当前选中的会话；没选中或已被摘除则为 None。"""
+        return self._registry.find(self._selected) if self._selected else None
+
+    def _selected_runner(self) -> SessionRunner | None:
+        """当前选中会话的运行时驱动；没选中或已释放则为 None。"""
+        return self._runners.get(self._selected) if self._selected else None
+
     def _on_mode_change(self) -> None:
         """切模式时同步命令框：fake 给假程序下拉，真形态清空留给自由输入。"""
         if self._mode.get() == ExampleMode.FAKE.value:
@@ -259,12 +326,15 @@ class App:
 
     def _create_session(self) -> None:
         text = self._command.get().strip()
-        if not text:
-            messagebox.showwarning("创建会话", "请填命令")
-            return
         mode = ExampleMode(self._mode.get())
-        # 命令按 shell 语义拆分，支持 "cmd.exe /c dir" 这种整串
-        argv = tuple(shlex.split(text)) or (text,)
+        if text:
+            # 命令按 shell 语义拆分，支持 "cmd.exe /c dir" 这种整串
+            argv = tuple(shlex.split(text)) or (text,)
+        elif mode is ExampleMode.FAKE:
+            messagebox.showwarning("创建会话", "fake 模式要选一个假程序")
+            return
+        else:
+            argv = default_shell()  # 留空 = 平台默认 shell
         try:
             session = self._registry.create(session_spec(mode, argv))
         except Exception as exc:  # 宿主起不来：注册表不会留残骸
@@ -278,23 +348,82 @@ class App:
         self._select_session(session.uid)
 
     def _close_selected(self) -> None:
-        uid = self._selected
-        session = self._registry.find(uid) if uid else None
+        """关闭选中会话：**同步摘除 + 线程里释放**。
+
+        宿主关闭在部分平台上会长时间阻塞（Windows 上要等控制台客户端退出），压在
+        所有者线程（Tk 主线程）上会把界面冻住。所以先摘除——会话立刻从列表消失、
+        不再被轮询——再把耗时的释放交给别的线程。
+        """
+        session = self._selected_session()
         if session is None:
             return
-        self._registry.close(session.uid)  # 会话收尾：先强杀进程树再关宿主
         runner = self._runners.pop(session.uid, None)
-        if runner is not None:
-            runner.stop()
+        self._registry.detach(session.uid)
+        self._release(session, runner)
         self._status.set(f"已关闭 uid={session.uid[:8]}")
         self._refresh_tree()
         self._select_session(None)
 
-    def _send_input(self, newline: bool = False) -> None:
-        runner = self._runners.get(self._selected) if self._selected else None
-        if runner is None:
+    def _release(self, session: Session, runner: SessionRunner | None) -> None:
+        """把释放交给别的线程；句柄留着，收尾时统一 join。"""
+        self._releasing = [thread for thread in self._releasing if thread.is_alive()]
+        thread = threading.Thread(
+            target=self._release_now,
+            args=(session, runner),
+            name=f"release-{session.uid[:8]}",
+            daemon=True,
+        )
+        thread.start()
+        self._releasing.append(thread)
+
+    @staticmethod
+    def _release_now(session: Session, runner: SessionRunner | None) -> None:
+        try:
+            session.close()  # 先强杀进程树再关宿主，可能要等
+        finally:
+            if runner is not None:
+                runner.stop()
+
+    def _kill_selected(self) -> None:
+        """强杀进程树但**保留会话**——与「关闭选中」的区别：后者还会释放宿主。
+
+        保留的会话仍可查输出、看退出码，是 core 生命周期里独立的一档。
+        """
+        session = self._selected_session()
+        if session is None:
             return
-        data = self._input.get().encode() + (b"\n" if newline else b"")
+        try:
+            session.stop()
+        except Exception as exc:
+            messagebox.showerror("强杀失败", str(exc))
+            return
+        self._status.set(f"已强杀 uid={session.uid[:8]}（会话保留，仍可查输出）")
+        self._refresh_tree()
+        self._refresh_detail()
+
+    def _close_stdin(self) -> None:
+        """向子进程关 stdin 发 EOF（`cat`、`python -` 这类在等它）。"""
+        session = self._selected_session()
+        if not isinstance(session, ProcessSession):
+            return
+        try:
+            session.close_stdin()
+        except Exception as exc:
+            messagebox.showerror("关 stdin 失败", str(exc))
+            return
+        self._status.set("已关闭 stdin（子进程收到 EOF）")
+
+    def _send_input(self, newline: bool = False) -> None:
+        session = self._selected_session()
+        runner = self._selected_runner()
+        if session is None or runner is None:
+            return
+        tail = b""
+        if newline:
+            # PTY 的"回车"是 CR：ConPTY 上的 cmd.exe 只认 CR 提交命令行，LF 会被留在
+            # 输入缓冲里。子进程的 stdin 是普通字节流，换行保持 LF。
+            tail = b"\r" if isinstance(session, TerminalSession) else b"\n"
+        data = self._input.get().encode() + tail
         if not runner.submit_input(data):
             messagebox.showwarning("发送失败", "输入队列已满，请稍后再试")
             return
@@ -302,14 +431,14 @@ class App:
         self._status.set(f"已入队 {len(data)} 字节（由写线程写出）")
 
     def _send_interrupt(self) -> None:
-        runner = self._runners.get(self._selected) if self._selected else None
+        runner = self._selected_runner()
         if runner is None:
             return
         runner.submit_input(b"\x03")  # Ctrl+C
         self._status.set("已入队 Ctrl+C")
 
     def _resize(self) -> None:
-        session = self._registry.find(self._selected) if self._selected else None
+        session = self._selected_session()
         if session is None:
             return
         try:
@@ -347,12 +476,14 @@ class App:
         self._refresh_detail()
 
     def _sync_pty_controls(self) -> None:
-        """屏幕页 / SVG 源码页 / 导出按钮 / 尺寸控件都是 pty 专属：其他模式藏掉或禁用。"""
-        session = self._registry.find(self._selected) if self._selected else None
+        """按会话形态开关专属控件：pty 有屏幕 / 格栅 / 导出 / 尺寸，子进程有关 stdin。"""
+        session = self._selected_session()
         is_pty = isinstance(session, TerminalSession)
+        is_process = isinstance(session, ProcessSession)
         state = "normal" if is_pty else "hidden"
         self._notebook.tab(self._image_tab, state=state)
         self._notebook.tab(self._svg, state=state)
+        self._notebook.tab(self._cells, state=state)
         for widget in (
             self._save_svg_btn,
             self._save_png_btn,
@@ -361,6 +492,7 @@ class App:
             self._rows,
         ):
             widget.state(["!disabled"] if is_pty else ["disabled"])
+        self._close_stdin_btn.state(["!disabled"] if is_process else ["disabled"])
         if is_pty:
             self._notebook.select(self._image_tab)
 
@@ -397,9 +529,10 @@ class App:
         )
 
     def _refresh_detail(self) -> None:
-        session = self._registry.find(self._selected) if self._selected else None
+        session = self._selected_session()
         if session is None:
             self._set_text(self._view, "")
+            self._set_text(self._cells, "")
             self._set_text(self._raw, "")
             self._set_text(self._svg, "")
             self._set_text(self._procs, "")
@@ -409,6 +542,7 @@ class App:
             self._rendered_key = None
             return
         self._set_text(self._view, self._render_view(session))
+        self._set_text(self._cells, self._render_cells(session))
         self._set_text(self._raw, self._render_raw(session))
         self._set_text(self._procs, self._render_processes(session))
         self._refresh_screen_views(session)
@@ -511,7 +645,7 @@ class App:
         self._status.set(f"已保存 SVG → {path}")
 
     def _save_png(self) -> None:
-        session = self._registry.find(self._selected) if self._selected else None
+        session = self._selected_session()
         if session is None:
             return
         try:
@@ -531,15 +665,21 @@ class App:
         self._status.set(f"已保存 PNG → {path}")
 
     def _render_view(self, session: Session) -> str:
-        if isinstance(session, TerminalSession):
-            return self._screen_text(session)
-        return self._render_streams(session)
+        if not isinstance(session, TerminalSession):
+            return self._render_streams(session)
+        if self._view_mode.get() == _VIEW_FULL:
+            return _safe(session.full_text)
+        return _safe(session.screen_text)
 
-    def _screen_text(self, session: Session) -> str:
+    def _render_cells(self, session: Session) -> str:
+        """字符格栅：宽字符占两格、续格为空串——空串画成 `·` 才看得出来。"""
+        if not isinstance(session, TerminalSession):
+            return "（只有终端会话有屏幕）"
         try:
-            return session.screen_text()
+            rows = session.screen_cells()
         except Exception as exc:  # 宿主已关闭等
-            return f"<屏幕不可用: {exc}>"
+            return f"<不可用: {exc}>"
+        return "\n".join("".join(cell or "·" for cell in row) for row in rows)
 
     @staticmethod
     def _render_streams(session: Session) -> str:
@@ -550,13 +690,25 @@ class App:
         return "\n".join(parts)
 
     def _render_raw(self, session: Session) -> str:
-        """原始字节页：每路只取尾部——`read_all` 会把整个保留区复制一遍。"""
+        """原始字节页：每路只取尾部（`read_all` 会把整个保留区复制一遍）+ 重建字节。"""
         lines = []
         for stream in session.streams():
             end = session.journal_for(stream).end_offset
             tail = session.read_range(max(0, end - _RAW_TAIL), end, stream)
             lines.append(f"── {stream} ──\n{tail!r}")
+        if isinstance(session, TerminalSession):
+            lines.append(f"── 重建字节（rebuild_bytes）──\n{self._render_rebuild(session)}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _render_rebuild(session: Session) -> str:
+        """重建字节：喂进一个空终端模型即可还原当前状态，订阅者重同步用它。"""
+        try:
+            data = session.rebuild_bytes()
+        except Exception as exc:  # 宿主已关闭等
+            return f"<不可用: {exc}>"
+        prefix = "…" if len(data) > _RAW_TAIL else ""
+        return f"{prefix}{data[-_RAW_TAIL:]!r}（共 {len(data)} 字节）"
 
     @staticmethod
     def _processes(session: Session) -> tuple[int, ...] | None:
@@ -584,11 +736,13 @@ class App:
             return "\n".join(lines)
         lines.append(f"进程树成员 {len(members)} 个（不含根进程）：")
         lines.extend(f"  pid {pid}" for pid in members)
-        # 窗口探测只在 Windows 有实现；其他平台返回空并记一次告警
         wanted = {root} if root is not None else set()
         windows = windows_of(wanted | set(members))
-        lines.append(f"可见窗口 {len(windows)} 个：")
-        lines.extend(f'  pid {w.pid} · "{w.title}"' for w in windows)
+        if windows is None:  # 本平台查不到，与"确实没有窗口"区分开
+            lines.append("可见窗口：本平台不支持探测")
+        else:
+            lines.append(f"可见窗口 {len(windows)} 个：")
+            lines.extend(f'  pid {w.pid} · "{w.title}"' for w in windows)
         return "\n".join(lines)
 
     @staticmethod
@@ -606,18 +760,30 @@ class App:
     # ════════════════════════════════════════════════════════════
 
     def on_close(self) -> None:
-        """窗口关闭：收尾所有会话（与守护进程退出的语义一致）。"""
+        """窗口关闭：收尾所有会话（与守护进程退出的语义一致）。
+
+        同样走两阶段：先把会话全部摘除（列表立刻空），再等释放线程，最后才销毁窗口。
+        """
         if self._tick_job is not None:  # 不取消的话，销毁后它还会触发一次并报错
             self._root.after_cancel(self._tick_job)
             self._tick_job = None
-        self._registry.close_all()  # 会话收尾：先强杀进程树再关宿主
-        for runner in list(self._runners.values()):
-            runner.stop()
+        for session in list(self._registry.list()):
+            runner = self._runners.pop(session.uid, None)
+            self._registry.detach(session.uid)
+            self._release(session, runner)
         self._runners.clear()
+        deadline = time.monotonic() + _RELEASE_JOIN_SECONDS
+        for thread in self._releasing:
+            thread.join(max(0.0, deadline - time.monotonic()))
         self._root.destroy()
 
 
 def main() -> int:
+    # 起真 pty 会话需要原生扩展；缺了 fake / subprocess 仍可用，所以只提示不阻断
+    try:
+        check_dependencies()
+    except Exception as exc:
+        _logger.warning("原生扩展不可用，pty 模式将建不出会话: %s", exc)
     root = tk.Tk()
     app = App(root)
     root.protocol("WM_DELETE_WINDOW", app.on_close)

@@ -16,13 +16,14 @@ from collections.abc import Sequence
 from enum import StrEnum
 
 from ...core import ports
+from ...core.errors import CoreError
 from ...core.ports import HostFactory, SessionSpec
 from ...core.process.session import ProcessSession
 from ...core.runtime.host_factory import create_host
 from ...core.session.registry import SessionKind, SessionRegistry
 from ...core.terminal.session import TerminalSession
 from .programs import PROGRAMS
-from .runtime_fakehost.fake_host import FakeHost
+from .runtime_fakehost import FakeHost
 
 EXAMPLE_JOURNAL_BUDGET = 1 << 20
 """示例层用更小的日志预算，便于观察裁剪与重建。"""
@@ -45,7 +46,7 @@ def _fake_host_factory(spec: SessionSpec) -> FakeHost:
     name = spec.argv[0] if spec.argv else ""
     program = PROGRAMS.get(name)
     if program is None:
-        raise KeyError(f"未定义假程序 {name!r}（可选：{', '.join(sorted(PROGRAMS))}）")
+        raise CoreError(f"未定义假程序 {name!r}（可选：{', '.join(sorted(PROGRAMS))}）")
     return FakeHost(spec, program)
 
 

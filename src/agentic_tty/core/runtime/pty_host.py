@@ -26,6 +26,10 @@ _pywezterm: ModuleType | None = None
 # 静默多久"判定：静默不够长就会把尾巴永久丢在管道里。
 _DRAIN_QUIET = 0.3
 
+_TITLE_NOT_IMPLEMENTED = "这个以后补嘻嘻"
+"""`Terminal.get_title()` 是哑接口：文档说读 OSC 0/2，实测恒返回它自己的默认值
+（`'wezterm'`），流里发什么标题都不变。拿默认值冒充真标题会误导，所以显式标出来。"""
+
 
 class _DrainQuiet:
     """按"最后一次读到字节"计静默：退出之后静默够了，才算这一路排空。"""
@@ -91,6 +95,8 @@ class PtyHost:
         self._tree = ProcessTree(pid, job)
         self._closed = False
         self._drain = _DrainQuiet(_DRAIN_QUIET)
+        # 程序自己 `cd` 之后只有 OSC 7 知道；拿不到就退回"创建时的目录"
+        self._fallback_cwd = os.path.abspath(spec.cwd) if spec.cwd else os.getcwd()
 
     # ── HostLifecycle ──────────────────────────────────────────
 
@@ -179,6 +185,6 @@ class PtyHost:
 
     def metadata(self) -> HostMetadata:
         return HostMetadata(
-            title=self._term.get_title(),
-            cwd=self._term.get_current_dir(),
+            title=_TITLE_NOT_IMPLEMENTED,
+            cwd=self._term.get_current_dir() or self._fallback_cwd,
         )

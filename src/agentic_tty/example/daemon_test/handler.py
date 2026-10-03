@@ -303,9 +303,11 @@ def _procs_text(session: Session) -> str:
         return "\n".join(lines)
     lines.append(f"进程树成员 {len(members)} 个（不含根进程）：")
     lines.extend(f"  pid {pid}" for pid in members)
-    # 窗口探测只在 Windows 有实现；其他平台返回空并记一次告警
     wanted = {root} if root is not None else set()
     windows = windows_of(wanted | set(members))
-    lines.append(f"可见窗口 {len(windows)} 个：")
-    lines.extend(f'  pid {w.pid} · "{w.title}"' for w in windows)
+    if windows is None:  # 本平台查不到，与"确实没有窗口"区分开
+        lines.append("可见窗口：本平台不支持探测")
+    else:
+        lines.append(f"可见窗口 {len(windows)} 个：")
+        lines.extend(f'  pid {w.pid} · "{w.title}"' for w in windows)
     return "\n".join(lines)
