@@ -1,43 +1,22 @@
-"""守护进程配置。
+"""守护进程配置：**装配参数**。
 
 配置是显式对象、随装配注入，装配时一次定死，不做热重载（避免"一半新配置一半旧配置"
 的中间态）。
-
-**字段留在这里**——`config/` 只管"名字叫什么"和"值从哪来"，不认识守护进程有哪些字段。
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..config import ConfigError
-from ..config.names import DEFAULT_INSTANCE
+from .names import DEFAULT_INSTANCE
+from .values import defaults_of
+from .values import from_values as _build
 
-_OPTIONAL: dict[str, Any] = {"runtime_dir": Path, "listen": str}
+_OPTIONAL = {"runtime_dir": Path, "listen": str}
 """默认值是 `None` 的字段给个显式转换——空串按"不给"处理。"""
-
-
-def _coerce(key: str, value: Any, default: Any) -> Any:
-    """按**默认值的类型**转一次：值可能来自命令行（字符串）、环境变量（字符串）或 TOML。"""
-    if default is None:
-        converter = _OPTIONAL.get(key, str)
-        return None if value is None or value == "" else converter(str(value))
-    if isinstance(default, bool):
-        if isinstance(value, bool):
-            return value
-        text = str(value).strip().lower()
-        if text in {"1", "true", "yes", "on"}:
-            return True
-        if text in {"0", "false", "no", "off"}:
-            return False
-        raise ConfigError(f"{key} 不是布尔值: {value!r}")
-    try:
-        return type(default)(value)
-    except (TypeError, ValueError) as exc:
-        raise ConfigError(f"{key} 的值不合法: {value!r}") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,13 +52,9 @@ class DaemonConfig:
     @classmethod
     def defaults(cls) -> dict[str, Any]:
         """字段名 → 默认值。**它也是"认得的键"的集合**（`config.resolve` 拿它校验）。"""
-        return {field.name: field.default for field in fields(cls)}
+        return defaults_of(cls)
 
     @classmethod
     def from_values(cls, values: Mapping[str, Any]) -> DaemonConfig:
         """从一份扁平值表建配置（键名 = 字段名）；认不出的键报 `ConfigError`。"""
-        defaults = cls.defaults()
-        unknown = sorted(set(values) - set(defaults))
-        if unknown:
-            raise ConfigError(f"未知配置项: {', '.join(unknown)}")
-        return cls(**{key: _coerce(key, value, defaults[key]) for key, value in values.items()})
+        return _build(cls, values, optional=_OPTIONAL)

@@ -1,11 +1,8 @@
 """命令行入口：`python -m agentic_tty.daemon [选项]`
 
-选项来自四处，按 **命令行 > 环境变量 > 配置文件 > 默认值** 合并（`config.resolve`）：
-
     --name <实例名>        实例名（锁 + 运行时目录）；环境变量 `AGENTIC_TTY_NAME`
     --listen <端点名>      接入点端点名（默认同实例名）；`AGENTIC_TTY_LISTEN`
     --runtime-dir <目录>   运行时目录；`AGENTIC_TTY_RUNTIME_DIR`
-    --config <文件>        TOML 配置文件（只读）
 
 命令行**只覆盖显式给出的项**——`argument_default=SUPPRESS` 保证没给的键根本不出现。
 """
@@ -15,11 +12,9 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from pathlib import Path
 
-from ..config import resolve
+from ..config import DaemonConfig, resolve
 from .assembly import run
-from .config import DaemonConfig
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -31,15 +26,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--name", help="实例名（默认 %(default)s）")
     parser.add_argument("--listen", help="接入点端点名（默认同实例名）")
     parser.add_argument("--runtime-dir", dest="runtime_dir", help="运行时目录")
-    parser.add_argument("--config", help="TOML 配置文件")
-    given = vars(parser.parse_args(argv))
-    config_file = given.pop("config", None)
-
     values = resolve(
         DaemonConfig.defaults(),
-        argv=given,
+        argv=vars(parser.parse_args(argv)),
         environ=os.environ,
-        file=Path(config_file) if config_file else None,
     )
     if values.get("listen") is None:
         # 跑守护进程就该有端点：没显式给就用**实例名**当端点名（`DaemonConfig.listen` 的

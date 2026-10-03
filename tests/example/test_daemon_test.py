@@ -16,7 +16,7 @@ from uuid import uuid4
 
 import pytest
 
-from agentic_tty.daemon.config import DaemonConfig
+from agentic_tty.config import DaemonConfig
 from agentic_tty.daemon.kernel import KernelHandler
 from agentic_tty.daemon.server import Daemon
 from agentic_tty.example.daemon_test import address

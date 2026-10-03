@@ -28,12 +28,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
+from ..config import DaemonConfig
 from ..config.names import endpoint_name, lock_name, runtime_dir
 from ..foundation.instance import InstanceLock
 from ..foundation.logs import add_rotating_file, get_logger
 from ..transport.pipe import pipe_address
 from .access_point import AccessPoint
-from .config import DaemonConfig
 from .errors import AlreadyRunning, DaemonError, NotStarted
 from .handler import Reply, RequestHandler
 from .platform.signals import InstalledSignals, install_shutdown_handler

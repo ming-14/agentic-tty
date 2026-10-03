@@ -1,4 +1,4 @@
-"""守护进程配置：值表 → 配置对象（按默认值类型转换 + 认不出的键报错）。"""
+"""各层的配置对象：值表 → 对象（按默认值类型转换 + 认不出的键报错）。"""
 
 from __future__ import annotations
 
@@ -6,12 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from agentic_tty.config import ConfigError
-from agentic_tty.daemon.config import DaemonConfig
+from agentic_tty.config import ConfigError, ConsumerConfig, DaemonConfig
 
 
 def test_defaults_are_the_known_keys():
     assert set(DaemonConfig.defaults()) == set(DaemonConfig.__dataclass_fields__)
+    assert set(ConsumerConfig.defaults()) == set(ConsumerConfig.__dataclass_fields__)
 
 
 def test_values_are_coerced_by_type():
@@ -46,3 +46,11 @@ def test_bad_value_is_reported():
 def test_bad_bool_is_reported():
     with pytest.raises(ConfigError):
         DaemonConfig.from_values({"write_log_file": "maybe"})
+
+
+def test_consumer_config_only_knows_who_to_connect_to():
+    """消费者要配的只有"连谁"——守护进程那些字段它一概不认。"""
+    assert ConsumerConfig.from_values({"name": "daemon-test"}).name == "daemon-test"
+    assert ConsumerConfig().name == DaemonConfig().name  # 默认实例名是两端共用的约定
+    with pytest.raises(ConfigError):
+        ConsumerConfig.from_values({"tick_interval": "0.01"})
