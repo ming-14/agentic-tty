@@ -58,11 +58,10 @@ def pipe_address(name: str, runtime_dir: Path | None = None) -> str:
 
 
 def _runtime_dir(address: Address) -> Path:
-    """端点目录：**必须由地址给出**。
+    """端点目录：**必须由地址给出**（`config.constants.runtime_dir()` 算出来，
+    `pipe_address()` 拼进去）。
 
-    以前不给就猜平台默认目录——那是个**静默的错**：猜出来的未必是守护进程待的那个。
-    现在地址必须带目录（`config.constants.runtime_dir()` 算出来，`pipe_address()` 拼进去），
-    猜错不如报错。
+    不给就报错——猜平台默认目录，猜出来的未必是守护进程待的那个。
     """
     if not address.path:
         raise TransportError(f"管道地址必须给运行时目录: {address}")

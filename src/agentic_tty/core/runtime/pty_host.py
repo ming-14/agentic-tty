@@ -26,7 +26,7 @@ _pywezterm: ModuleType | None = None
 # 静默多久"判定：静默不够长就会把尾巴永久丢在管道里。
 _DRAIN_QUIET = 0.3
 
-_TITLE_NOT_IMPLEMENTED = "这个以后补嘻嘻"
+_TITLE_NOT_IMPLEMENTED = "（标题未实现）"
 """`Terminal.get_title()` 是哑接口：文档说读 OSC 0/2，实测恒返回它自己的默认值
 （`'wezterm'`），流里发什么标题都不变。拿默认值冒充真标题会误导，所以显式标出来。"""
 

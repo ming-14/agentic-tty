@@ -60,7 +60,7 @@ class App:
 
     def __init__(self, root: tk.Tk, instance: str) -> None:
         self._root = root
-        # 名字是**给进来的**（入口从配置常量取的）：地址与锁名都按它算，两端各算一次
+        # 名字由入口从配置常量取来；地址与锁名都按它算
         self._address = address(instance)
         self._lock = lock(instance)
         self._answers: Queue[Answer] = Queue()
