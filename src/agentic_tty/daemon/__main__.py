@@ -1,6 +1,9 @@
 """守护进程入口：`python -m agentic_tty.daemon [--cwd <目录>]`
 
-实例名取自 `config.DEFAULT_INSTANCE`；`--cwd` 不给就继承当前目录。
+实例名：`config.DEFAULT_INSTANCE`
+端点名：同实例名（`config.endpoint_name()`）
+运行时目录：`config.runtime_dir(实例名)`
+cwd：`--cwd`；不给 = 继承当前目录
 """
 
 from __future__ import annotations

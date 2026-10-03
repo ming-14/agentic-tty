@@ -5,7 +5,10 @@
     # 终端 2：台子只连
     cd src && python -m agentic_tty.example.daemon_test
 
-要连谁取自 `config.ConsumerConfig.name`。
+实例名：`config.ConsumerConfig.name`
+端点名：同实例名（`config.endpoint_name()`）
+运行时目录：`config.runtime_dir(实例名)`
+锁名：`config.lock_name(实例名, 运行时目录)`
 """
 
 from __future__ import annotations
