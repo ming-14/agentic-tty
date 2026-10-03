@@ -16,10 +16,11 @@ from ...foundation.logs import get_logger
 from ..errors import CoreError, SessionNotFound
 from ..ports import PTY, SUBPROCESS, HostFactory, SessionSpec
 from ..process.session import ProcessSession
+from ..runtime.host_factory import create_host as default_host_factory
 from ..terminal.session import TerminalSession
 from .base import Session
 
-_logger = get_logger("core.registry")
+_logger = get_logger("core.session.registry")
 
 DEFAULT_JOURNAL_BUDGET = 8 << 20
 
@@ -28,8 +29,8 @@ DEFAULT_JOURNAL_BUDGET = 8 << 20
 class SessionKind:
     """一种会话形态：会话类 + 该形态的宿主工厂。
 
-    `host_factory` 留空表示用注册表的默认工厂：内置两种形态的宿主都由装配层注入
-    （运行时层的真 PTY / 真子进程），core 因此不必 import 任何宿主实现。
+    `host_factory` 留空表示用注册表的默认工厂（`core.runtime` 的真宿主）。
+    这是扩展点：接入方可以给某个标签配自己的宿主实现（如测试替身）。
     """
 
     session_class: type[Session]
@@ -47,7 +48,7 @@ class SessionRegistry:
 
     def __init__(
         self,
-        host_factory: HostFactory,
+        host_factory: HostFactory = default_host_factory,
         *,
         kinds: Mapping[str, SessionKind] | None = None,
         journal_budget_bytes: int = DEFAULT_JOURNAL_BUDGET,

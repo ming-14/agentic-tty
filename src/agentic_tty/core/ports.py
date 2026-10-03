@@ -1,12 +1,6 @@
-"""端口定义（依赖倒置的接缝）。
+"""端口定义：核心层需要宿主提供什么。
 
-核心层**定义**它需要宿主提供什么；运行时层提供实现。因此核心层不会出现
-`import pywezterm`，可以脱离真实 PTY 完整单测。
-
-## 线程归属是端口契约的一部分
-
-终端模型是可变的共享状态，必须由**同一个线程**独占读写。因此端口方法按
-**允许调用的线程**划分，而不是按功能划分（详见 core 设计文档的线程归属表）。
+方法按**允许调用的线程**划分（终端模型由单一线程独占），而不是按功能划分。
 """
 
 from __future__ import annotations
@@ -16,8 +10,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
-# 内置模式的标签。模式是**开放字符串**：标签由接入方（会话实现 / 宿主）自己定义，
-# core 不做校验；这两个只是内置的终端形态所用的标签。
+# 内置模式的标签。模式是开放字符串，由接入方定义，core 不校验。
 PTY = "pty"
 SUBPROCESS = "subprocess"
 
@@ -39,12 +32,11 @@ class SessionSpec:
     rows: int = 24
     cwd: str | None = None
     env: Mapping[str, str] = field(default_factory=dict)
-    encoding: str = "utf-8"
 
 
 @dataclass(frozen=True, slots=True)
 class HostMetadata:
-    """由终端模型解析出的元数据（标题、当前目录等）。"""
+    """终端模型解析出的元数据。"""
 
     title: str | None = None
     cwd: str | None = None
@@ -52,7 +44,7 @@ class HostMetadata:
 
 @runtime_checkable
 class HostLifecycle(Protocol):
-    """宿主共同生命周期。每个方法都注明了唯一允许的调用线程。"""
+    """宿主共同生命周期。"""
 
     @property
     def pid(self) -> int | None:
@@ -60,17 +52,14 @@ class HostLifecycle(Protocol):
         ...
 
     def read(self, max_bytes: int = 65536, timeout: float | None = 0.2) -> bytes:
-        """从主输出流读取至多 `max_bytes` 字节。**只允许读线程调用，不碰终端模型。**
+        """从主输出流读一段。**只允许读线程调用。**
 
-        空返回值表示本轮无数据（超时），不代表 EOF；是否排空问 `poll_eof()`。
+        空返回值是本轮无数据（超时），不代表 EOF；是否排空问 `poll_eof()`。
         """
         ...
 
     def write(self, data: bytes) -> None:
-        """把字节写入子进程输入。**唯一调用者必须是该会话的写线程。**
-
-        写会在缓冲写满时阻塞；放在事件循环上会冻结整个进程。
-        """
+        """写入子进程输入。**唯一调用者必须是写线程**（缓冲写满时会阻塞）。"""
         ...
 
     def try_wait(self) -> int | None:
@@ -78,11 +67,9 @@ class HostLifecycle(Protocol):
         ...
 
     def poll_eof(self, stream: Stream = Stream.STDOUT) -> bool:
-        """本路输出是否已排空（不会再有字节到达）。**只允许读线程调用。**
+        """本路输出是否已排空。**只允许读线程调用。**
 
-        排空只有宿主自己判得准：PTY 的输出经 conhost 中继，阻塞读永不返回、
-        拿不到真 EOF，只能按"退出后静默多久"判定；子进程管道读空就是真 EOF。
-        判定权因此在宿主，驱动方只取结果，不从"已退出 + 本轮读空"去推测。
+        排空只有宿主自己判得准（PTY 拿不到真 EOF），驱动方只取结果，不推测。
         """
         ...
 
@@ -91,11 +78,10 @@ class HostLifecycle(Protocol):
         ...
 
     def descendants(self) -> tuple[int, ...]:
-        """本会话进程树里**除根进程外**的当前成员 pid（升序）。
+        """本会话进程树里**除根进程外**的成员 pid（升序）。
 
-        **轮询式观测**：上层每次比对前后两次结果，即可得出"谁起来了、谁没了"。
-        观测不到时由实现层显式报错，不静默返回空元组——空元组是"确实没有子进程"，
-        两者混同会让"子进程启动→终止"这类返回条件静默失效。
+        **轮询式观测**。观测不到时显式报错，不静默返回空元组——空元组是"确实没有
+        子进程"，两者混同会让"子进程启动→终止"这类条件静默失效。
         """
         ...
 
@@ -119,9 +105,8 @@ class TerminalHost(HostLifecycle, Protocol):
     def rebuild_bytes(self) -> bytes:
         """生成**重建字节**（RIS + 模式恢复 + scrollback + 可见区）。
 
-        把它喂进一个空的终端模型即可还原到当前状态，供订阅者游标落后到已裁剪
-        区间时重同步（`plan_attach → Rebuild`）。**它不是给调用方看的屏幕内容**——
-        要屏幕内容用 `screen_text()` / `full_text()`。
+        喂进一个空终端模型即可还原到当前状态。**不是屏幕内容**——要屏幕内容用
+        `screen_text()` / `full_text()`。
         """
         ...
 
@@ -130,34 +115,26 @@ class TerminalHost(HostLifecycle, Protocol):
         ...
 
     def full_text(self) -> str:
-        """**全量输出**：含滚动历史的可见文本（历史区 + 可见区）。
+        """**全量输出**：含滚动历史的可见文本。
 
-        注意它与字节流全量（字节日志）是两回事：这里已经是终端模型解析后的可见
-        文本，字节流那边是未经解析的原始字节。
+        与字节流全量（字节日志）是两回事——这里已经过终端模型解析。
         """
         ...
 
     def screen_cells(self) -> tuple[tuple[str, ...], ...]:
-        """**可见屏幕**的字符格栅：每行是一串字符格。
-
-        宽字符占两格，其续格为空串；行按实际内容长度给出，未铺满整宽。
-        按格取用（如"可见屏幕第 N 列"）由上层处理。
-        """
+        """**可见屏幕**的字符格栅。宽字符占两格，续格为空串；行不铺满整宽。"""
         ...
 
     def render_svg(self) -> str:
-        """把当前**可见屏幕**渲染成 SVG（派生视图，按需生成）。"""
+        """把当前**可见屏幕**渲染成 SVG（按需生成）。"""
         ...
 
     def render_image(self, *, scale: float = 1.0, fmt: str = "png") -> bytes:
-        """把当前**可见屏幕**渲染成位图（派生视图，按需生成）。
-
-        `scale` 是字符格的像素缩放；`fmt` ∈ `png` / `jpg` / `jpeg` / `bmp`。
-        """
+        """把当前**可见屏幕**渲染成位图。`fmt` ∈ `png` / `jpg` / `jpeg` / `bmp`。"""
         ...
 
     def metadata(self) -> HostMetadata:
-        """当前元数据快照。"""
+        """当前元数据快照（标题 / cwd）。"""
         ...
 
 
@@ -166,13 +143,13 @@ class ProcessHost(HostLifecycle, Protocol):
     """子进程宿主：双管道，无终端模型。"""
 
     def read_stderr(self, max_bytes: int = 65536, timeout: float | None = 0.2) -> bytes:
-        """从 stderr 读取至多 `max_bytes` 字节。**只允许读线程调用。**"""
+        """从 stderr 读一段。**只允许读线程调用。**"""
         ...
 
     def close_stdin(self) -> None:
-        """关闭 stdin，向子进程发 EOF（`cat`、`python -` 这类程序在等它）。"""
+        """关闭 stdin 发 EOF（`cat`、`python -` 这类程序在等它）。"""
         ...
 
 
 HostFactory = Callable[[SessionSpec], HostLifecycle]
-"""由装配层注入；核心层只依赖这个可调用对象，不依赖任何具体实现。"""
+"""宿主工厂：装配层注入，核心层只依赖这个可调用对象。"""

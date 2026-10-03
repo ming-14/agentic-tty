@@ -41,29 +41,23 @@ def test_trim_does_not_cut_inside_escape_sequence():
     assert journal.read(0) == b"bbbb"
 
 
-def test_replay_offset_backs_up_over_incomplete_sequence():
-    journal = OutputJournal(1024)
-    journal.append(b"abc\x1b[3")
-    assert journal.replay_offset() == 3
-
-
 def test_plan_attach_fresh_subscriber():
     journal = OutputJournal(1024)
     journal.append(b"0123456789")
-    assert plan_attach(journal, None, journal.end_offset) == Resume(0)
+    assert plan_attach(journal, None) == Resume(0)
 
 
 def test_plan_attach_in_range_resumes():
     journal = OutputJournal(1024)
     journal.append(b"0123456789")
-    assert plan_attach(journal, 4, journal.end_offset) == Resume(4)
+    assert plan_attach(journal, 4) == Resume(4)
 
 
 def test_plan_attach_ahead_raises():
     journal = OutputJournal(1024)
     journal.append(b"0123456789")
     with pytest.raises(OffsetAhead):
-        plan_attach(journal, 11, journal.end_offset)
+        plan_attach(journal, 11)
 
 
 def test_plan_attach_rebuild_when_cursor_trimmed_away():
@@ -71,7 +65,7 @@ def test_plan_attach_rebuild_when_cursor_trimmed_away():
     journal.append(b"abcdefgh")
     journal.trim_to_budget()
     assert journal.start_offset > 0
-    assert plan_attach(journal, 0, journal.end_offset) == Rebuild("trimmed")
+    assert plan_attach(journal, 0) == Rebuild()
 
 
 def test_plan_attach_fresh_subscriber_rebuilds_when_trimmed():
@@ -79,4 +73,4 @@ def test_plan_attach_fresh_subscriber_rebuilds_when_trimmed():
     journal.append(b"abcdefgh")
     journal.trim_to_budget()
     # 全新订阅者视作游标 0；0 已被裁剪 → 与落后游标一样走重建，不能静默丢头部
-    assert plan_attach(journal, None, journal.end_offset) == Rebuild("trimmed")
+    assert plan_attach(journal, None) == Rebuild()

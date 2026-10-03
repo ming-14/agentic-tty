@@ -2,7 +2,7 @@
 
     python -m agentic_tty.example
 
-管理台直接接核心层（起会话 / 看屏幕 / 发输入 / 观测进程树），驱动由运行时层的
+管理台直接接核心层（起会话 / 看屏幕 / 发输入 / 观测进程树），驱动由 core.runtime 的
 `SessionRunner` 代劳。界面细节见 `gui.py`。
 """
 

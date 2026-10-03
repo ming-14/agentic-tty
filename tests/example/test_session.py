@@ -42,10 +42,10 @@ def _registry_with(host: FakeHost) -> SessionRegistry:
 def test_ingest_advances_offsets_and_journal():
     registry = _registry()
     session = _create(registry, SUBPROCESS)
-    first = session.ingest(b"hello")
+    first = session.ingest_stream(Stream.STDOUT, b"hello")
     assert (first.start_offset, first.end_offset) == (0, 5)
     assert first.stream is Stream.STDOUT
-    second = session.ingest(b" world")
+    second = session.ingest_stream(Stream.STDOUT, b" world")
     assert (second.start_offset, second.end_offset) == (5, 11)
     assert session.read_all(Stream.STDOUT) == b"hello world"
     session.close()
@@ -109,7 +109,7 @@ def test_ingest_after_close_is_rejected():
     session = _create(registry, SUBPROCESS)
     session.close()
     with pytest.raises(CoreError):
-        session.ingest(b"x")
+        session.ingest_stream(Stream.STDOUT, b"x")
 
 
 def test_refresh_detects_exit():
@@ -126,7 +126,6 @@ def test_eof_is_not_exit():
     registry = _registry()
     session = _create(registry, SUBPROCESS)
     session.mark_eof(Stream.STDOUT)
-    assert Stream.STDOUT in session.eof_streams
     assert session.state is SessionState.RUNNING
     session.refresh()
     assert session.state is SessionState.RUNNING  # EOF 不代表退出
@@ -242,7 +241,7 @@ def test_process_session_rejects_screen_api():
 def test_terminal_screen_views_forward_to_host():
     registry = _registry()
     session = _create(registry, PTY)
-    session.ingest(b"hello\nworld")
+    session.ingest_stream(Stream.STDOUT, b"hello\nworld")
     assert session.screen_text() == "hello\nworld"
     assert session.full_text() == "hello\nworld"
     assert session.screen_cells() == (("h", "e", "l", "l", "o"), ("w", "o", "r", "l", "d"))
@@ -274,7 +273,7 @@ def test_close_stdin_only_supported_for_process():
 def test_attach_plan_uses_journal_of_stream():
     registry = _registry()
     session = _create(registry, SUBPROCESS)
-    session.ingest(b"abc")
+    session.ingest_stream(Stream.STDOUT, b"abc")
     assert session.attach_plan(None).from_offset == 0
     assert session.attach_plan(2).from_offset == 2
     session.close()

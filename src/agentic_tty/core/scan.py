@@ -1,25 +1,16 @@
 """转义序列与多字节字符的边界扫描。
 
-日志裁剪点与快照对齐点都必须落在"解析状态干净"的位置：从转义序列或
-多字节字符中间切开再重放，会产生可见乱码（`3m` 这样的尾巴被当普通文本画出来）。
+"干净边界"= 不在任何转义序列内部，也不落在多字节 UTF-8 字符中间。从序列中间切开
+再重放会产生可见乱码。
 
-"干净边界"的定义：不在任何转义序列内部，也不落在多字节 UTF-8 字符中间。
-
-## 两套实现
-
-`iter_boundaries` 是逐字节的参考实现——最直白、慢，作为差分测试的对照物保留。
-热路径不逐字节走：
-
-- `clean_offset_at_or_after` / `replay_offset`：结果与参考实现逐字节一致，但把
-  "整段普通字节"用正则一次吃掉、把序列结尾交给 C 层 `search`。
-- `trim_cut_offset`：只给裁剪用，**不保证最小**，因此能用一次 C 速扫描定界；
-  门控不成立时退回上面那个精确实现。
+`clean_offset_at_or_after` / `replay_offset` 精确（与逐字节解析一致），把"整段普通
+字节"用正则一次吃掉、序列结尾交给 C 层 `search`；`trim_cut_offset` 只给裁剪用，
+**不保证最小**，因此能用一次 C 速扫描定界，门控不成立时退回精确实现。
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
 
 Buffer = bytes | bytearray
 
@@ -32,8 +23,8 @@ _DESIGNATOR = (0x28, 0x29, 0x2A, 0x2B, 0x23)  # ( ) * + #（三字节序列）
 
 # ── C 速扫描用的模式 ────────────────────────────────────────────────────
 
-# CSI 的终止字节（参数与中间字节都 < 0x40）
-_CSI_END = re.compile(rb"[\x40-\x7e]")
+# CSI 的终止字节、转义序列的结束点、以及普通文本字节，都落在 0x40-0x7E
+_FINAL = re.compile(rb"[\x40-\x7e]")
 # 字符串型序列的结束标记：BEL 或 ESC（ESC 后面是否跟 ST 由调用方判断）
 _STR_END = re.compile(rb"[\x07\x1b]")
 # 普通字节段：逐项复刻 `_utf8_len` 的跳法。ESC 不在单字节分支里，所以段边界上的
@@ -42,8 +33,6 @@ _TEXT = re.compile(
     rb"(?:[\x00-\x1a\x1c-\x7f]|[\x80-\xbf\xf8-\xff]"
     rb"|[\xc0-\xdf][\s\S]|[\xe0-\xef][\s\S]{2}|[\xf0-\xf7][\s\S]{3})+"
 )
-# 转义序列的结束点、以及普通文本字节，都落在 0x40-0x7E
-_FINAL = re.compile(rb"[\x40-\x7e]")
 # 字符串型序列的开头（裁剪快路径的门控用）
 _STR_INTRO = re.compile(rb"\x1b[\]PX^_]")
 
@@ -55,7 +44,7 @@ _TRIM_SKIPS = 4
 
 def _csi_end(data: Buffer, i: int) -> int | None:
     """CSI：ESC [ 参数 中间字节 终止字节(0x40-0x7E)。"""
-    m = _CSI_END.search(data, i + 2)
+    m = _FINAL.search(data, i + 2)
     return None if m is None else m.start() + 1
 
 
@@ -105,52 +94,19 @@ def _utf8_len(b: int) -> int:
     return 1  # 非法首字节：按单字节推进，不阻塞扫描
 
 
-def iter_boundaries(data: Buffer) -> Iterator[int]:
-    """产出所有干净边界（含 0 与末尾的干净位置）；尾部残缺则停止。
-
-    逐字节的参考实现：热路径不用它，差分测试拿它当对照。
-    """
-    n = len(data)
-    yield 0
-    i = 0
-    while i < n:
-        b = data[i]
-        if b == ESC:
-            end = sequence_end(data, i)
-            if end is None:
-                return
-            i = end
-        elif b < 0x80:
-            i += 1
-        else:
-            length = _utf8_len(b)
-            if i + length > n:
-                return
-            i += length
-        yield i
-
-
-def _char_spans(data: Buffer, p: int) -> bool:
-    """[p-3, p) 里是否有字符跨过 p。多字节字符最长 4 字节，回看 3 字节就够。"""
+def _char_boundary(data: Buffer, p: int) -> int | None:
+    """多字节字符跨过 p 时返回它的结束位置，否则 None（最长 4 字节，回看 3 字节够）。"""
     for s in range(max(0, p - 3), p):
-        if data[s] >= 0x80 and s + _utf8_len(data[s]) > p:
-            return True
-    return False
+        if data[s] >= 0x80:
+            end = s + _utf8_len(data[s])
+            if end > p:
+                return end
+    return None
 
 
 def _string_intro_before(data: Buffer, hi: int) -> bool:
     """[0, hi) 里有没有字符串型序列的开头（OSC/DCS/SOS/PM/APC）。"""
     return _STR_INTRO.search(data, 0, hi) is not None
-
-
-def _local_text_boundary(data: Buffer, p: int, n: int) -> int:
-    """纯文本区间内 >= p 的最小字符边界（多字节字符最长 4 字节，回看 3 字节即可）。"""
-    for s in range(max(0, p - 3), p):
-        if data[s] >= 0x80:
-            end = s + _utf8_len(data[s])
-            if end > p:
-                return min(end, n)
-    return p
 
 
 def clean_offset_at_or_after(data: Buffer, offset: int) -> int:
@@ -223,9 +179,10 @@ def trim_cut_offset(data: Buffer, offset: int) -> int:
     if p is None:
         # 没有可用候选：区间连 ESC 都没有的话，就只剩多字节对齐问题
         if data.find(ESC, 0, hi) < 0:
-            return _local_text_boundary(data, offset, n)
+            end = _char_boundary(data, offset)
+            return offset if end is None else min(end, n)
         return clean_offset_at_or_after(data, offset)
-    if _char_spans(data, p) or _string_intro_before(data, p + 1):
+    if _char_boundary(data, p) is not None or _string_intro_before(data, p + 1):
         return clean_offset_at_or_after(data, offset)
     prev = data[p - 1]
     # p-1 是 0x40-0x7E 的 ASCII 时它必是文本字节或某个序列（含 CSI）的末字节 → p 就是边界；

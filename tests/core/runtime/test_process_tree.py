@@ -8,8 +8,8 @@ import sys
 import time
 from collections.abc import Callable
 
-from agentic_tty.runtime import process_tree
-from agentic_tty.runtime.process_tree import (
+from agentic_tty.core.runtime import process_tree
+from agentic_tty.core.runtime.process_tree import (
     CREATE_SUSPENDED,
     ProcessTree,
     assign_job,

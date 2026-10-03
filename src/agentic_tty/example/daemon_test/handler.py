@@ -17,14 +17,13 @@ from typing import Any, cast
 from ...core.errors import CoreError
 from ...core.ports import PTY, SUBPROCESS, SessionSpec
 from ...core.process.session import ProcessSession
+from ...core.runtime.monitor import windows_of
+from ...core.runtime.runner import SessionRunner
+from ...core.runtime.shell import default_shell
 from ...core.session.base import Session
 from ...core.session.registry import SessionKind, SessionRegistry
 from ...core.terminal.session import TerminalSession
 from ...daemon.handler import Reply
-from ...runtime.host_factory import create_host
-from ...runtime.monitor import windows_of
-from ...runtime.runner import SessionRunner
-from ...runtime.shell import default_shell
 
 _RAW_TAIL = 2000
 """原始字节页每路只取尾部——`read_all` 会把整个保留区复制一遍。"""
@@ -57,9 +56,9 @@ class Answer:
 class KernelHandler:
     """`RequestHandler` 的最小实现。所有方法都只在所有者线程上被调用，因此无需加锁。"""
 
-    def __init__(self) -> None:
-        self._registry: SessionRegistry = SessionRegistry(
-            create_host,
+    def __init__(self, registry: SessionRegistry | None = None) -> None:
+        # registry 可注入：测试用假宿主装配，生产用默认（真宿主）。
+        self._registry: SessionRegistry = registry or SessionRegistry(
             kinds={PTY: SessionKind(TerminalSession), SUBPROCESS: SessionKind(ProcessSession)},
         )
         self._runners: dict[str, SessionRunner] = {}
@@ -210,8 +209,10 @@ class KernelHandler:
             "drained": session.drained,
             "exit_code": session.exit_code,
             "is_terminal": terminal,
-            "cols": session.spec.cols if terminal else None,
-            "rows": session.spec.rows if terminal else None,
+            "cols": session.cols if terminal else None,
+            "rows": session.rows if terminal else None,
+            "title": None,
+            "cwd": None,
             "members": _members(session),
             "view": _view_text(session),
             "raw": _raw_text(session),
@@ -225,6 +226,11 @@ class KernelHandler:
                 data["svg"] = session.render_svg()
             except Exception as exc:  # 宿主已关闭等
                 data["svg_error"] = str(exc)
+            try:
+                meta = session.metadata()
+                data["title"], data["cwd"] = meta.title, meta.cwd
+            except Exception:  # 宿主已关闭等
+                pass
         return data
 
     # ════════════════════════════════════════════════════════════

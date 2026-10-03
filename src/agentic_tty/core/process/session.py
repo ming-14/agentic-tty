@@ -48,4 +48,5 @@ class ProcessSession(Session):
         host = self.host
         if host is None:
             raise CoreError("会话未启动")
+        # 宿主由工厂按 mode 产出：subprocess 标签只配得到 ProcessHost（见 host_factory）
         return host  # type: ignore[return-value]

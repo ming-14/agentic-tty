@@ -12,27 +12,33 @@ _ALLOWED: dict[str, frozenset[str]] = {
     "foundation": frozenset({"foundation"}),
     # 线协议是两端共享的契约，只压在 foundation 上
     "protocol": frozenset({"foundation", "protocol"}),
+    # 核心层（能力体）：core 内部可以直接用 core.runtime 的宿主实现
     "core": frozenset({"foundation", "core"}),
-    # 运行时层是唯一可以碰原生扩展与平台 API 的层
-    "runtime": frozenset({"foundation", "core", "runtime"}),
     # 只搬字节，不认识帧（帧在 protocol，缝合靠装配方注入）
     "transport": frozenset({"foundation", "transport"}),
-    # 只认注入的请求处理接缝：不 import core，也不 import protocol / transport
-    "daemon": frozenset({"foundation", "runtime", "daemon"}),
-    # 示例层是各层的占位：既在进程内直连核心层当测试驱动，也演示守护进程与客户端这一对
-    "example": frozenset(
-        {"foundation", "protocol", "core", "runtime", "transport", "daemon", "example"}
-    ),
+    # 只认注入的请求处理接缝与依赖检查：不 import core，也不 import protocol / transport
+    "daemon": frozenset({"foundation", "daemon"}),
+    # 示例层是各层的占位：直连核心层当测试驱动，也演示守护进程与客户端这一对
+    "example": frozenset({"foundation", "protocol", "core", "transport", "daemon", "example"}),
 }
 
-# 核心链路不允许触碰的第三方（原生扩展 / web 框架）
-_RESTRICTED_THIRD_PARTY = frozenset({"pywezterm", "fastapi", "starlette", "uvicorn"})
-# 只有运行时层可以碰原生扩展
-_ALLOWED_FOR_THIRD_PARTY = frozenset({"runtime"})
+# 受限第三方 → 只允许出现在这些目录前缀下
+_ALLOWED_THIRD_PARTY: dict[str, frozenset[str]] = {
+    # 原生扩展只允许宿主实现碰——纯子进程场景因此不拖进 pywezterm
+    "pywezterm": frozenset({"core/runtime"}),
+    # web 框架只允许出现在 web 层
+    "fastapi": frozenset({"web"}),
+    "starlette": frozenset({"web"}),
+    "uvicorn": frozenset({"web"}),
+}
 
 
 def _package_of(path: Path) -> str:
     return path.relative_to(SRC).parts[0]
+
+
+def _module_path(path: Path) -> str:
+    return path.relative_to(SRC).as_posix()
 
 
 def _resolve_relative(path: Path, node: ast.ImportFrom) -> str | None:
@@ -59,7 +65,7 @@ def _deps(path: Path) -> tuple[set[str], set[str]]:
                 top = node.module.split(".")[0] if node.module else ""
                 if top == "agentic_tty" and node.module and node.module.count(".") >= 1:
                     deps.add(node.module.split(".")[1])
-                elif top in _RESTRICTED_THIRD_PARTY:
+                elif top in _ALLOWED_THIRD_PARTY:
                     third.add(top)
             else:
                 resolved = _resolve_relative(path, node)
@@ -70,7 +76,7 @@ def _deps(path: Path) -> tuple[set[str], set[str]]:
                 top = alias.name.split(".")[0]
                 if top == "agentic_tty" and "." in alias.name:
                     deps.add(alias.name.split(".")[1])
-                elif top in _RESTRICTED_THIRD_PARTY:
+                elif top in _ALLOWED_THIRD_PARTY:
                     third.add(top)
     return deps, third
 
@@ -88,23 +94,34 @@ def test_dependency_direction():
     assert not violations, "分层依赖违规:\n" + "\n".join(violations)
 
 
-def test_core_does_not_touch_restricted_third_party():
+def test_restricted_third_party_stays_in_its_slot():
+    """原生扩展与 web 框架只能出现在各自的格子里。"""
     violations: list[str] = []
     for path in sorted(SRC.rglob("*.py")):
-        package = _package_of(path)
-        if package not in _ALLOWED or package in _ALLOWED_FOR_THIRD_PARTY:
-            continue
         _, third = _deps(path)
+        where = _module_path(path)
         for name in sorted(third):
-            violations.append(f"{path.relative_to(SRC)}: {package} 不允许 import {name}")
-    assert not violations, "核心链路触碰了受限依赖:\n" + "\n".join(violations)
+            slots = _ALLOWED_THIRD_PARTY[name]
+            if not any(where.startswith(slot + "/") for slot in slots):
+                allowed = ", ".join(sorted(slots))
+                violations.append(f"{where} 不允许 import {name}（只允许 {allowed}）")
+    assert not violations, "受限依赖越界:\n" + "\n".join(violations)
+
+
+def test_nothing_depends_on_example():
+    """example 是纯消费者：只依赖别人，不被任何层依赖。"""
+    violations = [
+        _module_path(path)
+        for path in sorted(SRC.rglob("*.py"))
+        if _package_of(path) != "example" and "example" in _deps(path)[0]
+    ]
+    assert not violations, "有层反向依赖 example:\n" + "\n".join(violations)
 
 
 def test_example_client_stays_a_pure_client():
     """客户端那一格只许依赖公共层——包级规则管不住它，所以单列一条。
 
-    `example` 的允许集里有 `core` / `runtime` / `daemon`（验证台要直接接核心层），
-    而客户端那一格不许碰它们。当前 `example/` 下没有客户端包，这条直接跳过；
+    当前 `example/` 下只有验证台（直连核心层是它们的职责），这条自动跳过；
     等客户端那一格回来（它依赖 `foundation + protocol + transport`），断言自动生效。
     """
     for package in sorted((SRC / "example").iterdir()):
@@ -114,6 +131,5 @@ def test_example_client_stays_a_pure_client():
             continue
         for path in sorted(package.rglob("*.py")):
             deps, _ = _deps(path)
-            allowed = {"foundation", "protocol", "transport"}
-            extra = sorted(deps - allowed)
+            extra = sorted(deps - {"foundation", "protocol", "transport"})
             assert not extra, f"{path.relative_to(SRC)} 越出客户端链: {extra}"

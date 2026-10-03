@@ -12,9 +12,9 @@ import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from ...foundation.logs import get_logger
+from ....foundation.logs import get_logger
 
-_logger = get_logger("runtime.monitor.windows")
+_logger = get_logger("core.runtime.monitor.windows")
 
 _IS_WINDOWS = sys.platform == "win32"
 _GW_OWNER = 4

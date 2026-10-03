@@ -8,12 +8,12 @@ import time
 import pytest
 
 from agentic_tty.core.ports import PTY, SessionSpec
-from agentic_tty.runtime.pty_host import PtyHost
+from agentic_tty.core.runtime.pty_host import PtyHost
 
 
 def _pty_available() -> bool:
     try:
-        from agentic_tty.runtime.pty_host import require_pywezterm
+        from agentic_tty.core.runtime.pty_host import require_pywezterm
 
         require_pywezterm()
         return True

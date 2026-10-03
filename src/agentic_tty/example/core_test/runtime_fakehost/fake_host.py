@@ -27,6 +27,8 @@ class FakeProgram:
     echo_input: bool = False
     respond: Callable[[bytes], bytes] | None = None
     title: str | None = None
+    ingest_response: bytes = b""
+    """每次摄入时终端模型要回写的应答（模拟 DSR 等）。"""
 
 
 class FakeHost:
@@ -103,7 +105,7 @@ class FakeHost:
 
     def ingest(self, data: bytes) -> bytes:
         self._screen.extend(data)
-        return b""
+        return self._program.ingest_response
 
     def resize(self, cols: int, rows: int) -> None:
         self._cols, self._rows = cols, rows

@@ -1,7 +1,7 @@
 """pywezterm 宿主：PTY + 终端模型。
 
 `pywezterm` 不在 PyPI 上、也不安装：它是仓库 `vendor/` 里的长期依赖，由
-`runtime/vendor.py` 接进 `sys.path`。因此这里做**惰性导入**——真正需要 PTY
+`core/runtime/vendor.py` 接进 `sys.path`。因此这里做**惰性导入**——真正需要 PTY
 时才导入扩展，纯子进程场景不碰它。
 """
 
@@ -11,12 +11,12 @@ import os
 import time
 from types import ModuleType
 
-from ..core.ports import HostMetadata, SessionSpec, Stream
-from ..foundation.logs import get_logger
+from ...foundation.logs import get_logger
+from ..ports import HostMetadata, SessionSpec, Stream
 from .errors import DependencyMissing, HostSpawnError
 from .process_tree import ProcessTree, close_job, create_job
 
-_logger = get_logger("runtime.pty_host")
+_logger = get_logger("core.runtime.pty_host")
 
 _pywezterm: ModuleType | None = None
 

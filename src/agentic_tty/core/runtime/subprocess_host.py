@@ -9,10 +9,9 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import time
 
-from ..core.ports import SessionSpec, Stream
-from ..foundation.logs import get_logger
+from ...foundation.logs import get_logger
+from ..ports import SessionSpec, Stream
 from .errors import HostSpawnError
 from .process_tree import (
     CREATE_SUSPENDED,
@@ -23,7 +22,7 @@ from .process_tree import (
     resume_process,
 )
 
-_logger = get_logger("runtime.subprocess_host")
+_logger = get_logger("core.runtime.subprocess_host")
 
 _IS_WINDOWS = sys.platform == "win32"
 
@@ -176,15 +175,3 @@ class SubprocessHost:
             stdin.close()
         except OSError:
             pass
-
-    # ── 观测 ───────────────────────────────────────────────────
-
-    def wait_exit(self, timeout: float) -> int | None:
-        """带超时地等退出码（供测试与收尾使用）。"""
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            code = self._proc.poll()
-            if code is not None:
-                return code
-            time.sleep(0.01)
-        return None

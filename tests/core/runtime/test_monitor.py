@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from agentic_tty.runtime.monitor import WindowInfo, windows_of
+from agentic_tty.core.runtime.monitor import WindowInfo, windows_of
 
 _TITLE = "agentic-tty-probe"
 _TK_CODE = (

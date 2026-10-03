@@ -9,7 +9,7 @@ import signal
 
 import pytest
 
-from agentic_tty.runtime.platform.signals import install_shutdown_handler
+from agentic_tty.daemon.platform.signals import install_shutdown_handler
 
 
 @pytest.fixture

@@ -7,16 +7,10 @@ from __future__ import annotations
 
 from ...foundation.logs import get_logger
 from ..errors import CoreError
-from ..ports import (
-    HostFactory,
-    HostMetadata,
-    SessionSpec,
-    Stream,
-    TerminalHost,
-)
+from ..ports import HostFactory, HostMetadata, SessionSpec, Stream, TerminalHost
 from ..session.base import Session
 
-_logger = get_logger("core.terminal")
+_logger = get_logger("core.terminal.session")
 
 
 class TerminalSession(Session):
@@ -83,4 +77,5 @@ class TerminalSession(Session):
         host = self.host
         if host is None:
             raise CoreError("会话未启动")
+        # 宿主由工厂按 mode 产出：pty 标签只配得到 TerminalHost（见 host_factory）
         return host  # type: ignore[return-value]

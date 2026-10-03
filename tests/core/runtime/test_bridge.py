@@ -4,7 +4,7 @@ import threading
 import time
 
 from agentic_tty.core.ports import Stream
-from agentic_tty.runtime.bridge import Chunk, ThreadBridge
+from agentic_tty.core.runtime.bridge import Chunk, ThreadBridge
 
 
 def test_put_and_drain():

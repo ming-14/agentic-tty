@@ -4,8 +4,8 @@
 内置标签），core 只把 `SessionSpec.mode` 当开放字符串透传：
 
 - `fake`       → `ProcessSession` + `FakeHost`：脚本化的假子进程（双流、无终端模型）。
-- `pty`        → `TerminalSession` + `PtyHost`：runtime 的真 PTY 宿主。
-- `subprocess` → `ProcessSession` + `SubprocessHost`：runtime 的真子进程宿主。
+- `pty`        → `TerminalSession` + `PtyHost`：core.runtime 的真 PTY 宿主。
+- `subprocess` → `ProcessSession` + `SubprocessHost`：core.runtime 的真子进程宿主。
 
 会话类与宿主工厂**成对**注册，因此选 `pty` 永远得到真 PTY，假宿主只由 `fake` 模式产生。
 """
@@ -20,11 +20,11 @@ from ...core.ports import SessionSpec
 from ...core.process.session import ProcessSession
 from ...core.session.registry import SessionKind, SessionRegistry
 from ...core.terminal.session import TerminalSession
-from ...runtime.host_factory import create_host
 from .programs import PROGRAMS
 from .runtime_fakehost.fake_host import FakeHost
 
-DEFAULT_JOURNAL_BUDGET = 1 << 20
+EXAMPLE_JOURNAL_BUDGET = 1 << 20
+"""示例层用更小的日志预算，便于观察裁剪与重建。"""
 
 
 class ExampleMode(StrEnum):
@@ -48,13 +48,12 @@ def _fake_host_factory(spec: SessionSpec) -> FakeHost:
     return FakeHost(spec, program)
 
 
-def create_registry(*, journal_budget_bytes: int = DEFAULT_JOURNAL_BUDGET) -> SessionRegistry:
+def create_registry(*, journal_budget_bytes: int = EXAMPLE_JOURNAL_BUDGET) -> SessionRegistry:
     """装配示例层的注册表：三种模式各自声明会话类与宿主工厂。
 
-    只有 `fake` 带专属宿主工厂（假宿主），另两种用装配层注入的真宿主工厂。
+    只有 `fake` 带专属宿主工厂（假宿主），另两种用注册表的默认工厂（真宿主）。
     """
     return SessionRegistry(
-        create_host,
         kinds={
             ExampleMode.FAKE: SessionKind(ProcessSession, _fake_host_factory),
             ExampleMode.PTY: SessionKind(TerminalSession),

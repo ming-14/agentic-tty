@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..core.ports import PTY, SUBPROCESS, HostFactory, HostLifecycle, SessionSpec
+from ..ports import PTY, SUBPROCESS, HostLifecycle, SessionSpec
 from .errors import DependencyMissing, HostSpawnError
 from .pty_host import PtyHost, require_pywezterm
 from .subprocess_host import SubprocessHost
@@ -29,4 +29,4 @@ def check_dependencies() -> None:
         raise DependencyMissing(f"启动依赖检查失败: {exc}") from exc
 
 
-__all__ = ["HostFactory", "check_dependencies", "create_host"]
+__all__ = ["check_dependencies", "create_host"]

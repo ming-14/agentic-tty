@@ -1,18 +1,12 @@
 """会话抽象：身份 + 生命周期 + 摄入 + 视图。
 
-Pty 会话与子进程会话共享本类，差异只有两处：
+Pty 会话与子进程会话共享本类，差异只有两处：`_streams()`（单流 / 双流）与
+`_feed_model()`（是否喂终端模型）。
 
-- `_streams()`：单流（Pty）还是双流（子进程）
-- `_feed_model()`：是否喂终端模型
+`ingest_stream()` 把"喂终端模型"与"追加日志"相邻执行（同线程、中间无 IO），因此
+`fed_offset == journal.end` 恒成立——屏幕视图与重建字节的正确性建立在这上面。
 
-## 摄入在核心层闭合
-
-`ingest_stream()` 内部把"喂终端模型"与"追加日志"**相邻执行**（同线程、中间无
-IO），因此 `fed_offset == journal.end` 恒成立。屏幕视图与重建字节的正确性建立在
-这一点上：读取屏幕（`screen_text()` / `rebuild_bytes()` 等）期间不可能有
-`ingest_stream()` 插入，读到的恰是"重放 `[0, end)` 之后"的状态，与对齐点同源。
-
-本类**不含**：连接、推送、订阅者、线程、sid、返回条件与等待引擎（那是命令层的）。
+本类不含：连接、推送、订阅者、线程、sid、返回条件与等待引擎（那是命令层的）。
 """
 
 from __future__ import annotations
@@ -27,7 +21,7 @@ from ..journal import plan_attach as _plan_attach
 from ..ports import HostFactory, HostLifecycle, SessionSpec, Stream
 from .state import SessionState, check_transition
 
-_logger = get_logger("core.session")
+_logger = get_logger("core.session.base")
 
 # 强杀后轮询退出码的间隔
 _EXIT_POLL_INTERVAL = 0.01
@@ -86,8 +80,8 @@ class Session:
         """不再会有输出到达。
 
         进程退出与尾部输出到达之间有竞态：一退出就当作结束会丢掉最后一段输出，
-        所以有外部驱动时必须等所有流都 EOF；没有外部驱动的会话则退出即结束。
-        已关闭的会话宿主已释放，不可能再有输出。
+        所以有外部驱动时必须等所有流都 EOF；没有外部驱动则退出即结束。已关闭的
+        会话宿主已释放，不可能再有输出。
         """
         if self.state is SessionState.CLOSED:
             return True
@@ -113,10 +107,9 @@ class Session:
     def stop(self, timeout: float = 5.0) -> None:
         """强杀进程树并进入退出态；不释放宿主（由 `close` 负责）。
 
-        先杀再关是硬要求：宿主关闭在部分平台上可能长时间阻塞，先终止子进程
-        才能让它快速返回。强杀后退出码不会立刻可见（Windows Job Object 尤甚），
-        必须等它出现——`exit_code` 留空会让 `drained` 永远为假，读线程也就不投
-        EOF，驱动循环停不下来。
+        先杀再关是硬要求：宿主关闭在部分平台上可能长时间阻塞，先终止子进程才能让它
+        快速返回。强杀后退出码不会立刻可见（Windows Job Object 尤甚），必须等它出现
+        ——`exit_code` 留空会让 `drained` 永远为假，驱动循环停不下来。
         """
         if self.state in (SessionState.CLOSED, SessionState.EXITED):
             return
@@ -148,7 +141,10 @@ class Session:
             time.sleep(_EXIT_POLL_INTERVAL)
 
     def close(self) -> None:
-        """释放宿主并进入关闭态（幂等）。"""
+        """释放宿主并进入关闭态（幂等）。
+
+        **可能长时间阻塞**（内含 `stop()` 的轮询与宿主关闭），不得在所有者线程上直接调用。
+        """
         if self.state is SessionState.CLOSED:
             return
         if self.state is not SessionState.EXITED:
@@ -167,8 +163,7 @@ class Session:
     def refresh(self) -> None:
         """推进退出检测：同步宿主退出码与状态。**只允许所有者线程调用。**
 
-        已进入退出态但还没拿到退出码（强杀后等超时）时继续补拿——留空会让
-        `drained` 永远为假，驱动循环停不下来。
+        退出态但还没拿到退出码（强杀后等超时）时继续补拿——留空会让 `drained` 永远为假。
         """
         if self._host is None or self.exit_code is not None:
             return
@@ -185,8 +180,8 @@ class Session:
     def descendants(self) -> tuple[int, ...]:
         """本会话进程树里**除根进程外**的当前成员 pid。**只允许所有者线程调用。**
 
-        轮询式观测：比对前后两次结果即可得出"谁起来了、谁没了"。判定（什么时候算
-        "命令跑完了"）属于命令层，核心层只出原料。
+        轮询式观测：比对前后两次结果即可得出"谁起来了、谁没了"。判定属于命令层，
+        核心层只出原料。
         """
         if self._host is None:
             raise CoreError("会话未启动")
@@ -205,9 +200,8 @@ class Session:
     ) -> bytes:
         """从某一路读一段。**只允许读线程调用**（不碰终端模型）。
 
-        空返回值表示**本轮无数据（超时）**，不代表 EOF。宿主已释放（从未启动或已关闭）
-        时明确报错，不与"读空"混同：静默返回空会让驱动方把"没有宿主"当成"暂时没输出"
-        而空转，也掩盖了在错误时机读取的问题。
+        空返回值表示**本轮无数据（超时）**，不代表 EOF。宿主已释放时明确报错，不与
+        "读空"混同——静默返回空会让驱动方把"没有宿主"当成"暂时没输出"而空转。
         """
         if self._host is None:
             raise CoreError(f"没有可读的宿主（会话状态 {self.state}）")
@@ -234,23 +228,15 @@ class Session:
             response=response,
         )
 
-    def ingest(self, data: bytes) -> IngestResult:
-        """主输出流的摄入（便捷方法）。"""
-        return self.ingest_stream(Stream.STDOUT, data)
-
     def mark_eof(self, stream: Stream) -> None:
         """标记某一路输出已排空。
 
-        **EOF 不等于进程退出**：程序可以先关掉 stdout/stderr 而继续运行
-        （守护进程、`exec`），所以两件事必须分开记。
+        **EOF 不等于进程退出**：程序可以先关掉 stdout/stderr 而继续运行（守护进程、
+        `exec`），所以两件事必须分开记。
         """
         if stream not in self.streams():
             raise CoreError(f"{self.mode} 会话没有 {stream} 流")
         self._eof.add(stream)
-
-    @property
-    def eof_streams(self) -> frozenset[Stream]:
-        return frozenset(self._eof)
 
     # ════════════════════════════════════════════════════════════
     # 输入
@@ -291,8 +277,7 @@ class Session:
 
     def attach_plan(self, cursor: int | None, stream: Stream = Stream.STDOUT) -> Resume | Rebuild:
         """给订阅者的对齐决策（纯函数转发）。"""
-        journal = self._journal_for(stream)
-        return _plan_attach(journal, cursor, journal.end_offset)
+        return _plan_attach(self._journal_for(stream), cursor)
 
     def resize(self, cols: int, rows: int) -> None:
         """改尺寸；只有终端会话支持。"""

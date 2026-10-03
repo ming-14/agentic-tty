@@ -2,10 +2,10 @@
 
 **它没有业务代码**，也不实现网络。它管两件事：
 
-1. **自身的生命周期**：装配顺序即依赖顺序——取单实例锁 → 依赖检查 → 数据目录与日志 →
-   构造请求处理层 → 写 pid → 装信号 → 进循环；每一步都能回滚，停止时逆序收尾并带整体
-   超时兜底。
-2. **承载核心层**：把 `core` + `runtime` 装进这个进程，并做唯一的**所有者线程**。
+1. **自身的生命周期**：装配顺序即依赖顺序——取单实例锁 → 依赖检查（由入口注入）→
+   数据目录与日志 → 构造请求处理层 → 写 pid → 装信号 → 进循环；每一步都能回滚，
+   停止时逆序收尾并带整体超时兜底。
+2. **承载核心层**：把 `core` 装进这个进程，并做唯一的**所有者线程**。
 
 **请求与答复对它不透明**：消费者经 `submit` / `submit_input` 把东西投进来（任何线程可
 调用），它在所有者线程上交给注入的处理层；处理层交出的答复经构造时注入的 `on_reply`
@@ -27,12 +27,11 @@ from pathlib import Path
 
 from ..foundation.logs import add_rotating_file, get_logger
 from ..foundation.paths import default_runtime_dir
-from ..runtime.host_factory import check_dependencies as default_dependency_check
-from ..runtime.platform.signals import install_shutdown_handler
-from ..runtime.platform.single_instance import SingleInstance
 from .config import DaemonConfig
 from .errors import AlreadyRunning, DaemonError, NotStarted
 from .handler import Reply, RequestHandler
+from .platform.signals import install_shutdown_handler
+from .platform.single_instance import SingleInstance
 
 _logger = get_logger("daemon.server")
 
@@ -59,12 +58,12 @@ class Daemon:
         handler_factory: Callable[[], RequestHandler],
         *,
         on_reply: Callable[[Reply], None],
-        check_dependencies: Callable[[], None] | None = None,
+        check_dependencies: Callable[[], None],
     ) -> None:
         self._config = config
         self._handler_factory = handler_factory
         self._on_reply = on_reply
-        self._check_dependencies = check_dependencies or default_dependency_check
+        self._check_dependencies = check_dependencies
         self._dir = config.runtime_dir or default_runtime_dir(config.name)
 
         self._lock: SingleInstance | None = None

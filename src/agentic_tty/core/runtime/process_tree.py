@@ -24,10 +24,10 @@ import os
 import signal
 import sys
 
-from ..foundation.logs import get_logger
+from ...foundation.logs import get_logger
 from .errors import MonitorUnavailable
 
-_logger = get_logger("runtime.process_tree")
+_logger = get_logger("core.runtime.process_tree")
 
 _IS_WINDOWS = sys.platform == "win32"
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000

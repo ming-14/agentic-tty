@@ -11,9 +11,9 @@ tk = pytest.importorskip("tkinter")
 pytest.importorskip("resvg_py")  # GUI 的 SVG 渲染依赖
 
 from agentic_tty.core.ports import Stream  # noqa: E402
+from agentic_tty.core.runtime.runner import SessionRunner  # noqa: E402
 from agentic_tty.example.core_test.gui import App  # noqa: E402
 from agentic_tty.example.core_test.sessions import ExampleMode, session_spec  # noqa: E402
-from agentic_tty.runtime.runner import SessionRunner  # noqa: E402
 
 
 @pytest.fixture
@@ -157,7 +157,7 @@ def test_processes_helper_returns_none_when_unobservable(root):
 
 def _pty_available() -> bool:
     try:
-        from agentic_tty.runtime.pty_host import require_pywezterm
+        from agentic_tty.core.runtime.pty_host import require_pywezterm
 
         require_pywezterm()
         return True

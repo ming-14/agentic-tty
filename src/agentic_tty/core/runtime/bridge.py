@@ -11,7 +11,7 @@ from __future__ import annotations
 import queue
 from dataclasses import dataclass
 
-from ..core.ports import Stream
+from ..ports import Stream
 
 
 @dataclass(frozen=True, slots=True)

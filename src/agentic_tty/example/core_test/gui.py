@@ -4,7 +4,7 @@
 
 **Tk 的 mainloop 就是所有者线程**：界面回调与 `SessionRunner.pump()` 都跑在同一
 线程，所以这里不需要任何锁——这正是核心层"单线程所有者"约定带来的好处。
-宿主的读由运行时层的读线程代劳（`SessionRunner`），界面线程从不阻塞。
+宿主的读由 core.runtime 的读线程代劳（`SessionRunner`），界面线程从不阻塞。
 
 模式三选一：`fake` 跑示例假程序（命令框下拉即假程序名）；`pty` / `subprocess`
 跑真命令（命令框直接输入）。
@@ -32,12 +32,12 @@ try:
 except ImportError as exc:  # 依赖缺失就说清楚怎么补，不静默降级
     raise ImportError("Tk 管理台渲染 SVG 需要 resvg-py：pip install -e .[gui]") from exc
 
+from ...core.runtime.monitor import windows_of
+from ...core.runtime.runner import SessionRunner
 from ...core.session.base import Session
 from ...core.session.registry import SessionRegistry
 from ...core.terminal.session import TerminalSession
 from ...foundation.logs import get_logger
-from ...runtime.monitor import windows_of
-from ...runtime.runner import SessionRunner
 from .programs import PROGRAMS
 from .sessions import ExampleMode, create_registry, session_spec
 
@@ -61,6 +61,18 @@ def _svg_size(svg: str) -> tuple[int, int] | None:
     if width is None or height is None:
         return None
     return int(float(width.group(1))), int(float(height.group(1)))
+
+
+def _metadata_of(session: Session) -> str:
+    """终端标题 / cwd（仅 Pty 会话有；取不到就不显示）。"""
+    if not isinstance(session, TerminalSession):
+        return ""
+    try:
+        meta = session.metadata()
+    except Exception:  # 宿主已关闭等
+        return ""
+    parts = [text for text in (meta.title, meta.cwd) if text]
+    return f" · {' · '.join(parts)}" if parts else ""
 
 
 class App:
@@ -406,6 +418,7 @@ class App:
         self._status.set(
             f"{session.spec.argv[0]} · {session.mode} · {session.state} · "
             f"{drained} · exit={session.exit_code} · uid={session.uid[:8]}"
+            f"{_metadata_of(session)}"
         )
 
     def _refresh_screen_views(self, session: Session) -> None:

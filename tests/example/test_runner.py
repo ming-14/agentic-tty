@@ -5,10 +5,10 @@ from __future__ import annotations
 import time
 
 from agentic_tty.core.ports import PTY, SUBPROCESS, SessionSpec, Stream
+from agentic_tty.core.runtime.runner import SessionRunner
 from agentic_tty.core.session.registry import SessionRegistry
 from agentic_tty.core.session.state import SessionState
 from agentic_tty.example.core_test.runtime_fakehost.fake_host import FakeHost, FakeProgram
-from agentic_tty.runtime.runner import SessionRunner
 
 
 def _open(program: FakeProgram, mode: str = SUBPROCESS):
@@ -49,11 +49,31 @@ def test_two_streams_are_read_by_two_readers():
 
 
 def test_pump_marks_eof_only_after_all_streams_drained():
+    """两路输出都排空才算结束：drained 要求 STDOUT 与 STDERR 都投过 EOF。"""
     program = FakeProgram(exit_after=0.02, exit_code=0)
     _registry, session, runner = _open(program)
     try:
         assert runner.run_until_drained(time.monotonic() + 3.0)
-        assert session.eof_streams == frozenset({Stream.STDOUT, Stream.STDERR})
+        assert session.drained
+    finally:
+        session.close()
+        runner.stop()
+
+
+def test_model_response_is_written_back_to_host():
+    """终端模型的应答（DSR / 焦点应答等）必须经写线程回写，否则模型永远收不到回复。"""
+    program = FakeProgram(
+        chunks=((0.0, b"\x1b[6n"),), ingest_response=b"\x1b[1;1R", exit_after=None
+    )
+    _registry, session, runner = _open(program, PTY)
+    try:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            runner.pump()
+            if session.host.received_input:
+                break
+            time.sleep(0.01)
+        assert session.host.received_input == b"\x1b[1;1R"
     finally:
         session.close()
         runner.stop()

@@ -1,12 +1,8 @@
 """会话运行时驱动：读线程 → 有界桥 → 所有者侧摄入；写线程是唯一写者。
 
-- **读线程**（每路一个）只做 `read_stream`，把块推入有界桥；桥满就阻塞 →
-  背压传导到宿主。
-- **`pump()` 必须由所有者线程调用**：排空桥 → `ingest_stream` → `refresh`，
-  收到 EOF 标记就 `mark_eof`。所有会话状态仍然只在所有者线程上改动。
-- **写线程是唯一写者**：`submit_input()` 把字节入队，写线程调 `send()`。
-  `Pty.write` 在缓冲写满时会阻塞，压在事件循环（或 UI 线程）上会冻住整个进程。
-- `stop()` 停写线程与读线程（读写都是带超时的，所以不依赖先关宿主）。
+`pump()` 必须由所有者线程调用（排空桥 → `ingest_stream` → `refresh`），会话状态
+因此仍只在所有者线程上改动。写线程独占 `send()`：`Pty.write` 在缓冲写满时会阻塞，
+压在事件循环（或 UI 线程）上会冻住整个进程。
 """
 
 from __future__ import annotations
@@ -14,14 +10,15 @@ from __future__ import annotations
 import queue
 import threading
 import time
+from collections import deque
 
-from ..core.session.base import Session
-from ..core.session.state import SessionState
-from ..foundation.logs import get_logger
+from ...foundation.logs import get_logger
+from ..session.base import Session
+from ..session.state import SessionState
 from .bridge import ThreadBridge
 from .reader import StreamReader
 
-_logger = get_logger("runtime.runner")
+_logger = get_logger("core.runtime.runner")
 
 
 class SessionRunner:
@@ -44,6 +41,9 @@ class SessionRunner:
         self._max_bytes = max_bytes
         self._drain_limit = drain_limit
         self._write_queue: queue.Queue[bytes] = queue.Queue(write_queue_maxsize)
+        # 模型应答（DSR / 焦点应答等）：必须无条件回写，否则模型永远收不到回复而卡死。
+        # 它单列一条无界通道，不受客户端输入队列的水位影响。
+        self._urgent: deque[bytes] = deque()
         self._writer: threading.Thread | None = None
         self._writer_stop = threading.Event()
 
@@ -80,7 +80,9 @@ class SessionRunner:
             if chunk.eof:
                 session.mark_eof(chunk.stream)
             elif session.state in (SessionState.RUNNING, SessionState.EXITED):
-                session.ingest_stream(chunk.stream, chunk.data)
+                result = session.ingest_stream(chunk.stream, chunk.data)
+                if result.response:
+                    self._urgent.append(result.response)
         session.refresh()
         return session.drained
 
@@ -126,9 +128,8 @@ class SessionRunner:
     def _write_loop(self) -> None:
         session = self._session
         while not self._writer_stop.is_set():
-            try:
-                data = self._write_queue.get(timeout=0.1)
-            except queue.Empty:
+            data = self._take_write()
+            if data is None:
                 continue
             try:
                 session.send(data)  # 阻塞写在写线程上，不挡所有者线程
@@ -136,3 +137,12 @@ class SessionRunner:
                 if not self._writer_stop.is_set():
                     _logger.debug("写线程退出 uid=%s: %s", session.uid, exc)
                 return
+
+    def _take_write(self) -> bytes | None:
+        """模型应答优先于客户端输入；两者都没有就等一小会。"""
+        if self._urgent:
+            return self._urgent.popleft()
+        try:
+            return self._write_queue.get(timeout=0.1)
+        except queue.Empty:
+            return None

@@ -19,9 +19,7 @@ class SessionState(StrEnum):
 
 _TRANSITIONS: dict[SessionState, frozenset[SessionState]] = {
     SessionState.CREATED: frozenset({SessionState.STARTING, SessionState.CLOSED}),
-    SessionState.STARTING: frozenset(
-        {SessionState.RUNNING, SessionState.EXITED, SessionState.CLOSED}
-    ),
+    SessionState.STARTING: frozenset({SessionState.RUNNING, SessionState.CLOSED}),
     SessionState.RUNNING: frozenset({SessionState.EXITED, SessionState.CLOSED}),
     SessionState.EXITED: frozenset({SessionState.CLOSED}),
     SessionState.CLOSED: frozenset(),

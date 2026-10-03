@@ -17,12 +17,12 @@ from __future__ import annotations
 import threading
 import time
 
-from ..core.ports import Stream
-from ..core.session.base import Session
-from ..foundation.logs import get_logger
+from ...foundation.logs import get_logger
+from ..ports import Stream
+from ..session.base import Session
 from .bridge import Chunk, ThreadBridge
 
-_logger = get_logger("runtime.reader")
+_logger = get_logger("core.runtime.reader")
 
 _EMPTY_READ_PAUSE = 0.005
 

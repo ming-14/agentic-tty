@@ -11,7 +11,7 @@ from collections.abc import Callable
 
 from ...foundation.logs import get_logger
 
-_logger = get_logger("runtime.signals")
+_logger = get_logger("daemon.platform.signals")
 
 
 def install_shutdown_handler(callback: Callable[[int], None]) -> list[int]:

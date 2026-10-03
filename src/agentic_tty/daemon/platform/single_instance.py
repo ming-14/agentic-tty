@@ -15,7 +15,7 @@ from pathlib import Path
 
 from ...foundation.logs import get_logger
 
-_logger = get_logger("runtime.single_instance")
+_logger = get_logger("daemon.platform.single_instance")
 
 _IS_WINDOWS = sys.platform == "win32"
 _ERROR_ALREADY_EXISTS = 183

@@ -1,7 +1,7 @@
-"""端到端：起会话 → 运行时驱动读循环 → 读视图 → 关闭。
+"""端到端：起会话 → 驱动读循环 → 读视图 → 关闭。
 
-返回条件（等待引擎）属于命令层，不在核心层，所以这里只验证核心层 + 运行时层
-本身：输出进日志、视图正确、退出与排空被正确识别。
+返回条件（等待引擎）属于命令层，不在核心层，所以这里只验证核心层本身：
+输出进日志、视图正确、退出与排空被正确识别。
 """
 
 from __future__ import annotations
@@ -9,11 +9,11 @@ from __future__ import annotations
 import time
 
 from agentic_tty.core.ports import PTY, SUBPROCESS, SessionSpec, Stream
+from agentic_tty.core.runtime.runner import SessionRunner
 from agentic_tty.core.session.base import Session
 from agentic_tty.core.session.registry import SessionRegistry
 from agentic_tty.core.session.state import SessionState
 from agentic_tty.example.core_test.runtime_fakehost.fake_host import FakeHost, FakeProgram
-from agentic_tty.runtime.runner import SessionRunner
 
 
 def _registry(program: FakeProgram) -> SessionRegistry:

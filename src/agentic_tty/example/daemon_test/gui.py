@@ -26,6 +26,7 @@ try:
 except ImportError as exc:  # 依赖缺失就说清楚怎么补，不静默降级
     raise ImportError("验证台渲染 SVG 需要 resvg-py：pip install -e .[gui]") from exc
 
+from ...core.runtime.host_factory import check_dependencies as check_runtime_dependencies
 from ...daemon.config import DaemonConfig
 from ...daemon.handler import Reply
 from ...daemon.server import Daemon
@@ -64,7 +65,12 @@ class App:
         self._config = DaemonConfig(name=_NAME, runtime_dir=default_runtime_dir(_NAME))
         self._handler = KernelHandler()
         self._replies: Queue[Reply] = Queue()
-        self._daemon = Daemon(self._config, lambda: self._handler, on_reply=self._on_reply)
+        self._daemon = Daemon(
+            self._config,
+            lambda: self._handler,
+            on_reply=self._on_reply,
+            check_dependencies=check_runtime_dependencies,
+        )
         self._thread: threading.Thread | None = None
 
         self._ticks = 0
@@ -328,9 +334,10 @@ class App:
         self._sync_pty_controls(data)
         self._refresh_screen_view(data)
         drained = "已排空" if data.get("drained") else "进行中"
+        meta = " · ".join(str(x) for x in (data.get("title"), data.get("cwd")) if x)
         self._status.set(
             f"{data.get('command')} · {data.get('mode')} · {data.get('state')} · {drained}"
-            f" · exit={data.get('exit_code')}"
+            f" · exit={data.get('exit_code')}" + (f" · {meta}" if meta else "")
         )
 
     def _refresh_screen_view(self, data: dict) -> None:
@@ -468,7 +475,12 @@ class App:
 
     def _start_second(self) -> None:
         """同一份配置再起一个：单实例锁应当把它顶回去。"""
-        other = Daemon(self._config, lambda: self._handler, on_reply=lambda _r: None)
+        other = Daemon(
+            self._config,
+            lambda: self._handler,
+            on_reply=lambda _r: None,
+            check_dependencies=check_runtime_dependencies,
+        )
         try:
             other.start()
         except Exception as exc:

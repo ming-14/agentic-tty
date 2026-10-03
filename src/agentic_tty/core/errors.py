@@ -14,7 +14,6 @@ class SessionNotFound(CoreError):
 
     def __init__(self, uid: str) -> None:
         super().__init__(f"会话不存在: {uid}")
-        self.uid = uid
 
 
 class SessionStateError(CoreError):

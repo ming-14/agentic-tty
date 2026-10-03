@@ -6,18 +6,18 @@ from agentic_tty.core import scan
 
 
 def test_plain_text_boundaries():
-    assert list(scan.iter_boundaries(b"abc")) == [0, 1, 2, 3]
+    assert list(_iter_boundaries(b"abc")) == [0, 1, 2, 3]
 
 
 def test_incomplete_csi_has_no_boundary_past_it():
     data = b"abc\x1b[3"
-    assert list(scan.iter_boundaries(data)) == [0, 1, 2, 3]
+    assert list(_iter_boundaries(data)) == [0, 1, 2, 3]
     assert scan.replay_offset(data) == 3
 
 
 def test_complete_csi_is_a_boundary():
     data = b"abc\x1b[31m"  # 共 8 字节，CSI 结束于 8
-    assert list(scan.iter_boundaries(data)) == [0, 1, 2, 3, 8]
+    assert list(_iter_boundaries(data)) == [0, 1, 2, 3, 8]
     assert scan.clean_offset_at_or_after(data, 4) == 8
     assert scan.replay_offset(data) == 8
 
@@ -46,11 +46,45 @@ def test_clean_offset_at_or_after_beyond_end():
     assert scan.clean_offset_at_or_after(b"abc", 99) == 3
 
 
-# ── 热路径与参考实现（iter_boundaries）的差分 / 性质测试 ────────────────
+# ── 热路径与参考实现的差分 / 性质测试 ──────────────────────────────────
+
+
+def _utf8_len(b: int) -> int:
+    if b < 0x80:
+        return 1
+    if b >> 5 == 0b110:
+        return 2
+    if b >> 4 == 0b1110:
+        return 3
+    if b >> 3 == 0b11110:
+        return 4
+    return 1  # 非法首字节：按单字节推进
+
+
+def _iter_boundaries(data: bytes):
+    """逐字节的参考实现：产出所有干净边界（含 0 与末尾），尾部残缺则停止。"""
+    n = len(data)
+    yield 0
+    i = 0
+    while i < n:
+        b = data[i]
+        if b == scan.ESC:
+            end = scan.sequence_end(data, i)
+            if end is None:
+                return
+            i = end
+        elif b < 0x80:
+            i += 1
+        else:
+            length = _utf8_len(b)
+            if i + length > n:
+                return
+            i += length
+        yield i
 
 
 def _reference_at_or_after(data: bytes, offset: int) -> int:
-    for boundary in scan.iter_boundaries(data):
+    for boundary in _iter_boundaries(data):
         if boundary >= offset:
             return boundary
     return len(data)
@@ -58,7 +92,7 @@ def _reference_at_or_after(data: bytes, offset: int) -> int:
 
 def _reference_replay(data: bytes) -> int:
     last = 0
-    for boundary in scan.iter_boundaries(data):
+    for boundary in _iter_boundaries(data):
         last = boundary
     return last
 
@@ -118,7 +152,7 @@ def test_hot_path_matches_reference_on_terminal_streams():
 def test_trim_cut_offset_always_lands_on_a_clean_boundary():
     """裁剪只要"对齐序列边界"，不要求最小——但返回的位置必须真的干净。"""
     for data in _samples(11, 800):
-        boundaries = set(scan.iter_boundaries(data))
+        boundaries = set(_iter_boundaries(data))
         for offset in range(0, len(data) + 2):
             pos = scan.trim_cut_offset(data, offset)
             assert pos >= min(offset, len(data))
@@ -128,7 +162,7 @@ def test_trim_cut_offset_always_lands_on_a_clean_boundary():
 
 
 def _assert_clean_landing(data: bytes) -> None:
-    boundaries = set(scan.iter_boundaries(data))
+    boundaries = set(_iter_boundaries(data))
     for offset in range(len(data) + 1):
         pos = scan.trim_cut_offset(data, offset)
         assert pos in boundaries or pos == len(data), (data, offset, pos)
@@ -152,4 +186,4 @@ def test_trim_cut_offset_gate_covers_osc_intro_second_byte():
     """门控必须覆盖 `\\x1b]` 的第二个字节，否则裁点会落进 OSC 载荷。"""
     data = b"\x1b]0;title\x07\x1b[2J"
     assert scan.trim_cut_offset(data, 1) == 10
-    assert 10 in set(scan.iter_boundaries(data))
+    assert 10 in set(_iter_boundaries(data))

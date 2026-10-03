@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-from agentic_tty.runtime.platform.single_instance import SingleInstance
+from agentic_tty.daemon.platform.single_instance import SingleInstance
 
 
 def _name() -> str:
