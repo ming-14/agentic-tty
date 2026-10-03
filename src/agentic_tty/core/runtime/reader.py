@@ -20,7 +20,7 @@ import time
 from ...foundation.logs import get_logger
 from ..ports import Stream
 from ..session.base import Session
-from .bridge import Chunk, ThreadBridge
+from .bridge import Chunk, ThreadBridge, Wakeup
 
 _logger = get_logger("core.runtime.reader")
 
@@ -36,12 +36,14 @@ class StreamReader:
         bridge: ThreadBridge,
         stream: Stream,
         *,
+        wakeup: Wakeup | None = None,
         max_bytes: int = 65536,
         read_timeout: float = 0.2,
     ) -> None:
         self._session = session
         self._bridge = bridge
         self._stream = stream
+        self._wakeup = wakeup
         self._max_bytes = max_bytes
         self._read_timeout = read_timeout
         self._stop = threading.Event()
@@ -82,11 +84,18 @@ class StreamReader:
                     stop_check=self._stop.is_set,
                 ):
                     return
+                self._wake()
                 continue
             if host.poll_eof(self._stream):
                 self._bridge.put(
                     Chunk(uid=uid, stream=self._stream, data=b"", eof=True),
                     stop_check=self._stop.is_set,
                 )
+                self._wake()
                 return
             time.sleep(_EMPTY_READ_PAUSE)
+
+    def _wake(self) -> None:
+        """通知驱动方"这个会话有活"（未接唤醒通道时是 no-op）。"""
+        if self._wakeup is not None:
+            self._wakeup.signal(self._session.uid)

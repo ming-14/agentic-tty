@@ -15,7 +15,7 @@ from collections import deque
 from ...foundation.logs import get_logger
 from ..session.base import Session
 from ..session.state import SessionState
-from .bridge import ThreadBridge
+from .bridge import ThreadBridge, Wakeup
 from .reader import StreamReader
 
 _logger = get_logger("core.runtime.runner")
@@ -28,6 +28,7 @@ class SessionRunner:
         self,
         session: Session,
         *,
+        wakeup: Wakeup | None = None,
         bridge_maxsize: int = 256,
         read_timeout: float = 0.2,
         max_bytes: int = 65536,
@@ -36,6 +37,7 @@ class SessionRunner:
     ) -> None:
         self._session = session
         self._bridge = ThreadBridge(bridge_maxsize)
+        self._wakeup = wakeup
         self._readers: list[StreamReader] = []
         self._read_timeout = read_timeout
         self._max_bytes = max_bytes
@@ -63,6 +65,7 @@ class SessionRunner:
                 self._session,
                 self._bridge,
                 stream,
+                wakeup=self._wakeup,
                 max_bytes=self._max_bytes,
                 read_timeout=self._read_timeout,
             )

@@ -283,3 +283,22 @@ def test_kill_keeps_the_session(root):
     assert registry.find(session.uid) is session  # 仍在表里
     registry.close(session.uid)
     app.on_close()
+
+
+def test_subscription_page_collects_new_output(root):
+    """「订阅流」页用 core 的 `Subscription` 按游标取增量（订阅机制的用法）。"""
+    app = App(root)
+    registry = _fake_registry()
+    app._registry = registry
+    session = registry.create(session_spec(ExampleMode.SUBPROCESS, ("x",)))
+    app._selected = session.uid
+    app._refresh_detail()  # 建订阅：游标从当前末尾起
+    assert app._sub.get("1.0", "end-1c").startswith("── 订阅自 offset")
+
+    session.ingest_stream(Stream.STDOUT, b"hello")
+    app._refresh_detail()  # 拉增量
+    assert "hello" in app._sub.get("1.0", "end-1c")
+    assert app._subscription is not None
+    assert app._subscription.next_offset == session.journal.end_offset
+    registry.close(session.uid)
+    app.on_close()

@@ -4,7 +4,7 @@ import threading
 import time
 
 from agentic_tty.core.ports import Stream
-from agentic_tty.core.runtime.bridge import Chunk, ThreadBridge
+from agentic_tty.core.runtime.bridge import Chunk, ThreadBridge, Wakeup
 
 
 def test_put_and_drain():
@@ -57,3 +57,19 @@ def test_full_bridge_blocks_then_stop_releases():
     stop.set()
     thread.join(1.0)
     assert not thread.is_alive()
+
+
+def test_wakeup_times_out_then_delivers():
+    """唤醒通道：没活时阻塞到超时，有活时立刻拿到 uid。"""
+    wakeup = Wakeup()
+    assert wakeup.wait(timeout=0.01) is None
+    wakeup.signal("uid-1")
+    assert wakeup.wait(timeout=0.5) == "uid-1"
+    assert wakeup.pending == 0
+
+
+def test_wakeup_keeps_signal_order():
+    wakeup = Wakeup()
+    wakeup.signal("a")
+    wakeup.signal("b")
+    assert [wakeup.wait(timeout=0.5), wakeup.wait(timeout=0.5)] == ["a", "b"]

@@ -6,6 +6,11 @@
 线程，所以这里不需要任何锁——这正是核心层"单线程所有者"约定带来的好处。
 宿主的读由 core.runtime 的读线程代劳（`SessionRunner`），界面线程从不阻塞。
 
+**事件驱动**：读线程拿到数据后经 `Wakeup` 唤醒；后台线程阻塞等它，把会话 uid 投进
+Tk 队列，主线程只在 `_tick` 里 drain 这个廉价队列。因为 **Tk 的 `mainloop` 占着主
+线程、不能阻塞**，"阻塞等"只能交给后台线程。`_tick` 仍留一个兜底周期——进程退出、
+进程树变化这类没有读线程事件，只能靠它扫到。
+
 模式三选一：`fake` 跑示例假程序（命令框下拉即假程序名）；`pty` / `subprocess`
 跑真命令（命令框直接输入，留空 = 平台默认 shell）。
 
@@ -14,6 +19,9 @@
 再经 resvg 栅格化——**Tk 的 PhotoImage 只吃位图，没有 SVG 解码器**。屏幕按画布
 大小缩放铺满，不出滚动条。「视图」页可在「可见屏幕」与「全量输出」之间切换，
 「原始字节」页尾部附重建字节。
+
+「订阅流」页演示 core 的订阅机制：用 `Subscription` 持一个游标，每轮 `pull()` 取自
+订阅以来的新增字节（换会话就重建，游标从当前末尾起）。
 
 「进程」页**所有模式都有**：会话树里那列"进程"是进程树成员数，页内列出成员 pid，
 以及该会话名下的可见窗口（窗口探测只有 Windows 有实现，其他平台明确标"不支持"）。
@@ -29,6 +37,7 @@ import time
 import tkinter as tk
 from collections.abc import Callable
 from pathlib import Path
+from queue import Empty, Queue
 from tkinter import filedialog, messagebox, ttk
 from tkinter import font as tkfont
 
@@ -38,12 +47,14 @@ except ImportError as exc:  # 依赖缺失就说清楚怎么补，不静默降�
     raise ImportError("Tk 管理台渲染 SVG 需要 resvg-py：pip install -e .[gui]") from exc
 
 from ...core.process.session import ProcessSession
+from ...core.runtime.bridge import Wakeup
 from ...core.runtime.host_factory import check_dependencies
 from ...core.runtime.monitor import windows_of
 from ...core.runtime.runner import SessionRunner
 from ...core.runtime.shell import default_shell
 from ...core.session.base import Session
 from ...core.session.registry import SessionRegistry
+from ...core.session.subscription import Subscription
 from ...core.terminal.session import TerminalSession
 from ...foundation.logs import get_logger
 from .programs import PROGRAMS
@@ -63,6 +74,8 @@ _VIEW_SCREEN = "screen"
 _VIEW_FULL = "full"
 # 收尾时等释放线程的上限；到点就放手，别挡关窗
 _RELEASE_JOIN_SECONDS = 5.0
+# 唤醒线程的等待粒度：它靠这个周期检查"该收工了吗"
+_WAKE_POLL = 0.2
 
 
 def _safe(getter: Callable[[], str]) -> str:
@@ -124,8 +137,19 @@ class App:
         self._svg_source: str | None = None  # None = 该会话没有屏幕视图
         self._screen_note = ""  # 没有屏幕视图时的提示文字
         self._tick_job: str | None = None  # 挂起的定时任务；收尾必须先取消，否则销毁后仍会触发
+        # 事件通道：读线程有活 → Wakeup → 唤醒线程 → Tk 队列 → 主线程（Tk 不能阻塞）
+        self._wakeup = Wakeup()
+        self._woken: Queue[str] = Queue()
+        self._closing = threading.Event()
+        self._wake_thread = threading.Thread(
+            target=self._wake_loop, name="wakeup", daemon=True
+        )
+        # 订阅流页：用 core 的 Subscription 按游标取增量（演示订阅机制）
+        self._subscription: Subscription | None = None
+        self._sub_uid: str | None = None
         self._build_ui()
         self._select_session(None)  # 初始无会话：pty 专属控件按此状态摆好
+        self._wake_thread.start()
         self._tick_job = self._root.after(_TICK_MS, self._tick)
 
     # ════════════════════════════════════════════════════════════
@@ -239,12 +263,14 @@ class App:
 
         self._cells = tk.Text(self._notebook, wrap=tk.NONE, font=self._mono)
         self._raw = tk.Text(self._notebook, wrap=tk.NONE, font=self._mono_small)
+        self._sub = tk.Text(self._notebook, wrap=tk.NONE, font=self._mono_small)
         self._procs = tk.Text(self._notebook, wrap=tk.NONE, font=self._mono)
         self._notebook.add(self._image_tab, text="屏幕")
         self._notebook.add(self._svg, text="SVG 源码")
         self._notebook.add(self._view_tab, text="视图")
         self._notebook.add(self._cells, text="格栅")
         self._notebook.add(self._raw, text="原始字节")
+        self._notebook.add(self._sub, text="订阅流")
         self._notebook.add(self._procs, text="进程")
 
         entry_row = ttk.Frame(right)
@@ -289,12 +315,36 @@ class App:
     # 驱动循环（所有者线程 = Tk 主线程）
     # ════════════════════════════════════════════════════════════
 
+    def _wake_loop(self) -> None:
+        """后台线程：阻塞等唤醒通道，有活就把会话 uid 投进 Tk 队列。
+
+        单开一个线程是因为 **Tk 主线程不能阻塞**——它得跑 `mainloop`。所以这里阻塞
+        等 `Wakeup`，主线程只在 `_tick` 里 drain 一个廉价队列。
+        """
+        while not self._closing.is_set():
+            uid = self._wakeup.wait(timeout=_WAKE_POLL)
+            if uid is not None:
+                self._woken.put(uid)
+
+    def _drain_woken(self) -> set[str]:
+        """取走本轮的唤醒信号（Tk 主线程）。"""
+        woken: set[str] = set()
+        while True:
+            try:
+                woken.add(self._woken.get_nowait())
+            except Empty:
+                break
+        return woken
+
     def _tick(self) -> None:
         try:
-            for runner in list(self._runners.values()):
-                runner.pump()
+            woken = self._drain_woken()
             self._ticks += 1
-            if self._ticks % _REFRESH_EVERY == 0:
+            # 有活就立刻处理；另外每 _REFRESH_EVERY 轮兜底一次（进程退出、进程树
+            # 变化这类没有读线程事件，只能靠兜底扫到）
+            if woken or self._ticks % _REFRESH_EVERY == 0:
+                for runner in list(self._runners.values()):
+                    runner.pump()
                 self._refresh_tree()
                 self._refresh_detail()
         except Exception:
@@ -340,7 +390,7 @@ class App:
         except Exception as exc:  # 宿主起不来：注册表不会留残骸
             messagebox.showerror("创建会话失败", str(exc))
             return
-        runner = SessionRunner(session)
+        runner = SessionRunner(session, wakeup=self._wakeup)
         runner.start()
         self._runners[session.uid] = runner
         self._status.set(f"已创建 {' '.join(argv)}（{mode}）uid={session.uid[:8]}")
@@ -536,6 +586,9 @@ class App:
             self._set_text(self._raw, "")
             self._set_text(self._svg, "")
             self._set_text(self._procs, "")
+            self._set_text(self._sub, "")
+            self._subscription = None
+            self._sub_uid = None
             self._svg_source = None
             self._screen_note = "未选中会话"
             self._set_image(None, self._screen_note)
@@ -545,6 +598,7 @@ class App:
         self._set_text(self._cells, self._render_cells(session))
         self._set_text(self._raw, self._render_raw(session))
         self._set_text(self._procs, self._render_processes(session))
+        self._refresh_subscription(session)
         self._refresh_screen_views(session)
         drained = "已排空" if session.drained else "进行中"
         self._status.set(
@@ -552,6 +606,24 @@ class App:
             f"{drained} · exit={session.exit_code} · uid={session.uid[:8]}"
             f"{_metadata_of(session)}"
         )
+
+    def _refresh_subscription(self, session: Session) -> None:
+        """订阅流页：用 core 的 `Subscription` 按游标取增量——这就是订阅机制的用法。
+
+        换会话就重建订阅；**游标从当前末尾起**，所以页里只有"订阅之后的新增"。
+        """
+        if self._subscription is None or self._sub_uid != session.uid:
+            self._subscription = Subscription(session, cursor=session.journal.end_offset)
+            self._sub_uid = session.uid
+            self._set_text(self._sub, "")
+            self._append_sub(f"── 订阅自 offset {self._subscription.next_offset} ──\n")
+        data = self._subscription.pull()
+        if data:
+            self._append_sub(data.decode("utf-8", errors="replace"))
+
+    def _append_sub(self, text: str) -> None:
+        self._sub.insert(tk.END, text)
+        self._sub.see(tk.END)
 
     def _refresh_screen_views(self, session: Session) -> None:
         """屏幕页 / SVG 源码页（pty 专属）：屏幕、格式或画布尺寸没变就跳过重渲染。
@@ -767,6 +839,8 @@ class App:
         if self._tick_job is not None:  # 不取消的话，销毁后它还会触发一次并报错
             self._root.after_cancel(self._tick_job)
             self._tick_job = None
+        self._closing.set()  # 让唤醒线程收工
+        self._wake_thread.join(_WAKE_POLL * 2)
         for session in list(self._registry.list()):
             runner = self._runners.pop(session.uid, None)
             self._registry.detach(session.uid)

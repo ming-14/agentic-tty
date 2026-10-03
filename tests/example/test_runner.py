@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 
 from agentic_tty.core.ports import PTY, SUBPROCESS, SessionSpec, Stream
+from agentic_tty.core.runtime.bridge import Wakeup
 from agentic_tty.core.runtime.runner import SessionRunner
 from agentic_tty.core.session.registry import SessionRegistry
 from agentic_tty.core.session.state import SessionState
@@ -76,6 +77,23 @@ def test_model_response_is_written_back_to_host():
     finally:
         session.close()
         runner.stop()
+
+
+def test_reader_signals_wakeup_when_data_arrives():
+    """读线程拿到数据后经唤醒通道通知驱动方——驱动方因此不必定时轮询。"""
+    program = FakeProgram(chunks=((0.0, b"hi"),), exit_after=None)
+    registry = SessionRegistry(
+        lambda spec: FakeHost(spec, program), journal_budget_bytes=1 << 16
+    )
+    session = registry.create(SessionSpec(mode=SUBPROCESS, argv=("x",)))
+    wakeup = Wakeup()
+    runner = SessionRunner(session, wakeup=wakeup, read_timeout=0.02)
+    runner.start()
+    try:
+        assert wakeup.wait(timeout=2.0) == session.uid
+    finally:
+        runner.stop()
+        session.close()
 
 
 def test_running_session_never_drains():

@@ -55,3 +55,30 @@ class ThreadBridge:
     @property
     def pending(self) -> int:
         return self._queue.qsize()
+
+
+class Wakeup:
+    """跨会话的唤醒通道：读线程有数据时投一个信号，驱动方阻塞等它。
+
+    只传"哪个会话有活"，不传数据——数据在各自的桥里，因此**背压仍按会话算**。
+    信号是**提示**不是账本：漏掉或重复都不影响正确性（驱动方醒来后照样按游标补齐）。
+    有了它，驱动方就不必定时轮询所有会话。
+    """
+
+    def __init__(self) -> None:
+        self._queue: queue.Queue[str] = queue.Queue()
+
+    def signal(self, uid: str) -> None:
+        """读线程调用：通知"这个会话有新数据"。"""
+        self._queue.put(uid)
+
+    def wait(self, timeout: float | None = None) -> str | None:
+        """驱动方调用：阻塞等到有活（返回会话 uid）；超时返回 None。"""
+        try:
+            return self._queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    @property
+    def pending(self) -> int:
+        return self._queue.qsize()

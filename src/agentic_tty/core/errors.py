@@ -22,3 +22,7 @@ class SessionStateError(CoreError):
 
 class OffsetAhead(CoreError):
     """客户端游标超前于日志末尾——协议不一致，不静默重同步。"""
+
+
+class OffsetTrimmed(CoreError):
+    """订阅游标落后到已裁剪区间——必须重同步，不能静默从保留区起点给。"""
