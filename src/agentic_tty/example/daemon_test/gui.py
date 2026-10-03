@@ -1,0 +1,414 @@
+"""守护进程的验证台：界面与 `core_test/gui.py` 同款，差别只在**挂载点**。
+
+- `core_test/gui.py`：直接驱动核心层（自己装 core + runtime），不套守护进程。
+- 本文件：**连守护进程**——界面里没有一行碰 core，一切数据都经接入点往返。
+
+每个动作都是一次请求：`Client.request()` 投出去，答复由后台读线程投进队列，界面在 tick
+里取出后更新。所以界面**只同步一个廉价队列**，从不阻塞。
+
+控件复用 `example/ui/` 那一套（纯 Tk，不认识任何一层），本文件只负责**把答复翻译成界面
+状态**。
+"""
+
+from __future__ import annotations
+
+import shlex
+import tkinter as tk
+from pathlib import Path
+from queue import Empty, Queue
+from tkinter import messagebox, ttk
+
+from ...foundation.logs import get_logger
+from ...protocol.contracts.daemon_ipc import Command, ReadMode, SessionRef
+from ...protocol.frame import BytesFrame
+from ...protocol.response import data_of, error_of, is_ok
+from ..ui import (
+    EXPORT_SCALE,
+    HINT_COLOR,
+    DetailNotebook,
+    InputBar,
+    Page,
+    ScreenView,
+    SessionBar,
+    SessionTree,
+    SizeBar,
+    StatusBar,
+    ViewRange,
+    ask_save,
+)
+from .client import Answer, Client
+
+_logger = get_logger("example.daemon_test.gui")
+
+_TICK_MS = 20
+# 每多少个 tick 刷一次界面（20ms × 8 ≈ 160ms）；刷新 = 几次请求往返。
+_REFRESH_EVERY = 8
+_RAW_TAIL = 2000
+"""原始字节页每轮只取尾部——整段会让每轮都在搬整份日志。"""
+
+
+class App:
+    """验证台：把守护进程的答复翻译成界面状态。"""
+
+    def __init__(self, root: tk.Tk, address: str) -> None:
+        self._root = root
+        self._address = address
+        self._answers: Queue[Answer] = Queue()
+        # 请求 → 用途：答复回来时靠 mid 认出它属于哪一次询问
+        self._want: dict[str, str] = {}
+        self._sessions: dict[str, SessionRef] = {}
+        self._selected: str | None = None
+        self._sized_for: str | None = None
+        """尺寸框已经为哪个会话填过一次——只在换会话时填，别把用户正在输入的宽高擦掉。"""
+        self._ticks = 0
+        self._tick_job: str | None = None
+        self._export_path: str | None = None
+
+        self._client = Client(address, on_reply=self.on_reply)
+        self._build_ui()
+        self._sync_pty_controls(None)
+        self._client.connect()
+        self._tick_job = self._root.after(_TICK_MS, self._tick)
+
+    # ════════════════════════════════════════════════════════════
+    # 接缝回调（跑在客户端的读线程上）
+    # ════════════════════════════════════════════════════════════
+
+    def on_reply(self, answer: Answer) -> None:
+        """客户端把答复交回来。**在读线程上被调用**——只入队，不碰界面。"""
+        self._answers.put(answer)
+
+    # ════════════════════════════════════════════════════════════
+    # 界面
+    # ════════════════════════════════════════════════════════════
+
+    def _build_ui(self) -> None:
+        self._root.title("agentic-tty · 守护进程验证台")
+        self._root.geometry("1100x700")
+
+        daemon_row = ttk.Frame(self._root, padding=(8, 6))
+        daemon_row.pack(fill=tk.X)
+        ttk.Label(daemon_row, text="守护进程").pack(side=tk.LEFT)
+        self._daemon_state = tk.StringVar(value="连接中…")
+        ttk.Label(daemon_row, textvariable=self._daemon_state).pack(side=tk.LEFT, padx=8)
+        ttk.Label(daemon_row, text=f"接入点 {self._address}", foreground=HINT_COLOR).pack(
+            side=tk.LEFT, padx=8
+        )
+
+        self._bar = SessionBar(
+            self._root,
+            modes=(("pty", "pty"), ("subprocess", "subprocess")),
+            value="pty",
+            buttons=(("创建会话", self._create_session), ("关闭选中", self._close_selected)),
+            hint="（留空 = 平台默认 shell）",
+            padding=(8, 0),
+        )
+
+        body = ttk.Panedwindow(self._root, orient=tk.HORIZONTAL)
+        body.pack(fill=tk.BOTH, expand=True, padx=8, pady=(4, 6))
+
+        left = ttk.Frame(body)
+        body.add(left, weight=1)
+        self._tree = SessionTree(left, on_select=self._on_select)
+        self._tree.pack(fill=tk.BOTH, expand=True)
+
+        right = ttk.Frame(body)
+        body.add(right, weight=3)
+        self._tabs = DetailNotebook(right)
+        self._tabs.pack(fill=tk.BOTH, expand=True)
+        self._screen = ScreenView(self._tabs, on_format_change=self._on_format_change)
+        self._tabs.add_view_page(self._refresh_detail)
+        self._tabs.add_text(Page.RAW, "原始字节", small=True)
+
+        self._input = InputBar(right, on_send=self._send_input, on_interrupt=self._send_interrupt)
+        self._size = SizeBar(
+            right,
+            on_apply=self._resize,
+            on_save_svg=self._save_svg,
+            on_save_png=self._save_png,
+        )
+        self._status = StatusBar(self._root)
+
+    # ════════════════════════════════════════════════════════════
+    # 驱动循环
+    # ════════════════════════════════════════════════════════════
+
+    def _tick(self) -> None:
+        try:
+            self._drain()
+            self._ticks += 1
+            if self._ticks % _REFRESH_EVERY == 0:
+                self._ask(Command.DAEMON_STATUS, "status")
+                self._ask(Command.LIST_SESSIONS, "list")
+                self._refresh_detail()
+        except Exception:
+            _logger.exception("驱动循环异常")
+        finally:
+            self._tick_job = self._root.after(_TICK_MS, self._tick)
+
+    def _drain(self) -> None:
+        while True:
+            try:
+                answer = self._answers.get_nowait()
+            except Empty:
+                return
+            self._dispatch(answer)
+
+    # ════════════════════════════════════════════════════════════
+    # 请求 / 答复
+    # ════════════════════════════════════════════════════════════
+
+    def _ask(self, command: str, purpose: str, op: dict | None = None) -> None:
+        """把一条请求投给守护进程；答复回来时按 `purpose` 处理。"""
+        try:
+            mid = self._client.request(command, op)
+        except Exception as exc:  # 连接断了
+            self._status.set(f"发送失败: {exc}")
+            return
+        self._want[mid] = purpose
+
+    def _dispatch(self, answer: Answer) -> None:
+        purpose = self._want.pop(answer.mid, None)
+        if purpose is None:
+            return
+        if answer.chunk is not None:
+            self._apply_chunk(purpose, answer.chunk)
+            return
+        envelope = answer.envelope
+        if envelope is None:
+            return
+        if not is_ok(envelope):
+            failure = error_of(envelope)
+            self._status.set(f"失败（{purpose}）: {failure.message if failure else '未知错误'}")
+            return
+        self._apply_data(purpose, data_of(envelope))
+
+    def _apply_data(self, purpose: str, data: dict) -> None:
+        if purpose == "status":
+            self._daemon_state.set(
+                f"pid={data.get('pid')} · 运行 {data.get('uptime')}s"
+                f" · 会话 {data.get('sessions')}"
+            )
+        elif purpose == "list":
+            self._apply_sessions(data.get("sessions") or [])
+        elif purpose == "create":
+            session = SessionRef.from_dict(data["session"])
+            self._selected = session.uid
+            self._sized_for = None
+            self._status.set(f"已创建 {session.command}（{session.mode}）uid={session.uid[:8]}")
+        elif purpose == "view":
+            self._tabs.set_text(Page.VIEW, str(data.get("text") or ""))
+        elif purpose == "svg":
+            self._apply_svg(data)
+        elif purpose == "resize":
+            self._status.set(f"尺寸已改为 {data.get('cols')}×{data.get('rows')}")
+        elif purpose == "close":
+            self._select_session(None)
+
+    def _apply_chunk(self, purpose: str, chunk: BytesFrame) -> None:
+        if purpose == "raw":
+            self._tabs.set_text(Page.RAW, repr(chunk.data))
+        elif purpose == "image":
+            self._screen.set_image(chunk.data, "<位图不可用>")
+        elif purpose == "export":
+            self._write_export(chunk.data)
+
+    def _apply_svg(self, data: dict) -> None:
+        """屏幕页：SVG 变了才重渲染；变了就要再取一次位图（那是另一次请求往返）。"""
+        uid = self._selected
+        svg = data.get("text")
+        if uid is None or not isinstance(svg, str):
+            return
+        scale = self._screen.refresh(key=(uid, int(data.get("offset") or 0)), svg=svg)
+        if scale is not None:
+            self._ask(
+                Command.READ_SESSION,
+                "image",
+                {"uid": uid, "mode": ReadMode.IMAGE.value, "scale": scale},
+            )
+
+    def _apply_sessions(self, rows: list[dict]) -> None:
+        """增量刷新会话表：行 iid 就是 uid，选中一并对齐（细节在 `SessionTree.refresh`）。"""
+        self._sessions = {str(row.get("uid")): SessionRef.from_dict(row) for row in rows}
+        self._tree.refresh(
+            [
+                (ref.uid, (ref.command, ref.mode, ref.state, ref.exit_code, ref.members))
+                for ref in self._sessions.values()
+            ],
+            selected=self._selected,
+        )
+
+    def _refresh_detail(self) -> None:
+        uid = self._selected
+        if uid is None:
+            self._tabs.set_text(Page.VIEW, "")
+            self._tabs.set_text(Page.RAW, "")
+            self._screen.reset("未选中会话")
+            return
+        if self._is_terminal(uid):
+            full = self._tabs.view_mode.get() == ViewRange.FULL
+            mode = ReadMode.TEXT.value if full else ReadMode.SCREEN.value
+            self._ask(Command.READ_SESSION, "view", {"uid": uid, "mode": mode})
+            self._ask(Command.READ_SESSION, "svg", {"uid": uid, "mode": ReadMode.SVG.value})
+        else:
+            self._tabs.set_text(Page.VIEW, "（只有终端会话有屏幕；字节流见「原始字节」页）")
+            self._screen.reset("该会话没有屏幕（只有子进程会话才有字节流）")
+        self._ask(
+            Command.READ_SESSION,
+            "raw",
+            {"uid": uid, "mode": ReadMode.BYTES.value, "tail": _RAW_TAIL},
+        )
+
+    # ════════════════════════════════════════════════════════════
+    # 操作（都经接缝）
+    # ════════════════════════════════════════════════════════════
+
+    def _create_session(self) -> None:
+        text = self._bar.command.get().strip()
+        argv = list(shlex.split(text)) if text else []
+        self._bar.command.delete(0, tk.END)
+        self._ask(
+            Command.CREATE_SESSION,
+            "create",
+            {"mode": self._bar.mode.get(), "argv": argv},
+        )
+
+    def _close_selected(self) -> None:
+        if self._selected is not None:
+            self._ask(Command.CLOSE_SESSION, "close", {"uid": self._selected})
+
+    def _send_input(self, newline: bool = False) -> None:
+        """输入走字节帧：它本身就是一次操作，不需要配对的控制请求。"""
+        uid = self._selected
+        if uid is None:
+            self._status.set("先选一个会话")
+            return
+        tail = b""
+        if newline:
+            # PTY 的"回车"是 CR：ConPTY 上的 cmd.exe 只认 CR 提交命令行，LF 会被留在
+            # 输入缓冲里。子进程的 stdin 是普通字节流，换行保持 LF。
+            tail = b"\r" if self._is_terminal(uid) else b"\n"
+        data = self._input.text.encode() + tail
+        self._input.clear()
+        try:
+            self._client.write(uid, data)
+        except Exception as exc:
+            self._status.set(f"发送失败: {exc}")
+            return
+        self._status.set(f"已发出 {len(data)} 字节（由守护进程的写线程写出）")
+
+    def _send_interrupt(self) -> None:
+        uid = self._selected
+        if uid is None:
+            return
+        try:
+            self._client.write(uid, b"\x03")  # Ctrl+C
+        except Exception as exc:
+            self._status.set(f"发送失败: {exc}")
+            return
+        self._status.set("已发出 Ctrl+C")
+
+    def _resize(self) -> None:
+        uid = self._selected
+        if uid is None:
+            return
+        try:
+            cols, rows = self._size.size
+        except ValueError:
+            messagebox.showwarning("改尺寸", "宽高要是整数")
+            return
+        self._ask(Command.RESIZE_SESSION, "resize", {"uid": uid, "cols": cols, "rows": rows})
+
+    def _on_select(self, uid: str | None) -> None:
+        """用户改了树的选中项 → 切换当前会话。
+
+        `<<TreeviewSelect>>` 是**异步**派发的，且值没变也照发，程序侧切会话同样会触发它，
+        所以先比一次 `_selected`，把非用户发起的那次当成 no-op。
+        """
+        if uid != self._selected:
+            self._select_session(uid)
+
+    def _select_session(self, uid: str | None) -> None:
+        """把当前会话切到 `uid`（无会话传 `None`）：树选中、pty 专属控件、详情一起到位。"""
+        self._selected = uid
+        self._tree.set_selection(uid)
+        self._sized_for = None
+        self._sync_pty_controls(uid)
+        self._refresh_detail()
+
+    def _sync_pty_controls(self, uid: str | None) -> None:
+        """屏幕页 / SVG 源码页 / 导出按钮 / 尺寸控件都是 pty 专属：其他模式藏掉或禁用。
+
+        尺寸框只在**换会话**时填一次：每次刷新都填，会把用户正在输入的宽高擦掉。
+        """
+        ref = self._sessions.get(uid) if uid is not None else None
+        is_pty = ref is not None and ref.cols is not None  # 只有终端会话带尺寸
+        state = "normal" if is_pty else "hidden"
+        for key in (Page.SCREEN, Page.SVG):
+            self._tabs.set_page_state(key, state)
+        self._size.set_enabled(is_pty)
+        if is_pty and uid is not None and uid != self._sized_for and ref is not None:
+            self._sized_for = uid
+            self._size.set_size(int(ref.cols or 80), int(ref.rows or 24))
+
+    def _is_terminal(self, uid: str) -> bool:
+        ref = self._sessions.get(uid)
+        return ref is not None and ref.cols is not None
+
+    def _on_format_change(self) -> None:
+        self._refresh_detail()
+
+    # ════════════════════════════════════════════════════════════
+    # 导出
+    # ════════════════════════════════════════════════════════════
+
+    def _save_svg(self) -> None:
+        path = self._screen.save_svg()
+        if path:
+            self._status.set(f"已保存 SVG → {path}")
+
+    def _save_png(self) -> None:
+        uid = self._selected
+        if uid is None:
+            return
+        path = ask_save(
+            title="保存屏幕 PNG",
+            initial="screen.png",
+            extension=".png",
+            filetype=("PNG", "*.png"),
+        )
+        if not path:
+            return
+        self._export_path = path
+        self._ask(
+            Command.READ_SESSION,
+            "export",
+            {"uid": uid, "mode": ReadMode.IMAGE.value, "scale": EXPORT_SCALE},
+        )
+
+    def _write_export(self, blob: bytes) -> None:
+        path, self._export_path = self._export_path, None
+        if path is None:
+            return
+        Path(path).write_bytes(blob)
+        self._status.set(f"已保存 PNG → {path}")
+
+    # ════════════════════════════════════════════════════════════
+    # 收尾
+    # ════════════════════════════════════════════════════════════
+
+    def on_close(self) -> None:
+        """窗口关闭：断开与守护进程的连接（会话是守护进程的，不随窗口消失）。"""
+        if self._tick_job is not None:
+            self._root.after_cancel(self._tick_job)
+            self._tick_job = None
+        self._client.close()
+        self._root.destroy()
+
+
+def main(address: str) -> int:
+    root = tk.Tk()
+    app = App(root, address)
+    root.protocol("WM_DELETE_WINDOW", app.on_close)
+    root.mainloop()
+    return 0

@@ -65,6 +65,8 @@ class ReadMode(StrEnum):
     """可见屏幕纯文本（pty 专属）。"""
     TEXT = "text"
     """全量输出：含滚动历史的可见文本（pty 专属）。"""
+    SVG = "svg"
+    """可见屏幕的矢量源码（pty 专属）——客户端自己铺画布、栅格化。"""
     IMAGE = "image"
     """可见屏幕的位图（png），以字节帧返回（pty 专属）。"""
     BYTES = "bytes"
@@ -94,9 +96,12 @@ class SessionRef:
     **只有 `uid`，没有 `sid`、没有 `tags`**：那两样都是消费者的语义。
 
     `cols` / `rows` 只有终端会话才有——客户端要靠它把屏幕缩放到自己的画布。
+    `members` 是进程树成员数，`None` = 观测不到（未启动 / 没有作业对象 / 已关闭），
+    与"确实 0 个"分开。
     """
 
     uid: str
+    command: str
     mode: str
     state: str
     running: bool
@@ -104,10 +109,12 @@ class SessionRef:
     exit_code: int | None = None
     cols: int | None = None
     rows: int | None = None
+    members: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "uid": self.uid,
+            "command": self.command,
             "mode": self.mode,
             "state": self.state,
             "running": self.running,
@@ -115,6 +122,7 @@ class SessionRef:
             "exit_code": self.exit_code,
             "cols": self.cols,
             "rows": self.rows,
+            "members": self.members,
         }
 
     @classmethod
@@ -124,6 +132,7 @@ class SessionRef:
         try:
             return cls(
                 uid=str(raw["uid"]),
+                command=str(raw["command"]),
                 mode=str(raw["mode"]),
                 state=str(raw["state"]),
                 running=bool(raw["running"]),
@@ -131,6 +140,7 @@ class SessionRef:
                 exit_code=_optional_int(raw.get("exit_code")),
                 cols=_optional_int(raw.get("cols")),
                 rows=_optional_int(raw.get("rows")),
+                members=_optional_int(raw.get("members")),
             )
         except KeyError as exc:
             raise MessageError(f"会话快照缺少字段: {exc}") from exc

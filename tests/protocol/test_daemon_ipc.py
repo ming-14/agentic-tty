@@ -56,6 +56,7 @@ def test_image_mode_aligns_with_the_rendering_channel():
 def test_session_ref_roundtrip():
     ref = SessionRef(
         uid="u1",
+        command="bash",
         mode="pty",
         state="running",
         running=True,
@@ -63,6 +64,7 @@ def test_session_ref_roundtrip():
         exit_code=None,
         cols=100,
         rows=30,
+        members=2,
     )
     assert SessionRef.from_dict(ref.to_dict()) == ref
 
@@ -70,15 +72,30 @@ def test_session_ref_roundtrip():
 def test_session_ref_size_is_optional():
     """只有终端会话有尺寸——客户端靠它把屏幕缩放到自己的画布。"""
     ref = SessionRef.from_dict(
-        {"uid": "u", "mode": "subprocess", "state": "running", "running": True, "drained": False}
+        {
+            "uid": "u",
+            "command": "cat",
+            "mode": "subprocess",
+            "state": "running",
+            "running": True,
+            "drained": False,
+        }
     )
     assert (ref.cols, ref.rows) == (None, None)
+    assert ref.members is None
 
 
 def test_session_ref_never_carries_sid_or_tags():
     """uid 级快照只有 uid——sid 与 tags 是消费者的语义。"""
     snapshot = SessionRef.from_dict(
-        {"uid": "u", "mode": "pty", "state": "running", "running": True, "drained": False}
+        {
+            "uid": "u",
+            "command": "bash",
+            "mode": "pty",
+            "state": "running",
+            "running": True,
+            "drained": False,
+        }
     ).to_dict()
     assert "sid" not in snapshot
     assert "tags" not in snapshot
