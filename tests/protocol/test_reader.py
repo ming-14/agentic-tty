@@ -53,7 +53,7 @@ def test_frames_survive_being_split_and_coalesced():
     """一次发送被切成 3 字节一段、几帧粘在一起——解码必须是增量的。"""
     stream = (
         encode_control(to_json(make_request("a")))
-        + encode_bytes("stdout", "s", b"payload")
+        + encode_bytes(0x01, "s", b"payload")
         + encode_control(to_json(make_request("b")))
     )
     source = _Scripted(*_sliced(stream, 3))
@@ -72,9 +72,9 @@ def test_control_frame_carries_the_envelope_back():
 
 
 def test_bytes_frame_keeps_raw_bytes():
-    source = _Scripted(encode_bytes("stderr", "sid-1", b"\x00\x01raw"))
+    source = _Scripted(encode_bytes(0x02, "sid-1", b"\x00\x01raw"))
     assert _read_until(FrameReader(source), source, 1) == [
-        BytesFrame(stream="stderr", key="sid-1", data=b"\x00\x01raw")
+        BytesFrame(tag=0x02, key="sid-1", data=b"\x00\x01raw")
     ]
 
 

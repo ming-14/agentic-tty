@@ -1,7 +1,8 @@
 """信封：两端共享的统一格式。
 
-字段见架构设计 §7.2。载荷分四组——操作参数 `op`、返回条件 `condition`、
-返回数据 `output`、IO `io`——让各归其位；分组只是组织方式，不改变线格式。
+字段：`proto / dir / type / mid / ts / kind / auth / payload`。载荷分四组——操作参数 `op`、
+返回条件 `condition`、返回数据 `output`、IO `io`——让各归其位；分组只是组织方式，
+不改变线格式。
 
 `direction` 在线格式里的键是 `dir`（避免与内建 `dir` 同名）。
 """

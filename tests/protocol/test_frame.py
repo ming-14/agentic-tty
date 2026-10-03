@@ -13,6 +13,10 @@ from agentic_tty.protocol.frame import (
     encode_control,
 )
 
+# 帧层不认识"流"——标签是 1 字节的不透明值，测试用两个任意值。
+_TAG_A = 0x01
+_TAG_B = 0x02
+
 
 def _decode_all(*chunks: bytes) -> list[ControlFrame | BytesFrame]:
     decoder = FrameDecoder()
@@ -32,45 +36,45 @@ def test_control_accepts_empty_payload():
 
 
 def test_bytes_roundtrip():
-    wire = encode_bytes("stderr", "sid-1", b"\x1b[31mred\x1b[0m")
+    wire = encode_bytes(_TAG_B, "sid-1", b"\x1b[31mred\x1b[0m")
     assert _decode_all(wire) == [
-        BytesFrame(stream="stderr", key="sid-1", data=b"\x1b[31mred\x1b[0m")
+        BytesFrame(tag=_TAG_B, key="sid-1", data=b"\x1b[31mred\x1b[0m")
     ]
 
 
 def test_bytes_accepts_empty_data():
-    wire = encode_bytes("stdout", "m1", b"")
-    assert _decode_all(wire) == [BytesFrame(stream="stdout", key="m1", data=b"")]
+    wire = encode_bytes(_TAG_A, "m1", b"")
+    assert _decode_all(wire) == [BytesFrame(tag=_TAG_A, key="m1", data=b"")]
 
 
 def test_bytes_keeps_binary_data_intact():
     blob = bytes(range(256)) * 4
-    frames = _decode_all(encode_bytes("stdout", "m1", blob))
+    frames = _decode_all(encode_bytes(_TAG_A, "m1", blob))
     assert isinstance(frames[0], BytesFrame)
     assert frames[0].data == blob
 
 
 def test_frames_can_be_glued_together():
-    wire = encode_control(b"one") + encode_bytes("stdout", "k", b"two") + encode_control(b"three")
+    wire = encode_control(b"one") + encode_bytes(_TAG_A, "k", b"two") + encode_control(b"three")
     assert _decode_all(wire) == [
         ControlFrame(b"one"),
-        BytesFrame(stream="stdout", key="k", data=b"two"),
+        BytesFrame(tag=_TAG_A, key="k", data=b"two"),
         ControlFrame(b"three"),
     ]
 
 
 def test_split_at_every_boundary_yields_same_frames():
     """TCP 会把一次发送切成任意片段，切在哪都不能影响结果。"""
-    wire = encode_control(b'{"x":"\xe4\xb8\xad"}') + encode_bytes("stderr", "sid", b"\x00\x01")
+    wire = encode_control(b'{"x":"\xe4\xb8\xad"}') + encode_bytes(_TAG_B, "sid", b"\x00\x01")
     expected = _decode_all(wire)
     for cut in range(len(wire) + 1):
         assert _decode_all(wire[:cut], wire[cut:]) == expected, f"切在 {cut} 字节处"
 
 
 def test_byte_by_byte_feed():
-    wire = encode_bytes("stdout", "key", b"payload")
+    wire = encode_bytes(_TAG_A, "key", b"payload")
     assert _decode_all(*[bytes((b,)) for b in wire]) == [
-        BytesFrame(stream="stdout", key="key", data=b"payload")
+        BytesFrame(tag=_TAG_A, key="key", data=b"payload")
     ]
 
 
@@ -94,13 +98,6 @@ def test_unknown_frame_kind_is_rejected():
         _decode_all(bytes((0x7F, 0, 0, 0, 0)))
 
 
-def test_unknown_stream_tag_is_rejected():
-    payload = bytes((0x7F, 1)) + b"k"
-    wire = bytes((KIND_BYTES,)) + len(payload).to_bytes(4, "big") + payload
-    with pytest.raises(FrameError, match="未知流标签"):
-        _decode_all(wire)
-
-
 def test_truncated_bytes_frame_is_rejected():
     payload = bytes((0x01, 8)) + b"short"
     wire = bytes((KIND_BYTES,)) + len(payload).to_bytes(4, "big") + payload
@@ -114,18 +111,19 @@ def test_bytes_frame_shorter_than_tag_and_length_is_rejected():
         _decode_all(wire)
 
 
-def test_encode_rejects_unknown_stream():
-    with pytest.raises(FrameError, match="未知流标签"):
-        encode_bytes("stdin", "k", b"x")
+def test_encode_rejects_tag_out_of_range():
+    """标签只能占 1 字节。"""
+    with pytest.raises(FrameError, match="越界"):
+        encode_bytes(0x100, "k", b"x")
 
 
 def test_encode_rejects_overlong_key():
     with pytest.raises(FrameError, match="帧键过长"):
-        encode_bytes("stdout", "k" * 256, b"x")
+        encode_bytes(_TAG_A, "k" * 256, b"x")
 
 
 def test_multi_byte_key_survives_roundtrip():
-    frames = _decode_all(encode_bytes("stdout", "会话-1", b"x"))
+    frames = _decode_all(encode_bytes(_TAG_A, "会话-1", b"x"))
     assert isinstance(frames[0], BytesFrame)
     assert frames[0].key == "会话-1"
 
