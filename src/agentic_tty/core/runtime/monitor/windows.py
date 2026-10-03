@@ -1,55 +1,14 @@
-"""GUI 窗口探测：判断某个会话是否弹出了窗口。
-
-**平台能力差异（刻意）**：Windows 上 `EnumWindows` + `GetWindowThreadProcessId`
-能把窗口归属到 pid，于是"这个会话弹了窗口"是可判定的；Linux 上不行——X11 勉强
-能靠 `_NET_WM_PID` 拼凑，但 **Wayland 根本不允许客户端查询其他进程的窗口**。
-因此 Linux 分支返回空元组（首次调用记一条告警），调用方得到的是"查不到窗口"。
-"""
+"""Windows 窗口探测：`EnumWindows` + `GetWindowThreadProcessId` 把窗口归属到 pid。"""
 
 from __future__ import annotations
 
-import sys
-from collections.abc import Iterable
-from dataclasses import dataclass
+from .probe import WindowInfo
 
-from ....foundation.logs import get_logger
-
-_logger = get_logger("core.runtime.monitor.windows")
-
-_IS_WINDOWS = sys.platform == "win32"
 _GW_OWNER = 4
 
-_warned_unsupported = False
 
-
-@dataclass(frozen=True, slots=True)
-class WindowInfo:
-    """一个可见的顶层窗口。"""
-
-    pid: int
-    handle: int
-    title: str
-
-
-def windows_of(pids: Iterable[int]) -> tuple[WindowInfo, ...]:
-    """列出属于 `pids` 的**可见顶层窗口**。
-
-    只算可见且没有属主的顶层窗口：子控件、工具窗、隐藏窗口都不算"弹出了 GUI"。
-    控制台程序的窗口属于 conhost 而非程序本身，因此不会被误判。
-    """
-    global _warned_unsupported
-    if not _IS_WINDOWS:
-        if not _warned_unsupported:
-            _warned_unsupported = True
-            _logger.warning("窗口探测在 Linux 上不可用，恒返回空结果")
-        return ()
-    wanted = frozenset(pids)
-    if not wanted:
-        return ()
-    return _windows_windows_of(wanted)
-
-
-def _windows_windows_of(pids: frozenset[int]) -> tuple[WindowInfo, ...]:
+def probe_windows(pids: frozenset[int]) -> tuple[WindowInfo, ...]:
+    """列出属于 `pids` 的可见顶层窗口。"""
     import ctypes
     from ctypes import wintypes
 

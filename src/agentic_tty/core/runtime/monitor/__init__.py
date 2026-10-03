@@ -6,6 +6,6 @@
 
 from __future__ import annotations
 
-from .windows import WindowInfo, windows_of
+from .probe import WindowInfo, windows_of
 
 __all__ = ["WindowInfo", "windows_of"]
