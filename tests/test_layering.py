@@ -206,6 +206,45 @@ def test_only_the_named_daemon_files_may_import_core():
     assert not violations, "daemon 的机制文件 import 了 core:\n" + "\n".join(violations)
 
 
+_SPAWN_MODULES = frozenset({"subprocess", "multiprocessing"})
+_SPAWN_CALLS = ("subprocess.", "os.system", "os.popen", "os.spawn", "os.exec", "os.fork")
+"""启动进程的调用——消费者格一个都不许有。"""
+
+
+def _called_name(node: ast.expr) -> str | None:
+    """把调用目标还原成点号链：`subprocess.Popen(...)` → `"subprocess.Popen"`。"""
+    parts: list[str] = []
+    current: ast.expr = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if not isinstance(current, ast.Name):
+        return None
+    parts.append(current.id)
+    return ".".join(reversed(parts))
+
+
+def test_consumer_packages_never_spawn_processes():
+    """**守护进程只由用户启动**：消费者格（含验证台）不得拉子进程。
+
+    它们只被"告知"要连哪个名字，然后自己算地址去连。`tests/` 里起守护进程是为了测它本身、
+    用的是它自己的接口，所以这条只管 `example/`。
+    """
+    violations: list[str] = []
+    for path in sorted((SRC / "example").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.split(".")[0] in _SPAWN_MODULES:
+                        violations.append(f"{path.relative_to(SRC)} → import {alias.name}")
+            elif isinstance(node, ast.Call):
+                name = _called_name(node.func)
+                if name is not None and name.startswith(_SPAWN_CALLS):
+                    violations.append(f"{path.relative_to(SRC)} → {name}()")
+    assert not violations, "消费者格启动了进程:\n" + "\n".join(violations)
+
+
 def test_protocol_base_does_not_import_contracts():
     """通用底座（帧 / 信封 / 响应 / 错误）不认识任何边界。"""
     base = ("__init__.py", "frame.py", "envelope.py", "response.py", "errors.py")

@@ -20,11 +20,13 @@ from pathlib import Path
 from queue import Empty, Queue
 from tkinter import messagebox, ttk
 
+from ...config.names import endpoint_name, lock_name, runtime_dir
 from ...foundation.instance import is_held
 from ...foundation.logs import get_logger
 from ...protocol.contracts.daemon_ipc import Command, ReadMode, SessionRef
 from ...protocol.frame import BytesFrame
 from ...protocol.response import data_of, error_of, is_ok
+from ...transport.pipe import pipe_address
 from ..ui import (
     EXPORT_SCALE,
     HINT_COLOR,
@@ -39,7 +41,6 @@ from ..ui import (
     ViewRange,
     ask_save,
 )
-from . import lock
 from .client import Answer, Client
 
 _logger = get_logger("example.daemon_test.gui")
@@ -58,9 +59,11 @@ _CONNECT_RETRY = 0.3
 class App:
     """验证台：把守护进程的答复翻译成界面状态。"""
 
-    def __init__(self, root: tk.Tk, address: str) -> None:
+    def __init__(self, root: tk.Tk, instance: str) -> None:
         self._root = root
-        self._address = address
+        # 名字是**给进来的**：地址与锁名都由它算——两端各算一次，必然一致
+        self._address = pipe_address(endpoint_name(instance), runtime_dir(instance))
+        self._lock = lock_name(instance, runtime_dir(instance))
         self._answers: Queue[Answer] = Queue()
         # 请求 → 用途：答复回来时靠 mid 认出它属于哪一次询问
         self._want: dict[str, str] = {}
@@ -72,7 +75,7 @@ class App:
         self._tick_job: str | None = None
         self._export_path: str | None = None
 
-        self._client = Client(address, on_reply=self.on_reply)
+        self._client = Client(self._address, on_reply=self.on_reply)
         # 连接在**后台线程**里做：连不上要重试，而主线程得跑 mainloop 不能阻塞
         self._connected = False
         self._closing = threading.Event()
@@ -109,7 +112,7 @@ class App:
             if self._client.try_connect(timeout=_CONNECT_TRY):
                 self._states.put("connected")
                 return
-            self._states.put("starting" if is_held(lock()) else "down")
+            self._states.put("starting" if is_held(self._lock) else "down")
             time.sleep(_CONNECT_RETRY)
 
     def _drain_states(self) -> None:
@@ -461,10 +464,10 @@ class App:
         self._root.destroy()
 
 
-def main(address: str) -> int:
+def main(instance: str) -> int:
     root = tk.Tk()
     try:
-        app = App(root, address)  # 连不上会抛 TransportError，交给入口去报
+        app = App(root, instance)  # 连不上会抛 TransportError，交给入口去报
     except Exception:
         root.destroy()  # 别留一个空窗口
         raise
