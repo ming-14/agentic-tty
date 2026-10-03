@@ -31,7 +31,7 @@ _DEADLINE = 15.0
 def running(tmp_path, monkeypatch) -> Iterator[str]:
     """起一个真守护进程（挂接入点），跑完收尾。
 
-    把平台默认目录指到 `tmp_path`：**两端都按同一套命名算**（`config.names.runtime_dir`），
+    把平台默认目录指到 `tmp_path`：**两端都按同一套命名算**（`config.constants.runtime_dir`），
     所以测试不往用户的目录里写东西。
     """
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
@@ -142,8 +142,11 @@ def test_unknown_command_comes_back_as_a_failed_answer(running: tuple[str, Daemo
         assert failure is not None and failure.code == "ValueError"
 
 
-def _pump(root, predicate, timeout: float = 10.0) -> bool:
-    """跑 Tk 的事件循环直到条件成立——`update()` 会把到点的 `after` 回调也跑掉。"""
+def _pump(root, predicate, timeout: float = 20.0) -> bool:
+    """跑 Tk 的事件循环直到条件成立——`update()` 会把到点的 `after` 回调也跑掉。
+
+    预算给得宽一点：整轮测试里别的用例在起真 PTY、真进程，满载时这条会慢下来。
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         root.update()

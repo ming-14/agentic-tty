@@ -11,7 +11,7 @@
 `example/ui`——不 import `core`，也不 import `daemon`，**更不拉起任何进程**。守护进程是独立的
 进程，**只由它自己支配**；名字由用户给，地址两端各算一次。
 
-**三态**靠两个公共信号分出来（`config.names` 给名字、`foundation.instance` 问在不在）：
+**三态**靠两个公共信号分出来（`config.constants` 给名字、`foundation.instance` 问在不在）：
 
 | 状态 | 单实例锁 | 管道 |
 |---|---|---|
@@ -22,7 +22,7 @@
 
 from __future__ import annotations
 
-from ...config.names import endpoint_name, lock_name, runtime_dir
+from ...config import endpoint_name, lock_name, runtime_dir
 from ...transport.pipe import pipe_address
 
 

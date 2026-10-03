@@ -20,7 +20,7 @@ from pathlib import Path
 from queue import Empty, Queue
 from tkinter import messagebox, ttk
 
-from ...config.names import endpoint_name, lock_name, runtime_dir
+from ...config import endpoint_name, lock_name, runtime_dir
 from ...foundation.instance import is_held
 from ...foundation.logs import get_logger
 from ...protocol.contracts.daemon_ipc import Command, ReadMode, SessionRef

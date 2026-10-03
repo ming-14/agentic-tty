@@ -12,7 +12,7 @@ r"""本机管道传输：一个名字、多条连接、双向字节流。
       Windows →  \\\\.\\pipe\\<名字>-<目录哈希>
       POSIX   →  <运行时目录>/<名字>.sock
 
-**名字是完整名字**（如 `agentic-tty-daemon-test`）——前缀由 `config.names.endpoint_name()`
+**名字是完整名字**（如 `agentic-tty-daemon-test`）——前缀由 `config.constants.endpoint_name()`
 加，transport 不认识命名习惯，只认完整名字。
 
 目录由**地址**给出（`pipe_address`），所以锁 / 端点落在同一个目录里；同机多份
@@ -61,7 +61,7 @@ def _runtime_dir(address: Address) -> Path:
     """端点目录：**必须由地址给出**。
 
     以前不给就猜平台默认目录——那是个**静默的错**：猜出来的未必是守护进程待的那个。
-    现在地址必须带目录（`config.names.runtime_dir()` 算出来，`pipe_address()` 拼进去），
+    现在地址必须带目录（`config.constants.runtime_dir()` 算出来，`pipe_address()` 拼进去），
     猜错不如报错。
     """
     if not address.path:

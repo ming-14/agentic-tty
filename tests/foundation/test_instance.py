@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from agentic_tty.config.names import lock_name
+from agentic_tty.config import lock_name
 from agentic_tty.foundation.instance import InstanceLock, is_held
 
 

@@ -28,8 +28,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
-from ..config import DaemonConfig
-from ..config.names import endpoint_name, lock_name, runtime_dir
+from ..config import DaemonConfig, endpoint_name, lock_name, runtime_dir
 from ..foundation.instance import InstanceLock
 from ..foundation.logs import add_rotating_file, get_logger
 from ..transport.pipe import pipe_address

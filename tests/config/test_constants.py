@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from agentic_tty.config.names import PREFIX, endpoint_name, lock_name, runtime_dir
+from agentic_tty.config.constants import PREFIX, endpoint_name, lock_name, runtime_dir
 
 
 def test_endpoint_name_carries_the_prefix():

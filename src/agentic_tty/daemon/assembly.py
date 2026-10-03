@@ -11,8 +11,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 
-from ..config import DaemonConfig
-from ..config.names import endpoint_name, runtime_dir
+from ..config import DaemonConfig, endpoint_name, runtime_dir
 from ..core.runtime.host_factory import check_dependencies
 from ..foundation.logs import configure, get_logger
 from ..transport.pipe import pipe_address

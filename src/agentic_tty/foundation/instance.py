@@ -1,6 +1,6 @@
 """本机实例互斥：同一个名字上只允许一个进程。
 
-**只管互斥，不管命名**——锁名由 `config.names.lock_name()` 给；这一层不认识"实例"是什么，
+**只管互斥，不管命名**——锁名由 `config.constants.lock_name()` 给；这一层不认识"实例"是什么，
 只认一个字符串。
 
 锁随进程退出由内核释放（Windows 命名互斥体随进程终止释放，POSIX `flock` 随 fd 关闭释放），
@@ -123,7 +123,7 @@ def is_held(name: str) -> bool:
 
 
 class InstanceLock:
-    """跨平台单实例锁。锁名由调用方给（`config.names.lock_name()`）。"""
+    """跨平台单实例锁。锁名由调用方给（`config.constants.lock_name()`）。"""
 
     def __init__(self, name: str) -> None:
         self._name = name

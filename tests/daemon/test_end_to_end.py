@@ -11,8 +11,7 @@ import time
 from typing import cast
 from uuid import uuid4
 
-from agentic_tty.config import DaemonConfig
-from agentic_tty.config.names import endpoint_name
+from agentic_tty.config import DaemonConfig, endpoint_name
 from agentic_tty.daemon.access_point import WireRequest
 from agentic_tty.daemon.handler import Reply
 from agentic_tty.daemon.server import Daemon
