@@ -14,7 +14,6 @@ from agentic_tty.example.core_test.runtime_fakehost.fake_host import FakeHost, F
 def _open(program: FakeProgram, mode: str = SUBPROCESS):
     registry = SessionRegistry(lambda spec: FakeHost(spec, program), journal_budget_bytes=1 << 16)
     session = registry.create(SessionSpec(mode=mode, argv=("x",)))
-    session.start()
     runner = SessionRunner(session, read_timeout=0.02)
     runner.start()
     return registry, session, runner

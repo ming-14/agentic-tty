@@ -32,6 +32,12 @@ def test_osc_terminated_by_st():
     assert scan.replay_offset(data) == len(data)
 
 
+def test_osc_with_esc_then_bel_still_terminates():
+    """ESC 后面不是 ST 时，紧跟的 BEL 仍是终止符——不能被跳过。"""
+    data = b"\x1b]a\x1b\x07"
+    assert scan.replay_offset(data) == len(data)
+
+
 def test_incomplete_multibyte_character():
     data = "ab中".encode()[:4]
     assert scan.replay_offset(data) == 2

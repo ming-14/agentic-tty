@@ -143,7 +143,6 @@ class KernelHandler:
         session = self._registry.create(SessionSpec(mode=req.mode, argv=argv))
         self._uids[req.sid] = session.uid
         try:
-            session.start()
             runner = SessionRunner(session)
             runner.start()
         except Exception:

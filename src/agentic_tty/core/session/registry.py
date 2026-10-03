@@ -59,18 +59,22 @@ class SessionRegistry:
         self._sessions: dict[str, Session] = {}
 
     def create(self, spec: SessionSpec) -> Session:
-        """创建会话对象（未启动）。"""
+        """创建会话并启动它。
+
+        **启动成功才入表**：宿主建不起来时异常向上抛，表里不会留下已关死的残骸
+        （表 = 活着的会话的集合）。
+        """
         kind = self._kinds.get(spec.mode)
         if kind is None:
             raise CoreError(f"未知会话模式: {spec.mode!r}")
-        uid = new_uid()
         session = kind.session_class(
-            uid,
+            new_uid(),
             spec,
             kind.host_factory or self._default_host_factory,
             journal_budget_bytes=self._budget,
         )
-        self._sessions[uid] = session
+        session.start()
+        self._sessions[session.uid] = session
         return session
 
     def get(self, uid: str) -> Session:
@@ -103,6 +107,10 @@ class SessionRegistry:
         _logger.info("会话已从注册表移除 uid=%s", uid)
 
     def close_all(self) -> None:
+        """关闭全部会话；单个失败不挡其余的，也不会留下半清空的表。"""
         for session in list(self._sessions.values()):
-            session.close()
+            try:
+                session.close()
+            except Exception as exc:  # 一个会话收尾失败不该挡别的
+                _logger.warning("关闭会话异常 uid=%s: %s", session.uid, exc)
         self._sessions.clear()

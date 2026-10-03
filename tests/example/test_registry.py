@@ -69,3 +69,18 @@ def test_close_all_clears_registry():
     registry.close_all()
     assert registry.list() == []
     assert first.host is None and second.host is None
+
+
+def test_close_all_isolates_a_failing_session():
+    """一个会话收尾失败不该挡住其余的，表也要清空。"""
+    registry = _registry()
+    first = registry.create(SessionSpec(mode=SUBPROCESS, argv=("x",)))
+    second = registry.create(SessionSpec(mode=SUBPROCESS, argv=("x",)))
+
+    def _boom() -> None:
+        raise RuntimeError("boom")
+
+    second.close = _boom  # type: ignore[method-assign]
+    registry.close_all()
+    assert registry.list() == []
+    assert first.host is None  # 前一个照样被关掉

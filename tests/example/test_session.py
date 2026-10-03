@@ -3,7 +3,8 @@ from __future__ import annotations
 import pytest
 
 from agentic_tty.core.errors import CoreError
-from agentic_tty.core.ports import PTY, SUBPROCESS, SessionSpec, Stream
+from agentic_tty.core.ports import PTY, SUBPROCESS, HostLifecycle, SessionSpec, Stream
+from agentic_tty.core.process.session import ProcessSession
 from agentic_tty.core.session.base import Session
 from agentic_tty.core.session.registry import SessionRegistry
 from agentic_tty.core.session.state import SessionState
@@ -16,9 +17,17 @@ def _registry(program: FakeProgram | None = None) -> SessionRegistry:
 
 
 def _create(registry: SessionRegistry, mode: str) -> Session:
-    session = registry.create(SessionSpec(mode=mode, argv=("x",)))
-    session.start()
-    return session
+    return registry.create(SessionSpec(mode=mode, argv=("x",)))
+
+
+def _bare_session(mode: str = SUBPROCESS) -> Session:
+    """未启动的会话——注册表里只放活着的会话，所以这里直接构造。"""
+    return ProcessSession(
+        "uid-bare",
+        SessionSpec(mode=mode, argv=("x",)),
+        lambda spec: FakeHost(spec, FakeProgram()),
+        journal_budget_bytes=1 << 16,
+    )
 
 
 class _SlowExitHost(FakeHost):
@@ -85,9 +94,7 @@ def test_terminal_session_has_single_stream():
 
 def test_lifecycle_transitions_and_idempotent_close():
     registry = _registry()
-    session = registry.create(SessionSpec(mode=SUBPROCESS, argv=("x",)))
-    assert session.state is SessionState.CREATED
-    session.start()
+    session = _create(registry, SUBPROCESS)
     assert session.state is SessionState.RUNNING
     session.stop()
     assert session.state is SessionState.EXITED
@@ -98,10 +105,30 @@ def test_lifecycle_transitions_and_idempotent_close():
 
 
 def test_close_without_start_is_allowed():
-    registry = _registry()
-    session = registry.create(SessionSpec(mode=SUBPROCESS, argv=("x",)))
+    session = _bare_session()
+    assert session.state is SessionState.CREATED
     session.close()
     assert session.state is SessionState.CLOSED
+
+
+def test_start_failure_records_error_and_leaves_no_residue():
+    """宿主建不起来：会话记下错误并关死，注册表也不留残骸。"""
+
+    def _boom(spec: SessionSpec) -> HostLifecycle:
+        raise RuntimeError("no host")
+
+    session = ProcessSession(
+        "u1", SessionSpec(mode=SUBPROCESS, argv=("x",)), _boom, journal_budget_bytes=1 << 16
+    )
+    with pytest.raises(CoreError):
+        session.start()
+    assert session.error is not None
+    assert session.state is SessionState.CLOSED
+
+    registry = SessionRegistry(_boom, journal_budget_bytes=1 << 16)
+    with pytest.raises(CoreError):
+        registry.create(SessionSpec(mode=SUBPROCESS, argv=("x",)))
+    assert registry.list() == []
 
 
 def test_ingest_after_close_is_rejected():
@@ -151,7 +178,7 @@ def test_drained_requires_all_streams_eof_when_externally_driven():
     driven.close()
 
 
-def test_stop_records_exit_code_so_drained_settles():
+def test_stop_records_immediately_visible_exit_code():
     registry = _registry(FakeProgram(exit_after=None, exit_code=7))
     session = _create(registry, SUBPROCESS)
     session.expect_eof()  # 有外部驱动：drained 还要求所有流 EOF
@@ -159,7 +186,7 @@ def test_stop_records_exit_code_so_drained_settles():
 
     session.stop()
     assert session.state is SessionState.EXITED
-    # 强杀后必须拿到退出码，否则 drained 永远为假、驱动循环停不下来
+    # 同步查一次就能拿到（假宿主强杀后立刻可见）
     assert session.exit_code == 7
     for stream in session.streams():
         session.mark_eof(stream)
@@ -167,18 +194,23 @@ def test_stop_records_exit_code_so_drained_settles():
     session.close()
 
 
-def test_stop_waits_for_late_exit_code():
+def test_stop_does_not_wait_for_late_exit_code():
+    """core 不做时序等待：stop 只同步查一次，晚到的退出码交给驱动方的 refresh。"""
     host = _SlowExitHost(SessionSpec(mode=SUBPROCESS, argv=("x",)), FakeProgram(exit_code=9))
     session = _create(_registry_with(host), SUBPROCESS)
-    session.stop(timeout=1.0)
-    assert session.exit_code == 9  # 查一次拿不到不能就留空
+    session.stop()
+    assert session.state is SessionState.EXITED
+    assert session.exit_code is None  # 首次查询拿不到就不等
+    assert session.drained  # drained 以状态为准，不受退出码影响
+    session.refresh()
+    assert session.exit_code == 9
     session.close()
 
 
 def test_refresh_fills_exit_code_missed_by_stop():
     host = _SlowExitHost(SessionSpec(mode=SUBPROCESS, argv=("x",)), FakeProgram(exit_code=9))
     session = _create(_registry_with(host), SUBPROCESS)
-    session.stop(timeout=0.0)  # 首次查询拿不到就超时
+    session.stop()  # 首次查询拿不到就不等
     assert session.exit_code is None
     session.refresh()  # 由驱动循环补拿
     assert session.exit_code == 9
@@ -203,10 +235,8 @@ def test_descendants_forward_to_host():
 
 
 def test_descendants_before_start_is_rejected():
-    registry = _registry()
-    session = registry.create(SessionSpec(mode=SUBPROCESS, argv=("x",)))
     with pytest.raises(CoreError):
-        session.descendants()
+        _bare_session().descendants()
 
 
 def test_terminal_resize_updates_both_sides():

@@ -22,7 +22,6 @@ def _registry(program: FakeProgram) -> SessionRegistry:
 
 def _open(registry: SessionRegistry, spec: SessionSpec) -> tuple[Session, SessionRunner]:
     session = registry.create(spec)
-    session.start()
     runner = SessionRunner(session, read_timeout=0.02)
     runner.start()
     return session, runner
@@ -112,8 +111,6 @@ def test_registry_close_all_releases_hosts():
     registry = _registry(FakeProgram(exit_after=None))
     first = registry.create(SessionSpec(mode=SUBPROCESS, argv=("x",)))
     second = registry.create(SessionSpec(mode=PTY, argv=("x",)))
-    first.start()
-    second.start()
     registry.close_all()
     assert registry.list() == []
     assert first.host is None and second.host is None

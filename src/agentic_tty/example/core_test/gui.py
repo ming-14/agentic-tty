@@ -265,11 +265,9 @@ class App:
         mode = ExampleMode(self._mode.get())
         # 命令按 shell 语义拆分，支持 "cmd.exe /c dir" 这种整串
         argv = tuple(shlex.split(text)) or (text,)
-        session = self._registry.create(session_spec(mode, argv))
         try:
-            session.start()
-        except Exception as exc:
-            self._registry.close(session.uid)  # 起不来就别留在会话表里
+            session = self._registry.create(session_spec(mode, argv))
+        except Exception as exc:  # 宿主起不来：注册表不会留残骸
             messagebox.showerror("创建会话失败", str(exc))
             return
         runner = SessionRunner(session)

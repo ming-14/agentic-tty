@@ -16,8 +16,9 @@ from collections.abc import Sequence
 from enum import StrEnum
 
 from ...core import ports
-from ...core.ports import SessionSpec
+from ...core.ports import HostFactory, SessionSpec
 from ...core.process.session import ProcessSession
+from ...core.runtime.host_factory import create_host
 from ...core.session.registry import SessionKind, SessionRegistry
 from ...core.terminal.session import TerminalSession
 from .programs import PROGRAMS
@@ -48,12 +49,18 @@ def _fake_host_factory(spec: SessionSpec) -> FakeHost:
     return FakeHost(spec, program)
 
 
-def create_registry(*, journal_budget_bytes: int = EXAMPLE_JOURNAL_BUDGET) -> SessionRegistry:
+def create_registry(
+    *,
+    host_factory: HostFactory = create_host,
+    journal_budget_bytes: int = EXAMPLE_JOURNAL_BUDGET,
+) -> SessionRegistry:
     """装配示例层的注册表：三种模式各自声明会话类与宿主工厂。
 
-    只有 `fake` 带专属宿主工厂（假宿主），另两种用注册表的默认工厂（真宿主）。
+    只有 `fake` 带专属宿主工厂（假宿主）；另两种用 `host_factory`——默认是 core 自带的
+    真宿主，测试可注入假宿主。
     """
     return SessionRegistry(
+        host_factory,
         kinds={
             ExampleMode.FAKE: SessionKind(ProcessSession, _fake_host_factory),
             ExampleMode.PTY: SessionKind(TerminalSession),

@@ -6,12 +6,19 @@ import pytest
 
 from agentic_tty.core.errors import CoreError
 from agentic_tty.core.process.session import ProcessSession
+from agentic_tty.core.session.registry import SessionRegistry
 from agentic_tty.core.terminal.session import TerminalSession
+from agentic_tty.example.core_test.runtime_fakehost.fake_host import FakeHost, FakeProgram
 from agentic_tty.example.core_test.sessions import ExampleMode, create_registry, session_spec
 
 
+def _registry() -> SessionRegistry:
+    """模式映射照旧，但宿主换成假宿主——测类型不必真的起进程。"""
+    return create_registry(host_factory=lambda spec: FakeHost(spec, FakeProgram()))
+
+
 def _create(mode: ExampleMode, argv: tuple[str, ...]):
-    return create_registry().create(session_spec(mode, argv))
+    return _registry().create(session_spec(mode, argv))
 
 
 def test_fake_mode_uses_process_session():
@@ -27,7 +34,8 @@ def test_subprocess_mode_uses_process_session():
 
 
 def test_fake_mode_rejects_unknown_program():
-    session = _create(ExampleMode.FAKE, ("nope",))
+    """未知假程序：创建即失败（启动在 create 里），异常抛出且不入表。"""
+    registry = _registry()
     with pytest.raises(CoreError):
-        session.start()
-    assert session.error is not None
+        registry.create(session_spec(ExampleMode.FAKE, ("nope",)))
+    assert registry.list() == []

@@ -23,9 +23,6 @@ from .state import SessionState, check_transition
 
 _logger = get_logger("core.session.base")
 
-# 强杀后轮询退出码的间隔
-_EXIT_POLL_INTERVAL = 0.01
-
 
 @dataclass(frozen=True, slots=True)
 class IngestResult:
@@ -82,10 +79,13 @@ class Session:
         进程退出与尾部输出到达之间有竞态：一退出就当作结束会丢掉最后一段输出，
         所以有外部驱动时必须等所有流都 EOF；没有外部驱动则退出即结束。已关闭的
         会话宿主已释放，不可能再有输出。
+
+        "已退出"以**状态**为准，而不是退出码——强杀后退出码可能永远拿不到，用它
+        判定会让 `drained` 恒为假，等待方死等。
         """
         if self.state is SessionState.CLOSED:
             return True
-        if self.exit_code is None:
+        if self.state is not SessionState.EXITED:
             return False
         if not self._expect_eof:
             return True
@@ -104,12 +104,14 @@ class Session:
         self._transition(SessionState.RUNNING)
         _logger.info("会话已启动 uid=%s mode=%s argv=%s", self.uid, self.mode, list(self.spec.argv))
 
-    def stop(self, timeout: float = 5.0) -> None:
+    def stop(self) -> None:
         """强杀进程树并进入退出态；不释放宿主（由 `close` 负责）。
 
         先杀再关是硬要求：宿主关闭在部分平台上可能长时间阻塞，先终止子进程才能让它
-        快速返回。强杀后退出码不会立刻可见（Windows Job Object 尤甚），必须等它出现
-        ——`exit_code` 留空会让 `drained` 永远为假，驱动循环停不下来。
+        快速返回。
+
+        **不在这里等退出码**——等待是时序，属于驱动方（`refresh` 负责补拿）；这里只
+        同步查一次，拿到就记下。`drained` 以状态为准，所以退出码晚到不影响它。
         """
         if self.state in (SessionState.CLOSED, SessionState.EXITED):
             return
@@ -121,24 +123,11 @@ class Session:
                 self._host.kill()
             except Exception as exc:
                 _logger.warning("终止宿主异常 uid=%s: %s", self.uid, exc)
-            self._collect_exit(timeout)
-        self._transition(SessionState.EXITED)
-        _logger.info("会话已停止 uid=%s exit=%s", self.uid, self.exit_code)
-
-    def _collect_exit(self, timeout: float) -> None:
-        """等宿主给出退出码；到点仍拿不到就记警告，不让停止流程无界阻塞。"""
-        if self._host is None or self.exit_code is not None:
-            return
-        deadline = time.monotonic() + max(0.0, timeout)
-        while True:
             code = self._host.try_wait()
             if code is not None:
                 self.exit_code = code
-                return
-            if time.monotonic() >= deadline:
-                _logger.warning("等待退出码超时 uid=%s，退出码将留空", self.uid)
-                return
-            time.sleep(_EXIT_POLL_INTERVAL)
+        self._transition(SessionState.EXITED)
+        _logger.info("会话已停止 uid=%s exit=%s", self.uid, self.exit_code)
 
     def close(self) -> None:
         """释放宿主并进入关闭态（幂等）。
@@ -163,7 +152,8 @@ class Session:
     def refresh(self) -> None:
         """推进退出检测：同步宿主退出码与状态。**只允许所有者线程调用。**
 
-        退出态但还没拿到退出码（强杀后等超时）时继续补拿——留空会让 `drained` 永远为假。
+        退出态但还没拿到退出码（强杀后晚到）时继续补拿。`exit_code` 是给消费者的
+        信息，`drained` 不依赖它。
         """
         if self._host is None or self.exit_code is not None:
             return

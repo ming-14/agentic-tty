@@ -63,7 +63,7 @@ def _string_end(data: Buffer, i: int) -> int | None:
             return None
         if data[k + 1] == _ST:
             return k + 2
-        j = k + 2  # 字符串内部出现非 ST 的 ESC：按普通字节继续找
+        j = k + 1  # ESC 后不是 ST：从它的下一字节继续找（紧跟的 BEL 不能被跳过）
     return None
 
 

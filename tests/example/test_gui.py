@@ -11,8 +11,11 @@ tk = pytest.importorskip("tkinter")
 pytest.importorskip("resvg_py")  # GUI 的 SVG 渲染依赖
 
 from agentic_tty.core.ports import Stream  # noqa: E402
+from agentic_tty.core.process.session import ProcessSession  # noqa: E402
 from agentic_tty.core.runtime.runner import SessionRunner  # noqa: E402
 from agentic_tty.example.core_test.gui import App  # noqa: E402
+from agentic_tty.example.core_test.programs import PROGRAMS  # noqa: E402
+from agentic_tty.example.core_test.runtime_fakehost.fake_host import FakeHost  # noqa: E402
 from agentic_tty.example.core_test.sessions import ExampleMode, session_spec  # noqa: E402
 
 
@@ -150,7 +153,12 @@ def test_process_tab_shows_tree_members(root):
 def test_processes_helper_returns_none_when_unobservable(root):
     """未启动的会话观测不到进程树：返回 None 而不是抛给界面。"""
     app = App(root)
-    session = app._registry.create(session_spec(ExampleMode.FAKE, ("repl",)))  # 没 start
+    session = ProcessSession(
+        "uid-bare",
+        session_spec(ExampleMode.FAKE, ("repl",)),
+        lambda spec: FakeHost(spec, PROGRAMS["repl"]),
+        journal_budget_bytes=1 << 16,
+    )
     assert app._processes(session) is None
     app.on_close()
 
@@ -172,7 +180,6 @@ def test_screen_views_for_real_pty(root):
     session = app._registry.create(
         session_spec(ExampleMode.PTY, (sys.executable, "-c", "print('gui-svg')"))
     )
-    session.start()
     runner = SessionRunner(session)
     runner.start()
     app._runners[session.uid] = runner
