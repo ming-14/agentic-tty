@@ -1,8 +1,8 @@
 """守护进程验证台的端到端：真守护进程 ＋ 真接入点 ＋ 真协议客户端。
 
-请求处理层是台子自己那份（`KernelHandler`），它**真的驱动 core**——所以这条链上没有一个
-替身：`pipe://` 监听、解帧、core 操作、答复回写全是真的。界面（`gui.py`）不在这里测，
-它只负责把答复翻译成界面状态。
+请求处理层用的是**守护进程自带的默认那份**（`daemon/kernel.py`），它**真的驱动 core**——
+所以这条链上没有一个替身：`pipe://` 监听、解帧、core 操作、答复回写全是真的。界面
+（`gui.py`）不在这里测，它只负责把答复翻译成界面状态。
 """
 
 from __future__ import annotations
@@ -17,9 +17,9 @@ from uuid import uuid4
 import pytest
 
 from agentic_tty.daemon.config import DaemonConfig
+from agentic_tty.daemon.kernel import KernelHandler
 from agentic_tty.daemon.server import Daemon
 from agentic_tty.example.daemon_test.client import Answer, Client
-from agentic_tty.example.daemon_test.handler import KernelHandler
 from agentic_tty.protocol.contracts.daemon_ipc import Command, SessionRef
 from agentic_tty.protocol.response import data_of, error_of, is_ok
 from agentic_tty.transport.pipe import pipe_address

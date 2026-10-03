@@ -3,11 +3,11 @@
     cd src && python -m agentic_tty.example.daemon_test
 
 **不依赖安装**：`agentic_tty` 就在 `src/` 下，从那里起（或给 `PYTHONPATH=src`）就能 import；
-拉起来的子进程由 `_child_env()` 自己把 `src` 补进 `PYTHONPATH`，所以子进程不受 cwd 影响。
+拉起的子进程由 `_child_env()` 自己把 `src` 补进 `PYTHONPATH`，所以子进程不受 cwd 影响。
 
-客户端与守护进程因此是**两个进程**，中间只有那条本机管道——这正是"消费者连守护进程"
-的样子。关窗时把子进程 `terminate()` 掉：`Daemon` 装了 SIGTERM 处理器，POSIX 上会优雅
-收尾；Windows 没有 SIGTERM（是硬杀），但会话进程由作业对象 `KILL_ON_JOB_CLOSE` 兜底。
+**本格是消费者**：守护进程按**模块名字符串**拉起（`python -m agentic_tty.daemon`），不 import
+它——那是"操作者"的动作，不是依赖。关窗时把子进程 `terminate()` 掉：`Daemon` 装了 SIGTERM
+处理器，POSIX 上优雅收尾；Windows 没有 SIGTERM（是硬杀），会话进程由作业对象兜底。
 """
 
 from __future__ import annotations
@@ -24,6 +24,8 @@ from . import NAME, runtime_dir
 
 _logger = get_logger("example.daemon_test")
 
+_DAEMON_MODULE = "agentic_tty.daemon"
+"""守护进程的模块名。**只是个字符串**——拉起它不等于 import 它。"""
 _READY_TIMEOUT = 15.0
 """等守护进程写 pid 的上限。"""
 _READY_POLL = 0.05
@@ -59,7 +61,7 @@ def main() -> int:
     # 上一轮硬杀（Windows 没有 SIGTERM）会留下陈旧 pid，会让"就绪"误判。
     pid_path.unlink(missing_ok=True)
     server = subprocess.Popen(
-        [sys.executable, "-m", "agentic_tty.example.daemon_test.server"],
+        [sys.executable, "-m", _DAEMON_MODULE, "--name", NAME],
         env=_child_env(),
         stdout=sys.stdout,
         stderr=sys.stderr,

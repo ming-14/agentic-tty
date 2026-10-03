@@ -16,8 +16,8 @@ _ALLOWED: dict[str, frozenset[str]] = {
     "core": frozenset({"foundation", "core"}),
     # 只搬字节，不认识帧（帧在 protocol，缝合靠装配方注入）
     "transport": frozenset({"foundation", "transport"}),
-    # 承载 + 生命周期 + 转发 + 接入点：不 import core；接入点要用 protocol / transport
-    "daemon": frozenset({"foundation", "protocol", "transport", "daemon"}),
+    # 守护进程（那个进程）：机制不碰 core，只有 kernel / assembly / __main__ 碰
+    "daemon": frozenset({"foundation", "protocol", "transport", "core", "daemon"}),
     # 示例层是各层的占位：直连核心层当测试驱动，也演示守护进程与客户端这一对
     "example": frozenset({"foundation", "protocol", "core", "transport", "daemon", "example"}),
 }
@@ -163,21 +163,41 @@ def test_nothing_depends_on_example():
 def test_example_client_stays_a_pure_client():
     """客户端那一格只许依赖公共层，也不许伸手进别的格——包级规则管不住它，单列一条。
 
-    验证台（`core_test/` / `daemon_test/`）跳过：它们直连被测的那层是职责所在，
-    还共用 `ui/` 那一套控件。剩下的格既不能依赖核心层与消费者，也不能引用别的格。
+    `core_test/` 跳过：它是**进程内**的台，直连核心层是它的职责，import core 是本职。
+    `daemon_test/` **不跳过**——它是**跨进程**的纯消费者，这条断言真的管得住它。
+    `ui/` 是**共用格**（纯 Tk，不认识任何层），台子引用它不算跨格违规。
     """
     for package in sorted((SRC / "example").iterdir()):
         if not package.is_dir() or not (package / "__init__.py").exists():
             continue
-        if package.name in {"core_test", "daemon_test"}:  # 验证台：直连被测的那层是它的职责
+        if package.name == "core_test":  # 进程内的台：直连核心层是它的职责
             continue
         for path in sorted(package.rglob("*.py")):
             deps, _ = _deps(path)
             # "example" 是包内引用的自指，格与格之间由下面那条单独管
             extra = sorted(deps - {"foundation", "protocol", "transport", "example"})
             assert not extra, f"{path.relative_to(SRC)} 越出客户端链: {extra}"
-            peers = _example_peers(path) - {package.name}
+            peers = _example_peers(path) - {package.name, "ui"}
             assert not peers, f"{path.relative_to(SRC)} 伸手进了别的格: {sorted(peers)}"
+
+
+_DAEMON_CORE_FILES = frozenset({"kernel.py", "assembly.py", "__main__.py"})
+"""`daemon/` 里**允许** import core 的文件——其余是"机制"，必须与 core 无关。"""
+
+
+def test_only_the_named_daemon_files_may_import_core():
+    """`daemon/` 的机制不认 core：换掉请求处理层，机制一行不改。
+
+    白名单而不是黑名单——以后往 `daemon/` 加新的机制文件，自动被管住。
+    """
+    violations: list[str] = []
+    for path in sorted((SRC / "daemon").rglob("*.py")):
+        if path.name in _DAEMON_CORE_FILES:
+            continue
+        deps, _ = _deps(path)
+        if "core" in deps:
+            violations.append(f"{path.relative_to(SRC)} → core")
+    assert not violations, "daemon 的机制文件 import 了 core:\n" + "\n".join(violations)
 
 
 def test_protocol_base_does_not_import_contracts():

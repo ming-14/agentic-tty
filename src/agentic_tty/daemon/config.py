@@ -14,15 +14,16 @@ from pathlib import Path
 class DaemonConfig:
     """守护进程的装配参数。"""
 
-    name: str = "agentic-tty"
-    """单实例锁名与运行时目录名。带命名空间，多用户与测试可以共存。"""
+    name: str = "default"
+    """**实例名**：单实例锁名与运行时目录名都由它派生。多份配置、多用户靠它共存。"""
     runtime_dir: Path | None = None
-    """运行时目录（pid / 锁 / 日志）；留空取平台默认。"""
+    """运行时目录（pid / 锁 / 端点 / 日志）；留空取 `default_runtime_dir(name)`。"""
 
     listen: str | None = None
-    """接入点用的本机管道名（挂成 `pipe://<它>`）。**留空不挂监听**。
+    """接入点用的**端点名**（挂成 `pipe://agentic-tty-<它>`）。**留空不挂监听**。
 
-    这是守护进程对外的唯一口子——正式的入口必须给；嵌入 / 单测可以不给。
+    与 `name` 分开：`name` 决定"哪个实例（锁与目录）"，`listen` 决定"哪个端点（管道）"。
+    端点名由 `transport` 加项目前缀，所以这里别自己写 `agentic-tty-`。
     """
 
     tick_interval: float = 0.005

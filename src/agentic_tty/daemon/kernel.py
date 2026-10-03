@@ -1,11 +1,10 @@
-"""守护进程侧的请求处理层：把 uid 级请求翻成 core 操作。
+"""守护进程的**默认请求处理层**：uid 级请求 → core 操作。
 
-**本包唯一碰 core 的地方**——客户端那几份（`client.py` / `gui.py`）只碰
-`protocol` / `transport` 与 `example/ui`。
+它把 `daemon_ipc` 的命令翻成 core 调用——这就是守护进程对外的能力面。**本包只有它和
+`assembly.py` 碰 core**：`server.py` / `access_point.py` / `handler.py` / `platform/` 是"机制"，
+一行 core 都不碰，换掉这一层机制不用改（白名单由 AST 断言按文件强制）。
 
-会话与驱动**成对**交给 `core.runtime.Runtime`；本层按 `daemon_ipc` 的命令办事，答复是
-`Envelope`（文本）或 `ByteChunk`（位图 / 字节流）。接缝上的请求对象是 `WireRequest`，
-答复必须原样把**同一个对象**带回去（路由靠它）。
+接缝上的请求对象是 `WireRequest`，答复必须原样把**同一个对象**带回去——路由靠它。
 """
 
 from __future__ import annotations
@@ -15,24 +14,24 @@ import time
 from collections.abc import Mapping
 from typing import Any, cast
 
-from ...core.errors import CoreError
-from ...core.ports import PTY, SUBPROCESS, SessionSpec, Stream
-from ...core.process.session import ProcessSession
-from ...core.runtime.runtime import Runtime
-from ...core.runtime.shell import default_shell
-from ...core.session.base import Session
-from ...core.session.registry import SessionKind, SessionRegistry
-from ...core.session.state import SessionState
-from ...core.terminal.session import TerminalSession
-from ...daemon.access_point import ByteChunk, WireRequest
-from ...daemon.handler import Reply
-from ...foundation.ids import now_timestamp
-from ...foundation.logs import get_logger
-from ...protocol.contracts.daemon_ipc import Command, ReadMode, SessionRef, stream_tag
-from ...protocol.envelope import Envelope
-from ...protocol.response import failed_response, ok_response
+from ..core.errors import CoreError
+from ..core.ports import PTY, SUBPROCESS, SessionSpec, Stream
+from ..core.process.session import ProcessSession
+from ..core.runtime.runtime import Runtime
+from ..core.runtime.shell import default_shell
+from ..core.session.base import Session
+from ..core.session.registry import SessionKind, SessionRegistry
+from ..core.session.state import SessionState
+from ..core.terminal.session import TerminalSession
+from ..foundation.ids import now_timestamp
+from ..foundation.logs import get_logger
+from ..protocol.contracts.daemon_ipc import Command, ReadMode, SessionRef, stream_tag
+from ..protocol.envelope import Envelope
+from ..protocol.response import failed_response, ok_response
+from .access_point import ByteChunk, WireRequest
+from .handler import Reply
 
-_logger = get_logger("example.daemon_test.handler")
+_logger = get_logger("daemon.kernel")
 
 
 def _text(op: Mapping[str, Any], key: str, default: str = "") -> str:
@@ -53,7 +52,7 @@ def _failed(envelope: Envelope, error: BaseException) -> Envelope:
 
 
 class KernelHandler:
-    """`RequestHandler` 的最小实现：uid 级请求 → core 操作。"""
+    """默认的 `RequestHandler`：uid 级请求 → core 操作。"""
 
     def __init__(self, registry: SessionRegistry | None = None, *, listen: str = "") -> None:
         self._runtime = Runtime(
