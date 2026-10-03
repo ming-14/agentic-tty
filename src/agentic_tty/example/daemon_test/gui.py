@@ -10,7 +10,7 @@
 **把答复翻译成界面状态**。
 
 **它只碰守护进程的接缝**：`start` / `request_stop` / `stop` / `running` / `pid_path` /
-`runtime_dir` / `submit` / `submit_input` / `on_reply`。核心层由本包 `handler.py` 驱动。
+`submit` / `submit_input` / `on_reply`。核心层由本包 `handler.py` 驱动。
 """
 
 from __future__ import annotations

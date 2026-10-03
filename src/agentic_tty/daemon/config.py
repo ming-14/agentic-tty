@@ -19,6 +19,12 @@ class DaemonConfig:
     runtime_dir: Path | None = None
     """运行时目录（pid / 锁 / 日志）；留空取平台默认。"""
 
+    listen: str | None = None
+    """接入点用的本机管道名（挂成 `pipe://<它>`）。**留空不挂监听**。
+
+    这是守护进程对外的唯一口子——正式的入口必须给；嵌入 / 单测可以不给。
+    """
+
     tick_interval: float = 0.005
     """所有者循环每轮之间的间隔。"""
     drain_timeout: float = 5.0

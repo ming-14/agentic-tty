@@ -16,8 +16,8 @@ _ALLOWED: dict[str, frozenset[str]] = {
     "core": frozenset({"foundation", "core"}),
     # 只搬字节，不认识帧（帧在 protocol，缝合靠装配方注入）
     "transport": frozenset({"foundation", "transport"}),
-    # 只认注入的请求处理接缝与依赖检查：不 import core，也不 import protocol / transport
-    "daemon": frozenset({"foundation", "daemon"}),
+    # 承载 + 生命周期 + 转发 + 接入点：不 import core；接入点要用 protocol / transport
+    "daemon": frozenset({"foundation", "protocol", "transport", "daemon"}),
     # 示例层是各层的占位：直连核心层当测试驱动，也演示守护进程与客户端这一对
     "example": frozenset({"foundation", "protocol", "core", "transport", "daemon", "example"}),
 }
@@ -56,6 +56,22 @@ def _module_of(path: Path, node: ast.ImportFrom) -> str | None:
 def _resolve_relative(path: Path, node: ast.ImportFrom) -> str | None:
     module = _module_of(path, node)
     return module.split(".")[0] if module else None
+
+
+def _import_targets(path: Path, node: ast.AST) -> list[str]:
+    """把一条 import 语句解析成完整模块路径列表。
+
+    相对导入（`level > 0`）按文件位置解析；绝对导入原样取 `module`——`_module_of`
+    只认相对导入，拿它解绝对导入会把 `import dataclasses` 错解成包内模块。
+    """
+    if isinstance(node, ast.ImportFrom):
+        if node.level:
+            module = _module_of(path, node)
+            return [module] if module else []
+        return [node.module] if node.module else []
+    if isinstance(node, ast.Import):
+        return [alias.name for alias in node.names]
+    return []
 
 
 def _example_peers(path: Path) -> set[str]:
@@ -162,3 +178,51 @@ def test_example_client_stays_a_pure_client():
             assert not extra, f"{path.relative_to(SRC)} 越出客户端链: {extra}"
             peers = _example_peers(path) - {package.name}
             assert not peers, f"{path.relative_to(SRC)} 伸手进了别的格: {sorted(peers)}"
+
+
+def test_protocol_base_does_not_import_contracts():
+    """通用底座（帧 / 信封 / 响应 / 错误）不认识任何边界。"""
+    base = ("__init__.py", "frame.py", "envelope.py", "response.py", "errors.py")
+    violations: list[str] = []
+    for rel in base:
+        path = SRC / "protocol" / rel
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            for target in _import_targets(path, node):
+                if target.startswith("protocol.contracts"):
+                    violations.append(f"{path.relative_to(SRC)} → {target}")
+    assert not violations, "protocol 底座反向依赖了分区:\n" + "\n".join(violations)
+
+
+def test_protocol_partitions_are_independent():
+    """`protocol/contracts/` 的分区互不依赖、互不共享类型——改一条边界不波及另一条。
+
+    分区只许压在通用底座上；哪怕命令名相同，也各留一份。
+    """
+    contracts = SRC / "protocol" / "contracts"
+    partitions = sorted(p.stem for p in contracts.glob("*.py") if p.stem != "__init__")
+    assert len(partitions) >= 2, "protocol/contracts 下应当有两条以上分区"
+    violations: list[str] = []
+    for name in partitions:
+        path = contracts / f"{name}.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            for target in _import_targets(path, node):
+                if target.startswith("protocol.contracts.") and target != (
+                    f"protocol.contracts.{name}"
+                ):
+                    violations.append(f"{path.relative_to(SRC)} → {target}")
+    assert not violations, "protocol 分区互相依赖:\n" + "\n".join(violations)
+
+
+def test_daemon_only_uses_the_local_pipe():
+    """接入点是本机 IPC——daemon 不许碰 transport 的网络部分与 scheme 分派。"""
+    forbidden = {"transport.tcp", "transport.registry"}
+    violations: list[str] = []
+    for path in sorted((SRC / "daemon").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            for target in _import_targets(path, node):
+                if target in forbidden:
+                    violations.append(f"{path.relative_to(SRC)} → {target}")
+    assert not violations, "daemon 用了 transport 的网络部分:\n" + "\n".join(violations)

@@ -4,14 +4,16 @@
 随 fd 关闭释放），因此**不需要额外的 stale 锁检测**。
 
 会话坐标（offset、日志、订阅表）活在单进程内存里，两个守护进程会各自维护
-互斥的 offset；监听端口也会冲突。所以这是硬要求，不提供关闭开关。
+互斥的 offset；接入点名字也会冲突。所以这是硬要求，不提供关闭开关。
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 from ...foundation.logs import get_logger
 
@@ -20,17 +22,39 @@ _logger = get_logger("daemon.platform.single_instance")
 _IS_WINDOWS = sys.platform == "win32"
 _ERROR_ALREADY_EXISTS = 183
 
+_winapi: Any = None
+
+
+def _mutex_name(name: str, runtime_dir: Path) -> str:
+    """Windows 命名互斥体名：把 `runtime_dir` 也并进命名空间。
+
+    POSIX 的锁文件天然落在 `runtime_dir` 里，Windows 的互斥体名却是全局的——
+    不并目录的话，"同名不同目录"的两份配置会互撞，与 POSIX 行为不一致。
+    """
+    digest = hashlib.sha256(str(runtime_dir).encode("utf-8")).hexdigest()[:16]
+    return f"Local\\{name}-{digest}"
+
+
+def _k32() -> Any:
+    """kernel32 句柄。**只建一次**——原型声明长在实例上，建两个等于声明白费。"""
+    global _winapi
+    if _winapi is None:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+        kernel32.CreateMutexW.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        _winapi = kernel32
+    return _winapi
+
 
 def _windows_acquire(name: str) -> int | None:
     import ctypes
-    from ctypes import wintypes
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
-    kernel32.CreateMutexW.restype = wintypes.HANDLE
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle.restype = wintypes.BOOL
-
+    kernel32 = _k32()
     handle = kernel32.CreateMutexW(None, False, name)
     if not handle:
         raise OSError(ctypes.get_last_error(), "CreateMutexW 失败")
@@ -41,13 +65,9 @@ def _windows_acquire(name: str) -> int | None:
 
 
 def _windows_release(handle: int) -> None:
-    import ctypes
     from ctypes import wintypes
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle.restype = wintypes.BOOL
-    kernel32.CloseHandle(wintypes.HANDLE(handle))
+    _k32().CloseHandle(wintypes.HANDLE(handle))
 
 
 def _posix_acquire(path: Path) -> int | None:
@@ -84,7 +104,7 @@ class SingleInstance:
             return True
         self._runtime_dir.mkdir(parents=True, exist_ok=True)
         if _IS_WINDOWS:
-            self._handle = _windows_acquire(f"Local\\{self._name}")
+            self._handle = _windows_acquire(_mutex_name(self._name, self._runtime_dir))
         else:
             self._handle = _posix_acquire(self._runtime_dir / f"{self._name}.lock")
         if self._handle is None:

@@ -59,7 +59,7 @@ class RequestHandler(Protocol):
         ...
 
     def on_input(self, key: str, data: bytes) -> None:
-        """接下一段上行字节；`key` 的语义由消费者定（如会话 sid）。"""
+        """接下一段上行字节；`key` 的语义由消费者定（如会话 uid）。"""
         ...
 
     def pump(self) -> None:

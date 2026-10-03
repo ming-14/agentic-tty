@@ -275,7 +275,7 @@ def test_draining_waits_for_pending_requests(tmp_path):
 def test_stop_reports_timeout_when_shutdown_hangs(tmp_path):
     """会话收尾可能长时间阻塞；stop 必须带超时返回，把强制退出留给入口。"""
     handler = FakeHandler()
-    handler.shutdown_block = 5.0
+    handler.shutdown_block = 1.0
     with running(tmp_path, handler) as (daemon, _handler, _replies):
         started = time.monotonic()
         finished = daemon.stop(0.5)
@@ -288,3 +288,42 @@ def test_stop_is_idempotent(tmp_path):
     with running(tmp_path) as (daemon, _handler, _replies):
         assert daemon.stop(1) is True
         assert daemon.stop(1) is True
+
+
+def test_daemon_can_be_restarted_after_stop(tmp_path):
+    """`stop()` 之后 `start()` 必须能再跑起来——停止标志不复位的话 `run()` 会一进去就退出。"""
+    daemon, handler, _replies = make_daemon(tmp_path)
+    daemon.start()
+    first = threading.Thread(target=daemon.run, name="daemon-run-1", daemon=True)
+    first.start()
+    try:
+        assert wait_for(lambda: handler.pumps >= 2)
+        daemon.request_stop()
+        first.join(_DEADLINE)
+        assert daemon.stop(2) is True
+    finally:
+        daemon.request_stop()
+        first.join(_DEADLINE)
+
+    daemon.start()
+    second = threading.Thread(target=daemon.run, name="daemon-run-2", daemon=True)
+    second.start()
+    try:
+        assert daemon.running
+        before = handler.pumps
+        assert wait_for(lambda: handler.pumps > before + 2), "重启后循环没在跑"
+    finally:
+        daemon.request_stop()
+        second.join(_DEADLINE)
+        daemon.stop(2)
+
+
+def test_shutdown_drains_requests_that_were_already_acked(tmp_path):
+    """`submit` 返回 DELIVERED 就是承诺会处理——收尾时队列里已进的不能丢。"""
+    daemon, handler, replies = make_daemon(tmp_path)
+    daemon.start()
+    # 不起 run()：请求先压进队列，随后由 stop() 在"所有者线程"上排空。
+    assert daemon.submit("ping") is SubmitOutcome.DELIVERED
+    assert daemon.stop(2) is True
+    assert any(reply.answer == "answer:ping" for reply in replies)
+    assert handler.shutdown_called
