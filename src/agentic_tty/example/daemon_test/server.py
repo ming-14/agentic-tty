@@ -1,6 +1,9 @@
 """守护进程侧的入口：装配 core ＋ 请求处理层 ＋ 接入点，跑所有者循环。
 
-    python -m agentic_tty.example.daemon_test.server
+    cd src && python -m agentic_tty.example.daemon_test.server
+
+一般不用手起它——台子的 `__main__.py` 会把它拉成子进程。**不依赖安装**：从 `src/` 起
+（或给 `PYTHONPATH=src`）即可 import。
 
 这就是"守护进程那个进程"的最小实现——**将来正式的入口也是这个形状**：构造请求处理层
 （core 装在它里面）→ 交给 `Daemon`（它在 `start()` 里挂接入点）→ `run()`。

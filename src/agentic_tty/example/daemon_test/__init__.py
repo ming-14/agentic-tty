@@ -1,6 +1,8 @@
 """守护进程的验证台：一个守护进程 ＋ 一个客户端，两个进程，走真管道。
 
-    python -m agentic_tty.example.daemon_test
+    cd src && python -m agentic_tty.example.daemon_test
+
+**不依赖安装**：`agentic_tty` 就在 `src/` 下，从那里起（或给 `PYTHONPATH=src`）就能 import。
 
 两侧：
 

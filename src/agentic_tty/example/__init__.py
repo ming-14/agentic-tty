@@ -6,6 +6,8 @@
 
 两台台子差别只在挂载点。**只依赖别人，不被任何一层依赖。**
 
-`python -m agentic_tty.example.core_test` 打开核心层的测试台；
-`python -m agentic_tty.example.daemon_test` 打开守护进程的测试台。
+两台都从 `src/` 起（**不依赖安装**；或给 `PYTHONPATH=src`）：
+
+    cd src && python -m agentic_tty.example.core_test
+    cd src && python -m agentic_tty.example.daemon_test
 """

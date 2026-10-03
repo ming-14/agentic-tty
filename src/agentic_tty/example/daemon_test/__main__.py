@@ -1,6 +1,9 @@
 """守护进程验证台入口：把守护进程作为**子进程**拉起，再开界面连上去。
 
-    python -m agentic_tty.example.daemon_test
+    cd src && python -m agentic_tty.example.daemon_test
+
+**不依赖安装**：`agentic_tty` 就在 `src/` 下，从那里起（或给 `PYTHONPATH=src`）就能 import；
+拉起来的子进程由 `_child_env()` 自己把 `src` 补进 `PYTHONPATH`，所以子进程不受 cwd 影响。
 
 客户端与守护进程因此是**两个进程**，中间只有那条本机管道——这正是"消费者连守护进程"
 的样子。关窗时把子进程 `terminate()` 掉：`Daemon` 装了 SIGTERM 处理器，POSIX 上会优雅
@@ -27,7 +30,7 @@ _READY_POLL = 0.05
 
 
 def _child_env() -> dict[str, str]:
-    """子进程的环境：源码树里跑时把 `src` 补进 `PYTHONPATH`（装过就不用）。"""
+    """子进程的环境：把 `src` 补进 `PYTHONPATH`，于是子进程不受 cwd 影响。"""
     env = dict(os.environ)
     source_root = Path(__file__).resolve().parents[3]
     if (source_root / "agentic_tty").is_dir():
