@@ -28,15 +28,15 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
+from ..config.names import endpoint_name, lock_name, runtime_dir
+from ..foundation.instance import InstanceLock
 from ..foundation.logs import add_rotating_file, get_logger
-from ..foundation.paths import default_runtime_dir
 from ..transport.pipe import pipe_address
 from .access_point import AccessPoint
 from .config import DaemonConfig
 from .errors import AlreadyRunning, DaemonError, NotStarted
 from .handler import Reply, RequestHandler
 from .platform.signals import InstalledSignals, install_shutdown_handler
-from .platform.single_instance import SingleInstance
 
 _logger = get_logger("daemon.server")
 
@@ -89,9 +89,9 @@ class Daemon:
         self._handler_factory = handler_factory
         self._on_reply = on_reply
         self._check_dependencies = check_dependencies
-        self._dir = config.runtime_dir or default_runtime_dir(config.name)
+        self._dir = config.runtime_dir or runtime_dir(config.name)
 
-        self._lock: SingleInstance | None = None
+        self._lock: InstanceLock | None = None
         self._handler: RequestHandler | None = None
         self._signals: InstalledSignals | None = None
         self._access_point: AccessPoint | None = None
@@ -176,9 +176,9 @@ class Daemon:
 
     def _acquire_lock(self) -> None:
         # 最早取锁：两个进程同时初始化会各自维护互斥的会话坐标。
-        lock = SingleInstance(self._config.name, self._dir)
+        lock = InstanceLock(lock_name(self._config.name, self._dir))
         if not lock.acquire():
-            raise AlreadyRunning(f"已有守护进程在运行（锁名 {self._config.name}）")
+            raise AlreadyRunning(f"已有守护进程在运行（实例 {self._config.name}）")
         self._lock = lock
 
     def _prepare_dirs(self) -> None:
@@ -194,14 +194,14 @@ class Daemon:
         self._handler = self._handler_factory()
 
     def _mount_access_point(self) -> None:
-        """挂接入点——配置里给了管道名才挂（它是守护进程对外的唯一口子）。
+        """挂接入点——配置里给了端点名才挂（它是守护进程对外的唯一口子）。
 
-        端点落在**运行时目录**里（与锁同一处），所以地址要带上它。
+        端点名要经 `endpoint_name()` 加前缀：**地址是"算出来"的，两端用同一套命名**。
         """
         name = self._config.listen
         if name is None:
             return
-        address = pipe_address(name, self._dir)
+        address = pipe_address(endpoint_name(name), self._dir)
         self._access_point = AccessPoint(
             address, on_request=self.submit, on_input=self.submit_input
         )

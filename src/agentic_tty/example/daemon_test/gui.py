@@ -13,11 +13,14 @@
 from __future__ import annotations
 
 import shlex
+import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from queue import Empty, Queue
 from tkinter import messagebox, ttk
 
+from ...foundation.instance import is_held
 from ...foundation.logs import get_logger
 from ...protocol.contracts.daemon_ipc import Command, ReadMode, SessionRef
 from ...protocol.frame import BytesFrame
@@ -36,6 +39,7 @@ from ..ui import (
     ViewRange,
     ask_save,
 )
+from . import lock
 from .client import Answer, Client
 
 _logger = get_logger("example.daemon_test.gui")
@@ -45,6 +49,10 @@ _TICK_MS = 20
 _REFRESH_EVERY = 8
 _RAW_TAIL = 2000
 """原始字节页每轮只取尾部——整段会让每轮都在搬整份日志。"""
+_CONNECT_TRY = 0.2
+"""单次连接尝试的等待上限——连不上就再来一次。"""
+_CONNECT_RETRY = 0.3
+"""两次尝试之间的间隔。"""
 
 
 class App:
@@ -65,9 +73,16 @@ class App:
         self._export_path: str | None = None
 
         self._client = Client(address, on_reply=self.on_reply)
+        # 连接在**后台线程**里做：连不上要重试，而主线程得跑 mainloop 不能阻塞
+        self._connected = False
+        self._closing = threading.Event()
+        self._states: Queue[tuple[str, str]] = Queue()
         self._build_ui()
         self._sync_pty_controls(None)
-        self._client.connect()
+        self._connect_thread = threading.Thread(
+            target=self._connect_loop, name="daemon-connect", daemon=True
+        )
+        self._connect_thread.start()
         self._tick_job = self._root.after(_TICK_MS, self._tick)
 
     # ════════════════════════════════════════════════════════════
@@ -77,6 +92,41 @@ class App:
     def on_reply(self, answer: Answer) -> None:
         """客户端把答复交回来。**在读线程上被调用**——只入队，不碰界面。"""
         self._answers.put(answer)
+
+    # ════════════════════════════════════════════════════════════
+    # 连接（后台线程）
+    # ════════════════════════════════════════════════════════════
+
+    def _connect_loop(self) -> None:
+        """后台连守护进程，**每轮把"看到什么状态"投进队列**，界面在 tick 里取。
+
+        三态靠两个公共信号分——**锁在不在**（有个守护进程活着吗）＋ **连不连得上**
+        （它服务得了吗）。锁在装配的**第一步**取、监听在**中后段**挂，所以：
+
+        「锁空 + 连不上」= 没启动　「锁占 + 连不上」= 正在初始化　「连得上」= 已连接
+        """
+        while not self._closing.is_set():
+            if self._client.try_connect(timeout=_CONNECT_TRY):
+                self._states.put(("connected", ""))
+                return
+            self._states.put(("starting" if is_held(lock()) else "down", ""))
+            time.sleep(_CONNECT_RETRY)
+
+    def _drain_states(self) -> None:
+        while True:
+            try:
+                state, detail = self._states.get_nowait()
+            except Empty:
+                return
+            self._apply_state(state, detail)
+
+    def _apply_state(self, state: str, detail: str) -> None:
+        if state == "connected":
+            self._connected = True  # 具体的 pid / uptime 等第一条 daemon_status 答复
+        elif state == "starting":
+            self._daemon_state.set("守护进程正在初始化…（锁已占，监听还没挂上）")
+        else:
+            self._daemon_state.set(f"守护进程未启动（重试连接中…）{detail}")
 
     # ════════════════════════════════════════════════════════════
     # 界面
@@ -89,7 +139,7 @@ class App:
         daemon_row = ttk.Frame(self._root, padding=(8, 6))
         daemon_row.pack(fill=tk.X)
         ttk.Label(daemon_row, text="守护进程").pack(side=tk.LEFT)
-        self._daemon_state = tk.StringVar(value="连接中…")
+        self._daemon_state = tk.StringVar(value="正在连接守护进程…")
         ttk.Label(daemon_row, textvariable=self._daemon_state).pack(side=tk.LEFT, padx=8)
         ttk.Label(daemon_row, text=f"接入点 {self._address}", foreground=HINT_COLOR).pack(
             side=tk.LEFT, padx=8
@@ -135,9 +185,11 @@ class App:
 
     def _tick(self) -> None:
         try:
+            self._drain_states()
             self._drain()
             self._ticks += 1
-            if self._ticks % _REFRESH_EVERY == 0:
+            # 没连上就别发请求——那些答复永远不会来
+            if self._connected and self._ticks % _REFRESH_EVERY == 0:
                 self._ask(Command.DAEMON_STATUS, "status")
                 self._ask(Command.LIST_SESSIONS, "list")
                 self._refresh_detail()
@@ -402,6 +454,8 @@ class App:
         if self._tick_job is not None:
             self._root.after_cancel(self._tick_job)
             self._tick_job = None
+        self._closing.set()  # 让连接线程收工
+        self._connect_thread.join(_CONNECT_RETRY * 2)
         self._client.close()
         self._root.destroy()
 

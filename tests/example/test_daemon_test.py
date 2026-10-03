@@ -16,6 +16,7 @@ from uuid import uuid4
 
 import pytest
 
+from agentic_tty.config.names import endpoint_name
 from agentic_tty.daemon.config import DaemonConfig
 from agentic_tty.daemon.kernel import KernelHandler
 from agentic_tty.daemon.server import Daemon
@@ -30,7 +31,7 @@ _DEADLINE = 15.0
 @pytest.fixture
 def running(tmp_path) -> Iterator[tuple[str, DaemonConfig]]:
     """起一个真守护进程（挂接入点），跑完收尾。"""
-    name = f"agentic-tty-test-{uuid4().hex[:8]}"
+    name = f"test-{uuid4().hex[:8]}"
     config = DaemonConfig(
         name=name,
         runtime_dir=tmp_path / "run",
@@ -40,7 +41,7 @@ def running(tmp_path) -> Iterator[tuple[str, DaemonConfig]]:
     )
     daemon = Daemon(
         config,
-        lambda: KernelHandler(listen=pipe_address(name, config.runtime_dir)),
+        lambda: KernelHandler(listen=pipe_address(endpoint_name(name), config.runtime_dir)),
         check_dependencies=lambda: None,  # 测子进程会话，不必碰原生扩展
     )
     daemon.start()
@@ -92,15 +93,15 @@ class _Session:
 
 def test_status_reports_the_endpoint(running: tuple[str, DaemonConfig]):
     name, config = running
-    with _Session(pipe_address(name, config.runtime_dir)) as session:
+    with _Session(pipe_address(endpoint_name(name), config.runtime_dir)) as session:
         data = session.data(Command.DAEMON_STATUS)
-        assert data["listen"] == pipe_address(name, config.runtime_dir)
+        assert data["listen"] == pipe_address(endpoint_name(name), config.runtime_dir)
         assert data["sessions"] == 0
 
 
 def test_create_list_close(running: tuple[str, DaemonConfig]):
     name, config = running
-    with _Session(pipe_address(name, config.runtime_dir)) as session:
+    with _Session(pipe_address(endpoint_name(name), config.runtime_dir)) as session:
         ref = session.create(sys.executable, "-c", "pass")
         assert ref.mode == "subprocess"
         assert ref.command == sys.executable
@@ -115,7 +116,7 @@ def test_create_list_close(running: tuple[str, DaemonConfig]):
 def test_input_bytes_and_byte_answer_stay_off_json(running: tuple[str, DaemonConfig]):
     """上行是字节帧，下行字节答复也是字节帧——两头都不进 JSON。"""
     name, config = running
-    with _Session(pipe_address(name, config.runtime_dir)) as session:
+    with _Session(pipe_address(endpoint_name(name), config.runtime_dir)) as session:
         program = "import sys; print(sys.stdin.readline().strip().upper(), flush=True)"
         ref = session.create(sys.executable, "-u", "-c", program)
         session.client.write(ref.uid, b"hello\n")
@@ -134,7 +135,7 @@ def test_input_bytes_and_byte_answer_stay_off_json(running: tuple[str, DaemonCon
 def test_unknown_command_comes_back_as_a_failed_answer(running: tuple[str, DaemonConfig]):
     """守护进程不认识的命令要明确报错，不能让客户端干等。"""
     name, config = running
-    with _Session(pipe_address(name, config.runtime_dir)) as session:
+    with _Session(pipe_address(endpoint_name(name), config.runtime_dir)) as session:
         answer = session.ask("nonsense")
         assert answer.envelope is not None
         assert not is_ok(answer.envelope)
@@ -162,9 +163,9 @@ def test_gui_turns_answers_into_widget_state(running: tuple[str, DaemonConfig], 
     name, config = running
     from agentic_tty.example.daemon_test.gui import App  # 拉 tkinter + resvg，按需导入
 
-    app = App(root, pipe_address(name, config.runtime_dir))
+    app = App(root, pipe_address(endpoint_name(name), config.runtime_dir))
     try:
-        assert _pump(root, lambda: app._daemon_state.get() != "连接中…"), "没拿到守护进程状态"
+        assert _pump(root, lambda: app._connected), "界面没连上守护进程"
 
         app._bar.mode.set("subprocess")  # 命令留空 = 平台默认 shell
         app._create_session()

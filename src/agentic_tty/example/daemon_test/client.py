@@ -65,21 +65,31 @@ class Client:
     def connected(self) -> bool:
         return self._connection is not None
 
+    def try_connect(self, timeout: float = _CONNECT_TRY) -> bool:
+        """**试一次**：连上就起读线程并返回 True；连不上返回 False（不抛）。
+
+        调用方拿它做自己的重试策略——界面那边要**每轮都能更新"看到什么状态"**，
+        所以不能在这里闷头重试。
+        """
+        if self._connection is not None:
+            return True
+        try:
+            self._connection = PipeTransport().connect(
+                parse_address(self._address), timeout=timeout
+            )
+        except TransportError:
+            return False
+        self._reader = threading.Thread(target=self._read_loop, name="daemon-client", daemon=True)
+        self._reader.start()
+        return True
+
     def connect(self, timeout: float = 15.0) -> None:
         """连上去并起读线程。**连不上就重试到超时**（守护进程可能还在起）。"""
         deadline = time.monotonic() + timeout
-        while True:
-            try:
-                self._connection = PipeTransport().connect(
-                    parse_address(self._address), timeout=_CONNECT_TRY
-                )
-                break
-            except TransportError:
-                if time.monotonic() >= deadline:
-                    raise
-                time.sleep(_RETRY_INTERVAL)
-        self._reader = threading.Thread(target=self._read_loop, name="daemon-client", daemon=True)
-        self._reader.start()
+        while not self.try_connect():
+            if time.monotonic() >= deadline:
+                raise TransportError(f"连不上守护进程: {self._address}")
+            time.sleep(_RETRY_INTERVAL)
 
     def request(self, command: str, op: Mapping[str, Any] | None = None) -> str:
         """发一条控制请求，返回它的 `mid`——答复按这个 `mid` 回来。"""

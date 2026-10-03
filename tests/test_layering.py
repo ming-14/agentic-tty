@@ -11,15 +11,21 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "agentic_tty"
 _ALLOWED: dict[str, frozenset[str]] = {
     "foundation": frozenset({"foundation"}),
     # 线协议是两端共享的契约，只压在 foundation 上
+    # 配置：本机实例的命名 ＋ 配置值加载；只压在 foundation 上（transport 够不着它）
+    "config": frozenset({"foundation", "config"}),
     "protocol": frozenset({"foundation", "protocol"}),
     # 核心层（能力体）：core 内部可以直接用 core.runtime 的宿主实现
     "core": frozenset({"foundation", "core"}),
     # 只搬字节，不认识帧（帧在 protocol，缝合靠装配方注入）
     "transport": frozenset({"foundation", "transport"}),
     # 守护进程（那个进程）：机制不碰 core，只有 kernel / assembly / __main__ 碰
-    "daemon": frozenset({"foundation", "protocol", "transport", "core", "daemon"}),
+    "daemon": frozenset(
+        {"foundation", "config", "protocol", "transport", "core", "daemon"}
+    ),
     # 示例层是各层的占位：直连核心层当测试驱动，也演示守护进程与客户端这一对
-    "example": frozenset({"foundation", "protocol", "core", "transport", "daemon", "example"}),
+    "example": frozenset(
+        {"foundation", "config", "protocol", "core", "transport", "daemon", "example"}
+    ),
 }
 
 # 受限第三方 → 只允许出现在这些目录前缀下
@@ -175,7 +181,7 @@ def test_example_client_stays_a_pure_client():
         for path in sorted(package.rglob("*.py")):
             deps, _ = _deps(path)
             # "example" 是包内引用的自指，格与格之间由下面那条单独管
-            extra = sorted(deps - {"foundation", "protocol", "transport", "example"})
+            extra = sorted(deps - {"foundation", "config", "protocol", "transport", "example"})
             assert not extra, f"{path.relative_to(SRC)} 越出客户端链: {extra}"
             peers = _example_peers(path) - {package.name, "ui"}
             assert not peers, f"{path.relative_to(SRC)} 伸手进了别的格: {sorted(peers)}"

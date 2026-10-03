@@ -5,11 +5,11 @@
 **不依赖安装**：`agentic_tty` 就在 `src/` 下，从那里起（或给 `PYTHONPATH=src`）就能 import；
 拉起的子进程由 `_child_env()` 自己把 `src` 补进 `PYTHONPATH`，所以子进程不受 cwd 影响。
 
-**本格是消费者**：守护进程按**模块名字符串**拉起（`python -m agentic_tty.daemon`），不 import
-它——那是"操作者的动作"，不是依赖。关窗时把子进程 `terminate()` 掉：`Daemon` 装了 SIGTERM
-处理器，POSIX 上优雅收尾；Windows 没有 SIGTERM（是硬杀），会话进程由作业对象兜底。
+**本格是消费者**：守护进程按**模块名字符串**拉起（`python -m agentic_tty.daemon --name …`），
+不 import 它——那是"操作者的动作"，不是依赖。关窗时把子进程 `terminate()` 掉：`Daemon` 装了
+SIGTERM 处理器，POSIX 上优雅收尾；Windows 没有 SIGTERM（是硬杀），会话进程由作业对象兜底。
 
-**就绪 = 连得上**（`Client.connect` 自己重连到超时）——不需要任何就绪文件。
+**就绪 = 连得上**：界面自己重试、自己分三态（见 `gui.py`），这里不等任何文件。
 """
 
 from __future__ import annotations
@@ -19,10 +19,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+from ...config.names import endpoint_name, runtime_dir
 from ...foundation.logs import configure, get_logger
-from ...transport.errors import TransportError
 from ...transport.pipe import pipe_address
-from . import NAME, runtime_dir
+from . import NAME
 
 _logger = get_logger("example.daemon_test")
 
@@ -43,7 +43,7 @@ def _child_env() -> dict[str, str]:
 
 def main() -> int:
     configure()
-    address = pipe_address(NAME, runtime_dir())
+    address = pipe_address(endpoint_name(NAME), runtime_dir(NAME))
     server = subprocess.Popen(
         [sys.executable, "-m", _DAEMON_MODULE, "--name", NAME],
         env=_child_env(),
@@ -51,15 +51,9 @@ def main() -> int:
         stderr=sys.stderr,
     )
     try:
-        from .gui import main as run_gui  # 连不上就不必拉 Tk
+        from .gui import main as run_gui
 
-        try:
-            return run_gui(address)
-        except TransportError as exc:
-            # 连不上说明确实没有可用的守护进程：子进程起不来，或它在别处被顶掉了。
-            # （已经有一个同名守护进程在跑时它的管道是连得上的，不会走到这里。）
-            _logger.error("连不上守护进程 %s: %s（子进程返回码 %s）", address, exc, server.poll())
-            return 1
+        return run_gui(address)
     finally:
         server.terminate()
         try:

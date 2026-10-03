@@ -9,8 +9,11 @@ r"""本机管道传输：一个名字、多条连接、双向字节流。
     pipe://<名字>                    → 平台默认运行时目录
     pipe://<名字>/<运行时目录>        → 用给定目录
 
-      Windows →  \\\\.\\pipe\\agentic-tty-<名字>-<目录哈希>
-      POSIX   →  <运行时目录>/agentic-tty-<名字>.sock
+      Windows →  \\\\.\\pipe\\<名字>-<目录哈希>
+      POSIX   →  <运行时目录>/<名字>.sock
+
+**名字是完整名字**（如 `agentic-tty-daemon-test`）——前缀由 `config.names.endpoint_name()`
+加，transport 不认识命名习惯，只认完整名字。
 
 目录由**地址**给出（`pipe_address`），所以锁 / 端点落在同一个目录里；同机多份
 配置、多用户各自一份，互不相撞。
@@ -32,13 +35,11 @@ from pathlib import Path
 from typing import Protocol
 
 from ..foundation.logs import get_logger
-from ..foundation.paths import default_runtime_dir
 from .errors import ConnectionClosed, TransportError
 from .stream import Address, Connection, Listener
 
 _logger = get_logger("transport.pipe")
 
-_PREFIX = "agentic-tty-"
 _POLL_INTERVAL = 0.005
 """recv 空转时的重试步长；也是"本轮无数据"的响应粒度。"""
 _BUFFER = 1 << 16
@@ -57,9 +58,14 @@ def pipe_address(name: str, runtime_dir: Path | None = None) -> str:
 
 
 def _runtime_dir(address: Address) -> Path:
-    """端点目录：地址给了就用它，没给就按名字取平台默认。"""
+    """端点目录：**必须由地址给出**。
+
+    以前不给就猜平台默认目录——那是个**静默的错**：猜出来的未必是守护进程待的那个。
+    现在地址必须带目录（`config.names.runtime_dir()` 算出来，`pipe_address()` 拼进去），
+    猜错不如报错。
+    """
     if not address.path:
-        return default_runtime_dir(address.netloc)
+        raise TransportError(f"管道地址必须给运行时目录: {address}")
     # URL 的路径一定带前导斜杠；Windows 上那会毁掉盘符路径（`/C:\x` 不是绝对路径）。
     text = address.path[1:] if sys.platform == "win32" else address.path
     return Path(text)
@@ -72,8 +78,8 @@ def pipe_path(address: Address) -> str:
     if sys.platform == "win32":
         # 命名管道名是全局的、没有目录——把目录并进名字，好让同机多份配置互不相撞。
         digest = hashlib.sha256(str(runtime_dir).encode("utf-8")).hexdigest()[:16]
-        return rf"\\.\pipe\{_PREFIX}{name}-{digest}"
-    return str(runtime_dir / f"{_PREFIX}{name}.sock")
+        return rf"\\.\pipe\{name}-{digest}"
+    return str(runtime_dir / f"{name}.sock")
 
 
 class _PipeIO(Protocol):

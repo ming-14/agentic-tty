@@ -7,8 +7,10 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -24,6 +26,9 @@ _DEADLINE = 10.0
 _SRC = str(Path(__file__).resolve().parents[2] / "src")
 """子进程要能 import 本包：给它源码目录，别指望测试是从哪儿启动的。"""
 
+_BASE = Path(tempfile.mkdtemp(prefix="agentic-tty-pipe-test-"))
+"""测试用的运行时目录。地址现在**必须**带目录——猜平台默认目录是个静默的错。"""
+
 _CHILD = """
 import sys
 sys.path.insert(0, sys.argv[2])
@@ -35,8 +40,14 @@ conn.close()
 """
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _cleanup_base():
+    yield
+    shutil.rmtree(_BASE, ignore_errors=True)
+
+
 def _uri(name: str) -> str:
-    return f"pipe://{name}"
+    return pipe_address(name, _BASE)
 
 
 def _unique(prefix: str) -> str:
@@ -236,7 +247,7 @@ def test_endpoint_follows_the_runtime_dir_in_the_address(tmp_path: Path):
         assert pipe_path(there) == str(tmp_path / "other" / f"agentic-tty-{name}.sock")
 
 
-def test_address_without_a_dir_uses_the_platform_default():
-    """不给目录就用平台默认——`pipe://<名字>` 的旧写法照旧。"""
-    name = _unique("probe")
-    assert pipe_path(parse_address(pipe_address(name))) == pipe_path(parse_address(_uri(name)))
+def test_address_without_a_dir_is_rejected():
+    """地址**必须**带目录——猜平台默认目录是个静默的错（猜出来的未必是守护进程待的那个）。"""
+    with pytest.raises(TransportError):
+        pipe_path(parse_address(f"pipe://{_unique('probe')}"))

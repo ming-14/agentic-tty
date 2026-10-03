@@ -11,6 +11,7 @@ import time
 from typing import cast
 from uuid import uuid4
 
+from agentic_tty.config.names import endpoint_name
 from agentic_tty.daemon.access_point import WireRequest
 from agentic_tty.daemon.config import DaemonConfig
 from agentic_tty.daemon.handler import Reply
@@ -70,7 +71,7 @@ class _Running:
     """起一个真守护进程（挂接入点），退出时收尾。"""
 
     def __init__(self, tmp_path) -> None:
-        self.name = f"agentic-tty-e2e-{uuid4().hex[:8]}"
+        self.name = f"e2e-{uuid4().hex[:8]}"
         self.runtime_dir = tmp_path / "run"
         self.handler = _EchoHandler()
         self.daemon = Daemon(
@@ -99,7 +100,7 @@ class _Running:
         self.daemon.stop(2)
 
     def connect(self) -> Connection:
-        address = pipe_address(self.name, self.runtime_dir)
+        address = pipe_address(endpoint_name(self.name), self.runtime_dir)
         return PipeTransport().connect(parse_address(address), timeout=_DEADLINE)
 
     def wait_inputs(self) -> list[tuple[str, bytes]]:
