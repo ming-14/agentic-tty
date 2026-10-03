@@ -143,6 +143,9 @@ class KernelHandler:
             argv=argv,
             cols=int(op.get("cols") or 80),
             rows=int(op.get("rows") or 24),
+            # 请求里给了就在那儿跑；没给 = 继承守护进程的目录（守护进程自己的目录由入口的
+            # `--cwd` 定，见 `daemon/__main__.py`）
+            cwd=_text(op, "cwd") or None,
         )
         # 会话与驱动一起建、一起起；起不来时 Runtime 自己把会话收掉，这里不留半个。
         session = self._runtime.create(spec)

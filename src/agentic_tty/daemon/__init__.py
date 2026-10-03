@@ -7,7 +7,8 @@
 3. **接入点** —— 本机管道（`transport` 的 `pipe://`）上的唯一口子：把线协议解成
    `Envelope` 投进接缝、把答复按请求身份写回。
 4. **装配** —— `assembly.py` 把 core 装进默认请求处理层（`kernel.py`）再交给 `Daemon`；
-   `python -m agentic_tty.daemon` 直接起（实例名是 `config` 里的常量，没有命令行选项）。
+   `python -m agentic_tty.daemon` 直接起（实例名是 `config` 里的常量；唯一的选项 `--cwd`
+   是"从哪儿起"，**不是配置**）。
 
 **不实现网络**：接入点是本机 IPC，不是 TCP。它用 `protocol` 装帧、用 `transport` 搬字节，
 但**接缝上的报文对它不透明**——它只把请求转给请求处理层，把答复转回去。
