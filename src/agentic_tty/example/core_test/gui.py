@@ -121,8 +121,10 @@ class App:
                 ("关闭选中", self._close_selected),
             ),
             hint="（fake 下拉选假程序；pty / subprocess 直接输入真命令）",
-            on_mode_change=self._on_mode_change,
+            on_mode_change=self._sync_command_box,
         )
+        # 初始模式是 fake，命令框按它摆（默认 repl）——不能只等用户点单选才填
+        self._sync_command_box()
 
         body = ttk.Panedwindow(self._root, orient=tk.HORIZONTAL)
         body.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 6))
@@ -206,8 +208,8 @@ class App:
         """当前选中会话的运行时驱动；没选中或已释放则为 None。"""
         return self._runners.get(self._selected) if self._selected else None
 
-    def _on_mode_change(self) -> None:
-        """切模式时同步命令框：fake 给假程序下拉，真形态清空留给自由输入。"""
+    def _sync_command_box(self) -> None:
+        """按当前模式摆命令框：fake 给假程序下拉并默认 repl，真形态清空留给自由输入。"""
         if self._bar.mode.get() == ExampleMode.FAKE.value:
             self._bar.command["values"] = sorted(PROGRAMS)
             if self._bar.command.get() not in PROGRAMS:
@@ -363,14 +365,16 @@ class App:
     def _sync_pty_controls(self) -> None:
         """按会话形态开关专属控件：pty 有屏幕 / 格栅 / 导出 / 尺寸，子进程有关 stdin。"""
         session = self._selected_session()
-        is_pty = isinstance(session, TerminalSession)
-        is_process = isinstance(session, ProcessSession)
-        state = "normal" if is_pty else "hidden"
+        terminal = session if isinstance(session, TerminalSession) else None
+        state = "normal" if terminal is not None else "hidden"
         for key in (Page.SCREEN, Page.SVG, Page.CELLS):
             self._tabs.set_page_state(key, state)
-        self._size.set_enabled(is_pty)
+        self._size.set_enabled(terminal is not None)
+        is_process = isinstance(session, ProcessSession)
         self._stdin_btn.state(["!disabled"] if is_process else ["disabled"])
-        if is_pty:
+        if terminal is not None:
+            # 尺寸框跟着会话走：留着上一个会话的宽高，点「应用」会改到别的会话头上
+            self._size.set_size(terminal.cols, terminal.rows)
             self._tabs.show_page(Page.SCREEN)
 
     # ════════════════════════════════════════════════════════════

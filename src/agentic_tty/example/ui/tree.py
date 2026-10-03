@@ -7,6 +7,12 @@ from collections.abc import Callable, Sequence
 from tkinter import ttk
 
 
+def _cell(value: object) -> str:
+    """列值 → 显示文本：`None`（观测不到）与空串画成 `-`；**0 是有效值**（退出码 0、
+    0 个成员），照画成 `0`，否则跟"观测不到"分不开。"""
+    return "-" if value is None or value == "" else str(value)
+
+
 class SessionTree(ttk.Frame):
     """会话表：列固定，每行的值由调用方给（谁的数据谁渲染）。"""
 
@@ -43,6 +49,8 @@ class SessionTree(ttk.Frame):
     ) -> None:
         """增量刷新：只增删行、只在值变了时改写；`selected` 把程序侧的选中对齐回表里。
 
+        值由调用方给原样数据，占位符（`None` / 空 → `-`）在这里画，两台台子才一个口径。
+
         不能全表重建 + `selection_set`：`<<TreeviewSelect>>` 是**异步**派发的，删空表会让
         它带着空选中跑一次，把用户切走的会话弄丢（回调侧再比一次 id 兜住）。
         """
@@ -51,7 +59,7 @@ class SessionTree(ttk.Frame):
             if item not in alive:
                 self._tree.delete(item)
         for index, (iid, values) in enumerate(rows):
-            cells = tuple(str(value) for value in values)
+            cells = tuple(_cell(value) for value in values)
             if not self._tree.exists(iid):
                 self._tree.insert("", index, iid=iid, values=cells)
             elif self._tree.item(iid, "values") != cells:

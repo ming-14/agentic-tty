@@ -224,10 +224,7 @@ class App:
         """增量刷新会话表：行 iid 就是 sid，选中一并对齐（细节在 `SessionTree.refresh`）。"""
         self._sessions = {str(row.get("sid")): row for row in rows}
         self._tree.refresh(
-            [
-                (sid, tuple(str(row.get(key) or "-") for key in _ROWS))
-                for sid, row in self._sessions.items()
-            ],
+            [(sid, tuple(row.get(key) for key in _ROWS)) for sid, row in self._sessions.items()],
             selected=self._selected,
         )
 

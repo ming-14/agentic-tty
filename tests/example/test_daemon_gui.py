@@ -80,6 +80,34 @@ def test_session_list_and_detail_land_on_the_widgets(root):
     app.on_close()
 
 
+def test_zero_cells_are_not_blanked(root):
+    """0 是有效值（退出码 0、0 个成员），只有观测不到才画 `-`。"""
+    app = App(root)
+    app._apply_sessions(
+        [
+            {
+                "sid": "t-1",
+                "command": "cat",
+                "mode": "pty",
+                "state": "exited",
+                "exit_code": 0,
+                "members": 0,
+            },
+            {
+                "sid": "t-2",
+                "command": "cat",
+                "mode": "pty",
+                "state": "running",
+                "exit_code": None,
+                "members": None,
+            },
+        ]
+    )
+    assert app._tree.values("t-1") == ("cat", "pty", "exited", "0", "0")
+    assert app._tree.values("t-2") == ("cat", "pty", "running", "-", "-")
+    app.on_close()
+
+
 def test_process_session_hides_the_screen_pages(root):
     """屏幕页 / SVG 源码页 / 导出按钮 / 尺寸控件都是 pty 专属。"""
     app = App(root)

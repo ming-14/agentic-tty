@@ -128,15 +128,19 @@ def processes_text(session: Session) -> str:
     return "\n".join(lines)
 
 
-def row_values(session: Session) -> tuple[str | int, ...]:
-    """会话表一行的值（列序见 `ui.SessionTree.COLUMNS`）。"""
+def row_values(session: Session) -> tuple[str | int | None, ...]:
+    """会话表一行的值（列序见 `ui.SessionTree.COLUMNS`）。
+
+    `None` = 观测不到（退出码还没拿到 / 进程树看不见），占位符 `-` 由会话表画；**0 是
+    有效值**（正常退出、0 个成员），不能跟 `None` 混为一谈。
+    """
     members = process_members(session)
     return (
         session.spec.argv[0] if session.spec.argv else "",
         session.mode,
         session.state,
-        "-" if session.exit_code is None else session.exit_code,
-        "-" if members is None else len(members),
+        session.exit_code,
+        None if members is None else len(members),
     )
 
 

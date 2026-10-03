@@ -61,18 +61,26 @@ def test_send_input_and_close(root):
     app.on_close()
 
 
+def test_opens_on_fake_with_a_default_command(root):
+    """打开台子就能直接点「创建会话」：命令框的初值跟着初始模式摆。"""
+    app = App(root)
+    assert app._bar.mode.get() == ExampleMode.FAKE.value
+    assert app._bar.command.get() == "repl"
+    app.on_close()
+
+
 def test_mode_change_swaps_command_source(root):
     app = App(root)
     assert app._bar.mode.get() == ExampleMode.FAKE.value
     assert "repl" in app._bar.command["values"]
 
     app._bar.mode.set(ExampleMode.PTY.value)
-    app._on_mode_change()
+    app._sync_command_box()
     assert not app._bar.command["values"]  # Tk 把空列表读回成 ""
     assert app._bar.command.get() == ""
 
     app._bar.mode.set(ExampleMode.FAKE.value)
-    app._on_mode_change()
+    app._sync_command_box()
     assert "build" in app._bar.command["values"]
     app.on_close()
 
@@ -112,6 +120,26 @@ def test_screen_image_fits_canvas(root):
     # 1.0 倍的尺寸由渲染结果自带：80×24 字符 → 640×408。按较小的一维贴合画布。
     assert app._screen.fit_scale((640, 408)) == pytest.approx(min(600 / 640, 300 / 408))
     assert app._screen.tab.grid_slaves(row=1) == [app._screen.canvas]
+    app.on_close()
+
+
+def test_size_box_follows_the_selected_session(root, fake_registry):
+    """尺寸框跟着会话走——留着上一个会话的宽高，点「应用」会改到别的会话头上。"""
+    app = App(root)
+    app._registry = fake_registry
+    first = fake_registry.create(session_spec(ExampleMode.PTY, ("a",)))
+    second = fake_registry.create(session_spec(ExampleMode.PTY, ("b",)))
+    app._refresh_tree()
+
+    app._select_session(first.uid)
+    app._size.set_size(100, 30)
+    app._resize()
+    assert (first.cols, first.rows) == (100, 30)
+
+    app._select_session(second.uid)
+    assert app._size.size == (second.cols, second.rows)  # 不再是上一个会话的 100×30
+    fake_registry.close(first.uid)
+    fake_registry.close(second.uid)
     app.on_close()
 
 

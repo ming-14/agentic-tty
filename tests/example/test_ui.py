@@ -107,14 +107,14 @@ def test_screen_view_reset_clears_the_source(root):
 def test_session_tree_refreshes_incrementally(root):
     picked: list[str | None] = []
     tree = SessionTree(root, on_select=picked.append)
-    tree.refresh([("a", ("ls", "fake", "running", "-", 2))])
-    assert tree.values("a") == ("ls", "fake", "running", "-", "2")
+    tree.refresh([("a", ("ls", "fake", "running", None, 2))])
+    assert tree.values("a") == ("ls", "fake", "running", "-", "2")  # None → 占位符
 
     tree.refresh(
-        [("a", ("ls", "fake", "running", "-", 2)), ("b", ("cat", "pty", "exited", 0, "-"))]
+        [("a", ("ls", "fake", "running", None, 2)), ("b", ("cat", "pty", "exited", 0, None))]
     )
-    tree.refresh([("b", ("cat", "pty", "exited", 0, "-"))])  # a 掉了
-    assert tree.values("b") == ("cat", "pty", "exited", "0", "-")
+    tree.refresh([("b", ("cat", "pty", "exited", 0, None))])  # a 掉了
+    assert tree.values("b") == ("cat", "pty", "exited", "0", "-")  # 0 是有效值，不是「观测不到」
     assert tree.selected() is None
 
     tree.set_selection("b")
