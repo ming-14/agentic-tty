@@ -3,7 +3,7 @@
 `SessionRegistry` 只管会话，不认识读 / 写线程；`SessionRunner` 只管一个会话的驱动。
 两者必须**成对**——少了驱动，会话的输出没人读、退出没人推进；少了会话，驱动无处附着。
 把这层配对留给消费者，消费者就得自己维护「uid → runner」并手写两阶段释放
-（`example/core_test/gui.py` 与 `example/daemon_test/handler.py` 各抄了一遍）。
+（`example/core_test/gui.py` 就抄过一遍）。
 
 **`sid ↔ uid` 不在这里**：那是消费者语义（见架构设计 §7），消费者自己持会话目录。
 

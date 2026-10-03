@@ -163,13 +163,13 @@ def test_nothing_depends_on_example():
 def test_example_client_stays_a_pure_client():
     """客户端那一格只许依赖公共层，也不许伸手进别的格——包级规则管不住它，单列一条。
 
-    `core_test/` 与 `daemon_test/` 是验证台（直连各自那层是职责所在），跳过；剩下的格
-    （如共享控件 `ui/`）既不能依赖核心层与消费者，也不能引用别的格。
+    `core_test/` 是验证台（直连核心层是它的职责），跳过；剩下的格（如共享控件 `ui/`）
+    既不能依赖核心层与消费者，也不能引用别的格。
     """
     for package in sorted((SRC / "example").iterdir()):
         if not package.is_dir() or not (package / "__init__.py").exists():
             continue
-        if package.name in {"core_test", "daemon_test"}:  # 验证台：直连核心层是它的职责
+        if package.name == "core_test":  # 验证台：直连核心层是它的职责
             continue
         for path in sorted(package.rglob("*.py")):
             deps, _ = _deps(path)
