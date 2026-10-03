@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import shlex
 import threading
-import time
 import tkinter as tk
 from pathlib import Path
 from queue import Empty, Queue
@@ -33,10 +32,11 @@ from tkinter import messagebox, ttk
 from ...core.process.session import ProcessSession
 from ...core.runtime.bridge import Wakeup
 from ...core.runtime.host_factory import check_dependencies
+from ...core.runtime.input_queue import InputVerdict
 from ...core.runtime.runner import SessionRunner
+from ...core.runtime.runtime import Runtime
 from ...core.runtime.shell import default_shell
 from ...core.session.base import Session
-from ...core.session.registry import SessionRegistry
 from ...core.session.subscription import Subscription
 from ...core.terminal.session import TerminalSession
 from ...foundation.logs import get_logger
@@ -71,15 +71,12 @@ _WAKE_POLL = 0.2
 class App:
     """管理台。
 
-    会话表就是 core 的注册表（`SessionRegistry`）：`uid → 会话` 与模式标签都由它持有，
-    界面只额外持有每个会话的运行时驱动（读 / 写线程）。
+    会话与它的驱动（读 / 写线程）**成对**交给 `core.runtime.Runtime` 管，界面不再自己
+    维护「uid → 驱动」；选中哪个会话就按 uid 向它取。
     """
 
     def __init__(self, root: tk.Tk) -> None:
         self._root = root
-        self._registry: SessionRegistry = create_registry()
-        self._runners: dict[str, SessionRunner] = {}
-        self._releasing: list[threading.Thread] = []
         self._selected: str | None = None
         self._ticks = 0
         self._tick_job: str | None = None  # 挂起的定时任务；收尾必须先取消，否则销毁后仍会触发
@@ -90,6 +87,8 @@ class App:
         self._wake_thread = threading.Thread(
             target=self._wake_loop, name="wakeup", daemon=True
         )
+        # 会话与它的驱动**成对**交给 core.runtime：注册表、读写线程、两阶段释放都在它那
+        self._runtime = Runtime(create_registry(), wakeup=self._wakeup)
         # 订阅流页：用 core 的 Subscription 按游标取增量（演示订阅机制）
         self._subscription: Subscription | None = None
         self._sub_uid: str | None = None
@@ -187,8 +186,7 @@ class App:
             # 有活就立刻处理；另外每 _REFRESH_EVERY 轮兜底一次（进程退出、进程树
             # 变化这类没有读线程事件，只能靠兜底扫到）
             if woken or self._ticks % _REFRESH_EVERY == 0:
-                for runner in list(self._runners.values()):
-                    runner.pump()
+                self._runtime.pump_all()
                 self._refresh_tree()
                 self._refresh_detail()
         except Exception:
@@ -202,11 +200,11 @@ class App:
 
     def _selected_session(self) -> Session | None:
         """当前选中的会话；没选中或已被摘除则为 None。"""
-        return self._registry.find(self._selected) if self._selected else None
+        return self._runtime.find(self._selected) if self._selected else None
 
     def _selected_runner(self) -> SessionRunner | None:
         """当前选中会话的运行时驱动；没选中或已释放则为 None。"""
-        return self._runners.get(self._selected) if self._selected else None
+        return self._runtime.runner(self._selected) if self._selected else None
 
     def _sync_command_box(self) -> None:
         """按当前模式摆命令框：fake 给假程序下拉并默认 repl，真形态清空留给自由输入。"""
@@ -230,19 +228,16 @@ class App:
         else:
             argv = default_shell()  # 留空 = 平台默认 shell
         try:
-            session = self._registry.create(session_spec(mode, argv))
-        except Exception as exc:  # 宿主起不来：注册表不会留残骸
+            session = self._runtime.create(session_spec(mode, argv))
+        except Exception as exc:  # 宿主起不来：Runtime 不会留残骸
             messagebox.showerror("创建会话失败", str(exc))
             return
-        runner = SessionRunner(session, wakeup=self._wakeup)
-        runner.start()
-        self._runners[session.uid] = runner
         self._status.set(f"已创建 {' '.join(argv)}（{mode}）uid={session.uid[:8]}")
         self._refresh_tree()  # 新行先进表，选中它才有意义
         self._select_session(session.uid)
 
     def _close_selected(self) -> None:
-        """关闭选中会话：**同步摘除 + 线程里释放**。
+        """关闭选中会话：**同步摘除 + 线程里释放**（两阶段都在 `Runtime` 里）。
 
         宿主关闭在部分平台上会长时间阻塞（Windows 上要等控制台客户端退出），压在
         所有者线程（Tk 主线程）上会把界面冻住。所以先摘除——会话立刻从列表消失、
@@ -251,32 +246,10 @@ class App:
         session = self._selected_session()
         if session is None:
             return
-        runner = self._runners.pop(session.uid, None)
-        self._registry.detach(session.uid)
-        self._release(session, runner)
+        self._runtime.close(session.uid)
         self._status.set(f"已关闭 uid={session.uid[:8]}")
         self._refresh_tree()
         self._select_session(None)
-
-    def _release(self, session: Session, runner: SessionRunner | None) -> None:
-        """把释放交给别的线程；句柄留着，收尾时统一 join。"""
-        self._releasing = [thread for thread in self._releasing if thread.is_alive()]
-        thread = threading.Thread(
-            target=self._release_now,
-            args=(session, runner),
-            name=f"release-{session.uid[:8]}",
-            daemon=True,
-        )
-        thread.start()
-        self._releasing.append(thread)
-
-    @staticmethod
-    def _release_now(session: Session, runner: SessionRunner | None) -> None:
-        try:
-            session.close()  # 先强杀进程树再关宿主，可能要等
-        finally:
-            if runner is not None:
-                runner.stop()
 
     def _kill_selected(self) -> None:
         """强杀进程树但**保留会话**——与「关闭选中」的区别：后者还会释放宿主。
@@ -318,8 +291,8 @@ class App:
             # 输入缓冲里。子进程的 stdin 是普通字节流，换行保持 LF。
             tail = b"\r" if isinstance(session, TerminalSession) else b"\n"
         data = self._input.text.encode() + tail
-        if not runner.submit_input(data):
-            messagebox.showwarning("发送失败", "输入队列已满，请稍后再试")
+        if runner.submit_input(data) is InputVerdict.REJECTED:
+            messagebox.showwarning("发送失败", "输入超过硬上限，本次输入被拒绝")
             return
         self._input.clear()
         self._status.set(f"已入队 {len(data)} 字节（由写线程写出）")
@@ -382,7 +355,7 @@ class App:
     # ════════════════════════════════════════════════════════════
 
     def _refresh_tree(self) -> None:
-        self._tree.refresh([(s.uid, render.row_values(s)) for s in self._registry.list()])
+        self._tree.refresh([(s.uid, render.row_values(s)) for s in self._runtime.list()])
 
     def _refresh_detail(self) -> None:
         session = self._selected_session()
@@ -406,15 +379,19 @@ class App:
         """订阅流页：用 core 的 `Subscription` 按游标取增量——这就是订阅机制的用法。
 
         换会话就重建订阅；**游标从当前末尾起**，所以页里只有"订阅之后的新增"。
+        尺寸变更与字节共用同一个 offset 空间、随拉取一并交出，这里先列标记（带 offset）
+        再铺字节。
         """
         if self._subscription is None or self._sub_uid != session.uid:
             self._subscription = Subscription(session, cursor=session.journal.end_offset)
             self._sub_uid = session.uid
             self._tabs.set_text(Page.SUB, "")
             self._append_sub(f"── 订阅自 offset {self._subscription.next_offset} ──\n")
-        data = self._subscription.pull()
-        if data:
-            self._append_sub(data.decode("utf-8", errors="replace"))
+        pull = self._subscription.pull()
+        for event in pull.resizes:
+            self._append_sub(f"── 尺寸 {event.cols}×{event.rows} @offset {event.offset} ──\n")
+        if pull.data:
+            self._append_sub(pull.data.decode("utf-8", errors="replace"))
 
     def _append_sub(self, text: str) -> None:
         page = self._tabs.text(Page.SUB)
@@ -486,14 +463,7 @@ class App:
             self._tick_job = None
         self._closing.set()  # 让唤醒线程收工
         self._wake_thread.join(_WAKE_POLL * 2)
-        for session in list(self._registry.list()):
-            runner = self._runners.pop(session.uid, None)
-            self._registry.detach(session.uid)
-            self._release(session, runner)
-        self._runners.clear()
-        deadline = time.monotonic() + _RELEASE_JOIN_SECONDS
-        for thread in self._releasing:
-            thread.join(max(0.0, deadline - time.monotonic()))
+        self._runtime.close_all(timeout=_RELEASE_JOIN_SECONDS)
         self._root.destroy()
 
 

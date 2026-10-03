@@ -34,6 +34,20 @@ class IngestResult:
     response: bytes = b""
 
 
+@dataclass(frozen=True, slots=True)
+class ResizeEvent:
+    """一次尺寸变更。
+
+    `offset` 落在**输出字节日志的 offset 空间**里：该 offset 起（含）的字节按
+    `cols × rows` 解释。订阅者据此在字节流里插帧——否则落后的 raw 订阅者会拿新尺寸
+    去解释旧字节（见架构设计 §4.5）。
+    """
+
+    offset: int
+    cols: int
+    rows: int
+
+
 class Session:
     """会话（协调器）。除注明外，所有方法都只允许所有者线程调用。"""
 
@@ -272,6 +286,14 @@ class Session:
     def resize(self, cols: int, rows: int) -> None:
         """改尺寸；只有终端会话支持。"""
         raise CoreError(f"{self.mode} 会话没有尺寸")
+
+    def resize_events(self, since: int = 0) -> tuple[ResizeEvent, ...]:
+        """尺寸变更事件（按 offset 升序，只给 `offset >= since` 的）。
+
+        事件与输出字节共用同一个 offset 空间，订阅者据此知道"从哪个 offset 起换尺寸"。
+        没有屏幕的会话恒为空。
+        """
+        return ()
 
     def rebuild_bytes(self) -> bytes:
         """重建字节（喂进空终端模型即可还原当前状态）；只有终端会话支持。"""

@@ -23,6 +23,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 from ..foundation.logs import add_rotating_file, get_logger
@@ -39,6 +40,19 @@ _INBOUND_BATCH = 64
 """每轮从入站队列取走的条数上限（公平性：不让投递方独占一轮）。"""
 _PUT_TIMEOUT = 0.1
 """入站队列满时的重试步长；也是"已请求停止"的响应粒度。"""
+
+
+class SubmitOutcome(StrEnum):
+    """投递的结果。
+
+    刻意不是布尔：`core.runtime` 的 `submit_input` 返回的是**输入判定**（收下 / 越水位 /
+    超上限），含义完全不同。两者同名，若都用布尔，消费者必然看错。
+    """
+
+    DELIVERED = "delivered"
+    """已进队，所有者线程会处理它。"""
+    STOPPING = "stopping"
+    """守护进程已请求停止，本条被放弃——调用方应当不再投递。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,26 +112,30 @@ class Daemon:
     # 投递（消费者线程侧）
     # ════════════════════════════════════════════════════════════
 
-    def submit(self, request: object) -> bool:
+    def submit(self, request: object) -> SubmitOutcome:
         """把一条请求投给所有者线程。**任何线程都可以调用**，消费者的读线程用它。
 
-        队列满时投递方等待——背压一路传回消费者，守护进程不无限缓冲。返回 `False`
+        队列满时投递方等待——背压一路传回消费者，守护进程不无限缓冲。返回 `STOPPING`
         表示已被请求停止，调用方应当放弃这条请求。
         """
         return self._offer(request)
 
-    def submit_input(self, key: str, data: bytes) -> bool:
-        """把一段上行字节投给所有者线程。**任何线程都可以调用。**"""
+    def submit_input(self, key: str, data: bytes) -> SubmitOutcome:
+        """把一段上行字节投给所有者线程。**任何线程都可以调用。**
+
+        `key` 的语义由消费者定（如会话 sid）；与 `core.runtime` 的 `submit_input` 同名
+        但含义不同——后者返回的是输入队列的判定。
+        """
         return self._offer(_Input(key, data))
 
-    def _offer(self, item: object) -> bool:
+    def _offer(self, item: object) -> SubmitOutcome:
         while not self._stop_requested.is_set():
             try:
                 self._inbound.put(item, timeout=_PUT_TIMEOUT)
-                return True
+                return SubmitOutcome.DELIVERED
             except queue.Full:
                 continue
-        return False
+        return SubmitOutcome.STOPPING
 
     # ════════════════════════════════════════════════════════════
     # 启动

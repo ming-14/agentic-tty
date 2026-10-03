@@ -6,7 +6,8 @@ import time
 
 from agentic_tty.core.ports import PTY, SUBPROCESS, SessionSpec, Stream
 from agentic_tty.core.runtime.bridge import Wakeup
-from agentic_tty.core.runtime.runner import SessionRunner
+from agentic_tty.core.runtime.input_queue import InputVerdict
+from agentic_tty.core.runtime.runner import Exited, Ingested, SessionRunner, StreamEof
 from agentic_tty.core.session.registry import SessionRegistry
 from agentic_tty.core.session.state import SessionState
 from agentic_tty.example.core_test.runtime_fakehost import FakeHost, FakeProgram
@@ -100,10 +101,31 @@ def test_running_session_never_drains():
     _registry, session, runner = _open(FakeProgram(exit_after=None))
     try:
         for _ in range(20):
-            assert runner.pump() is False
+            runner.pump()
+            assert not session.drained
             time.sleep(0.005)
         assert session.exit_code is None
         assert not session.drained
+    finally:
+        session.close()
+        runner.stop()
+
+
+def test_pump_reports_ingested_ranges_eof_and_exit():
+    """`pump()` 交出本轮事件清单：按区间推进游标、感知退出，都靠它。"""
+    program = FakeProgram(chunks=((0.0, b"abc"),), exit_after=0.05, exit_code=0)
+    _registry, session, runner = _open(program)
+    try:
+        events = []
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not session.drained:
+            events.extend(runner.pump())
+            time.sleep(0.005)
+        ingested = [e for e in events if isinstance(e, Ingested)]
+        assert ingested and ingested[0].stream is Stream.STDOUT
+        assert (ingested[0].start, ingested[0].end) == (0, 3)
+        assert any(isinstance(e, StreamEof) for e in events)
+        assert any(isinstance(e, Exited) and e.exit_code == 0 for e in events)
     finally:
         session.close()
         runner.stop()
@@ -114,7 +136,7 @@ def test_submit_input_goes_through_write_thread():
     program = FakeProgram(chunks=((0.0, b"> "),), echo_input=True, exit_after=None)
     _registry, session, runner = _open(program, PTY)
     try:
-        assert runner.submit_input(b"ping\n")
+        assert runner.submit_input(b"ping\n") is InputVerdict.QUEUED
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline:
             runner.pump()
@@ -130,7 +152,31 @@ def test_submit_input_goes_through_write_thread():
 def test_submit_input_ignores_empty_payload():
     _registry, session, runner = _open(FakeProgram(exit_after=None))
     try:
-        assert runner.submit_input(b"") is True
+        assert runner.submit_input(b"") is InputVerdict.QUEUED
+    finally:
+        session.close()
+        runner.stop()
+
+
+def test_input_queue_is_byte_metered():
+    """输入队列按**字节**计量：越软水位给 HOLD，超硬上限给 REJECTED（整块不收）。
+
+    写线程不起，队列不会被消费，水位因此看得清。
+    """
+    registry = SessionRegistry(
+        lambda spec: FakeHost(spec, FakeProgram()), journal_budget_bytes=1 << 16
+    )
+    session = registry.create(SessionSpec(mode=PTY, argv=("x",)))
+    runner = SessionRunner(
+        session, input_max_bytes=100, input_high_watermark=60, input_low_watermark=20
+    )
+    try:
+        assert runner.submit_input(b"a" * 40) is InputVerdict.QUEUED
+        assert runner.submit_input(b"b" * 30) is InputVerdict.HOLD  # 70 > 60
+        assert runner.input_depth == 70
+        assert not runner.input_drained
+        assert runner.submit_input(b"c" * 40) is InputVerdict.REJECTED  # 110 > 100
+        assert runner.input_depth == 70  # 拒收不留半个
     finally:
         session.close()
         runner.stop()

@@ -18,7 +18,7 @@ import pytest
 from agentic_tty.daemon.config import DaemonConfig
 from agentic_tty.daemon.errors import AlreadyRunning, DaemonError, NotStarted
 from agentic_tty.daemon.handler import Reply, RequestHandler
-from agentic_tty.daemon.server import Daemon
+from agentic_tty.daemon.server import Daemon, SubmitOutcome
 
 _DEADLINE = 5.0
 
@@ -205,7 +205,7 @@ def test_run_pumps_the_handler(tmp_path):
 def test_submit_gets_an_answer_that_carries_the_request(tmp_path):
     """投进去的请求要原样出现在答复里——延迟答复就靠这个身份找回归属。"""
     with running(tmp_path) as (daemon, _handler, replies):
-        assert daemon.submit("ping")
+        assert daemon.submit("ping") is SubmitOutcome.DELIVERED
         assert wait_for(lambda: bool(replies))
         assert replies[0].request == "ping"
         assert replies[0].answer == "answer:ping"
@@ -214,7 +214,7 @@ def test_submit_gets_an_answer_that_carries_the_request(tmp_path):
 def test_deferred_answer_arrives_with_its_original_request(tmp_path):
     """处理层返回 None 表示登记等待；稍后 poll 交出的答复必须带回同一个请求对象。"""
     with running(tmp_path) as (daemon, _handler, replies):
-        assert daemon.submit("defer")
+        assert daemon.submit("defer") is SubmitOutcome.DELIVERED
         assert wait_for(lambda: bool(replies))
         assert replies[0].request == "defer"
         assert replies[0].answer == "deferred:defer"
@@ -222,14 +222,14 @@ def test_deferred_answer_arrives_with_its_original_request(tmp_path):
 
 def test_submit_input_reaches_the_handler(tmp_path):
     with running(tmp_path) as (daemon, handler, _replies):
-        assert daemon.submit_input("sid-1", b"hello\n")
+        assert daemon.submit_input("sid-1", b"hello\n") is SubmitOutcome.DELIVERED
         assert wait_for(lambda: handler.inputs == [("sid-1", b"hello\n")])
 
 
 def test_handler_crash_becomes_a_failure_answer(tmp_path):
     """处理层抛异常不该让消费者干等——转成一条明确的失败答复，失败长什么样归它自己。"""
     with running(tmp_path) as (daemon, handler, replies):
-        assert daemon.submit("boom")
+        assert daemon.submit("boom") is SubmitOutcome.DELIVERED
         assert wait_for(lambda: bool(replies))
         assert replies[0].answer == "failed:boom"
         assert len(handler.failures) == 1
@@ -240,7 +240,7 @@ def test_handler_pump_crash_does_not_kill_the_loop(tmp_path):
     handler = FakeHandler()
     with running(tmp_path, handler) as (daemon, _handler, replies):
         handler.pump_boom = True
-        assert daemon.submit("ping")
+        assert daemon.submit("ping") is SubmitOutcome.DELIVERED
         assert wait_for(lambda: bool(replies))
         assert replies[0].answer == "answer:ping"
 
@@ -249,7 +249,7 @@ def test_handler_poll_crash_does_not_kill_the_loop(tmp_path):
     handler = FakeHandler()
     with running(tmp_path, handler) as (daemon, _handler, replies):
         handler.poll_boom = True
-        assert daemon.submit("ping")
+        assert daemon.submit("ping") is SubmitOutcome.DELIVERED
         assert wait_for(lambda: bool(replies))
         assert replies[0].answer == "answer:ping"
 
@@ -266,7 +266,7 @@ def test_stop_shuts_the_handler_down_and_removes_pid(tmp_path):
 def test_draining_waits_for_pending_requests(tmp_path):
     """收尾给在途等待一小段时间跑完：手上压着等待时先把答复交出来。"""
     with running(tmp_path) as (daemon, _handler, replies):
-        assert daemon.submit("defer")
+        assert daemon.submit("defer") is SubmitOutcome.DELIVERED
         assert wait_for(lambda: bool(replies) or _handler.pending() == 1)
         daemon.stop(2)
         assert any(reply.answer == "deferred:defer" for reply in replies)

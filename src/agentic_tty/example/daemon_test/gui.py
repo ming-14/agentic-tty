@@ -25,7 +25,7 @@ from tkinter import messagebox, ttk
 from ...core.runtime.host_factory import check_dependencies as check_runtime_dependencies
 from ...daemon.config import DaemonConfig
 from ...daemon.handler import Reply
-from ...daemon.server import Daemon
+from ...daemon.server import Daemon, SubmitOutcome
 from ...foundation.logs import get_logger
 from ...foundation.paths import default_runtime_dir
 from ..ui import (
@@ -188,7 +188,7 @@ class App:
             self._status.set("守护进程没在跑——先点「启动」")
             return
         self._want[id(request)] = purpose
-        if not self._daemon.submit(request):
+        if self._daemon.submit(request) is not SubmitOutcome.DELIVERED:
             self._want.pop(id(request), None)
             self._status.set("守护进程已在收尾，这条请求被放弃了")
 
@@ -357,7 +357,7 @@ class App:
             tail = b""
         data = self._input.text.encode() + tail
         self._input.clear()
-        if not self._daemon.submit_input(self._selected, data):
+        if self._daemon.submit_input(self._selected, data) is not SubmitOutcome.DELIVERED:
             self._status.set("守护进程已在收尾，这段输入被放弃了")
 
     def _send_interrupt(self) -> None:

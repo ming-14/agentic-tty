@@ -11,7 +11,8 @@ tk = pytest.importorskip("tkinter")
 pytest.importorskip("resvg_py")  # GUI 的 SVG 渲染依赖
 
 from agentic_tty.core.ports import Stream  # noqa: E402
-from agentic_tty.core.runtime.runner import SessionRunner  # noqa: E402
+from agentic_tty.core.runtime.input_queue import InputVerdict  # noqa: E402
+from agentic_tty.core.runtime.runtime import Runtime  # noqa: E402
 from agentic_tty.example.core_test import render  # noqa: E402
 from agentic_tty.example.core_test.gui import App  # noqa: E402
 from agentic_tty.example.core_test.sessions import ExampleMode, session_spec  # noqa: E402
@@ -22,7 +23,7 @@ def _pump_until(root: tk.Tk, app: App, uid: str, predicate, timeout: float = 5.0
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         root.update()
-        if predicate(app._registry.get(uid)):
+        if predicate(app._runtime.get(uid)):
             return True
         time.sleep(0.01)
     return False
@@ -33,12 +34,12 @@ def test_create_session_pumps_to_completion(root):
     app._bar.command.set("build")
     app._bar.mode.set(ExampleMode.FAKE.value)
     app._create_session()
-    sessions = app._registry.list()
+    sessions = app._runtime.list()
     assert len(sessions) == 1
     uid = sessions[0].uid
 
     assert _pump_until(root, app, uid, lambda s: s.drained)
-    session = app._registry.get(uid)
+    session = app._runtime.get(uid)
     assert session.exit_code == 0
     assert b"build OK" in session.read_all(Stream.STDOUT)
     app.on_close()
@@ -49,7 +50,7 @@ def test_send_input_and_close(root):
     app._bar.command.set("repl")
     app._bar.mode.set(ExampleMode.FAKE.value)
     app._create_session()
-    uid = app._registry.list()[0].uid
+    uid = app._runtime.list()[0].uid
 
     app._input.text = "hi"
     app._send_input(newline=True)
@@ -57,7 +58,7 @@ def test_send_input_and_close(root):
 
     app._selected = uid
     app._close_selected()
-    assert app._registry.list() == []
+    assert app._runtime.list() == []
     app.on_close()
 
 
@@ -91,7 +92,7 @@ def test_pty_only_controls_hidden_for_fake(root):
     app._bar.command.set("repl")
     app._bar.mode.set(ExampleMode.FAKE.value)
     app._create_session()
-    app._selected = app._registry.list()[0].uid
+    app._selected = app._runtime.list()[0].uid
     app._refresh_detail()
 
     assert app._tabs.page_state(Page.SCREEN) == "hidden"
@@ -126,7 +127,7 @@ def test_screen_image_fits_canvas(root):
 def test_size_box_follows_the_selected_session(root, fake_registry):
     """尺寸框跟着会话走——留着上一个会话的宽高，点「应用」会改到别的会话头上。"""
     app = App(root)
-    app._registry = fake_registry
+    app._runtime = Runtime(fake_registry)
     first = fake_registry.create(session_spec(ExampleMode.PTY, ("a",)))
     second = fake_registry.create(session_spec(ExampleMode.PTY, ("b",)))
     app._refresh_tree()
@@ -149,11 +150,11 @@ def test_process_tab_shows_tree_members(root):
     app._bar.command.set("repl")
     app._bar.mode.set(ExampleMode.FAKE.value)
     app._create_session()
-    uid = app._registry.list()[0].uid
+    uid = app._runtime.list()[0].uid
     app._selected = uid
 
     # 假宿主的进程树成员由测试直接设（不接真进程）
-    host = app._registry.get(uid).host
+    host = app._runtime.get(uid).host
     assert host is not None
     host.descendants_pids = (101, 202)
     app._refresh_tree()
@@ -179,7 +180,7 @@ def test_view_page_reads_its_range(root, fake_registry, monkeypatch):
     monkeypatch.setattr(render, "view_text", spy)
 
     app = App(root)
-    app._registry = fake_registry
+    app._runtime = Runtime(fake_registry)
     session = fake_registry.create(session_spec(ExampleMode.SUBPROCESS, ("repl",)))
     app._selected = session.uid
 
@@ -209,12 +210,9 @@ def _pty_available() -> bool:
 def test_screen_views_for_real_pty(root):
     """真 PTY：屏幕页 / SVG 源码页 / 尺寸控件可用，image 与 svg 都落成位图。"""
     app = App(root)
-    session = app._registry.create(
+    session = app._runtime.create(
         session_spec(ExampleMode.PTY, (sys.executable, "-c", "print('gui-svg')"))
     )
-    runner = SessionRunner(session)
-    runner.start()
-    app._runners[session.uid] = runner
     app._selected = session.uid
     app._sync_pty_controls()
 
@@ -244,13 +242,13 @@ def test_screen_views_for_real_pty(root):
 def test_send_input_encodes_newline_per_mode(root, fake_registry):
     """回车编码由消费者做：PTY 是 CR、子进程是 LF（core 只收字节）。"""
     app = App(root)
-    app._registry = fake_registry
+    app._runtime = Runtime(fake_registry)
     sent: list[bytes] = []
 
     class _Spy:
-        def submit_input(self, data: bytes) -> bool:
+        def submit_input(self, data: bytes) -> InputVerdict:
             sent.append(data)
-            return True
+            return InputVerdict.QUEUED
 
         def stop(self, timeout: float = 2.0) -> None:
             pass
@@ -258,7 +256,8 @@ def test_send_input_encodes_newline_per_mode(root, fake_registry):
     for mode, expected in ((ExampleMode.PTY, b"hi\r"), (ExampleMode.SUBPROCESS, b"hi\n")):
         session = fake_registry.create(session_spec(mode, ("x",)))
         app._selected = session.uid
-        app._runners[session.uid] = _Spy()  # type: ignore[assignment]
+        # 替掉写线程的驱动，只看"交给写线程的字节"——不必等真线程
+        app._runtime._runners[session.uid] = _Spy()  # type: ignore[assignment]
         app._input.text = "hi"
         app._send_input(newline=True)
         assert sent[-1] == expected
@@ -269,7 +268,7 @@ def test_send_input_encodes_newline_per_mode(root, fake_registry):
 def test_close_stdin_reaches_host(root, fake_registry):
     """「关 stdin」只对子进程有效，且真的传到宿主。"""
     app = App(root)
-    app._registry = fake_registry
+    app._runtime = Runtime(fake_registry)
     session = fake_registry.create(session_spec(ExampleMode.SUBPROCESS, ("x",)))
     app._selected = session.uid
     app._close_stdin()
@@ -281,7 +280,7 @@ def test_close_stdin_reaches_host(root, fake_registry):
 def test_kill_keeps_the_session(root, fake_registry):
     """「强杀」只杀进程、保留会话——与「关闭选中」不同。"""
     app = App(root)
-    app._registry = fake_registry
+    app._runtime = Runtime(fake_registry)
     session = fake_registry.create(session_spec(ExampleMode.SUBPROCESS, ("x",)))
     app._selected = session.uid
     app._kill_selected()
@@ -294,7 +293,7 @@ def test_kill_keeps_the_session(root, fake_registry):
 def test_subscription_page_collects_new_output(root, fake_registry):
     """「订阅流」页用 core 的 `Subscription` 按游标取增量（订阅机制的用法）。"""
     app = App(root)
-    app._registry = fake_registry
+    app._runtime = Runtime(fake_registry)
     session = fake_registry.create(session_spec(ExampleMode.SUBPROCESS, ("x",)))
     app._selected = session.uid
     app._refresh_detail()  # 建订阅：游标从当前末尾起

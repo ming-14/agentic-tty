@@ -5,30 +5,33 @@
 
 它不是正式用例层：没有返回条件与等待引擎、没有通知、没有插件。够用的那一小块 =
 把核心层的能力（会话 CRUD、屏幕与字节视图、进程树、尺寸）经接缝摆到界面上。
+
+会话与驱动**成对**交给 `core.runtime.Runtime`；本层只额外持 `sid ↔ uid` 的映射——
+那是消费者语义（见架构设计 §7）。
 """
 
 from __future__ import annotations
 
-import threading
-import time
 from dataclasses import dataclass, field
 from typing import Any, cast
 
 from ...core.errors import CoreError
 from ...core.ports import PTY, SUBPROCESS, SessionSpec
 from ...core.process.session import ProcessSession
+from ...core.runtime.input_queue import InputVerdict
 from ...core.runtime.monitor import windows_of
-from ...core.runtime.runner import SessionRunner
+from ...core.runtime.runtime import Runtime
 from ...core.runtime.shell import default_shell
 from ...core.session.base import Session
 from ...core.session.registry import SessionKind, SessionRegistry
 from ...core.terminal.session import TerminalSession
 from ...daemon.handler import Reply
+from ...foundation.logs import get_logger
+
+_logger = get_logger("example.daemon_test.handler")
 
 _RAW_TAIL = 2000
 """原始字节页每路只取尾部——`read_all` 会把整个保留区复制一遍。"""
-_RELEASE_JOIN_SECONDS = 5.0
-"""收尾时等后台释放线程的上限；到点就放手，别挡收尾。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,12 +61,13 @@ class KernelHandler:
 
     def __init__(self, registry: SessionRegistry | None = None) -> None:
         # registry 可注入：测试用假宿主装配，生产用默认（真宿主）。
-        self._registry: SessionRegistry = registry or SessionRegistry(
-            kinds={PTY: SessionKind(TerminalSession), SUBPROCESS: SessionKind(ProcessSession)},
+        self._runtime = Runtime(
+            registry
+            or SessionRegistry(
+                kinds={PTY: SessionKind(TerminalSession), SUBPROCESS: SessionKind(ProcessSession)},
+            )
         )
-        self._runners: dict[str, SessionRunner] = {}
         self._uids: dict[str, str] = {}
-        self._releasing: list[threading.Thread] = []
         self.pumps = 0
         """推进过的轮数——验证"所有者循环确实在跑"。"""
 
@@ -89,26 +93,23 @@ class KernelHandler:
         return Reply(request=request, answer=self._fail(error))
 
     def on_input(self, key: str, data: bytes) -> None:
-        """字节帧本身就是一次操作：直接把这段写进那个会话。"""
-        self._runner(key).submit_input(data)
+        """字节帧本身就是一次操作：直接把这段写进那个会话。
+
+        输入队列按字节计量，判定三态：`HOLD` 表示该让发送方本端排队、`REJECTED` 表示
+        超过硬上限——**下发 InputHold / 断开连接是消费者连接层的活**，本层只记日志。
+        """
+        verdict = self._runtime.send_input(self._uid_of(key), data)
+        if verdict is InputVerdict.REJECTED:
+            _logger.warning("上行字节超过硬上限，已拒绝 sid=%s bytes=%d", key, len(data))
 
     def pump(self) -> None:
         self.pumps += 1
-        for session in self._registry.list():
-            runner = self._runners.get(session.uid)
-            if runner is not None:
-                runner.pump()
+        self._runtime.pump_all()
 
     def shutdown(self) -> None:
-        for sid in list(self._uids):
-            try:
-                self._close(sid)
-            except Exception:  # 收尾时一个会话失败不该挡别的
-                pass
-        deadline = time.monotonic() + _RELEASE_JOIN_SECONDS
-        for thread in self._releasing:
-            thread.join(max(0.0, deadline - time.monotonic()))
-        self._releasing.clear()
+        """收尾：清掉会话目录并释放全部会话（释放可能长时间阻塞，调用方带超时）。"""
+        self._uids.clear()
+        self._runtime.close_all()
 
     # ════════════════════════════════════════════════════════════
     # 动作
@@ -140,20 +141,13 @@ class KernelHandler:
         if req.sid in self._uids:
             raise ValueError(f"sid 已存在: {req.sid}")
         argv = req.argv or default_shell()  # 不给命令就起一个平台默认 shell
-        session = self._registry.create(SessionSpec(mode=req.mode, argv=argv))
+        # 会话与驱动一起建、一起起；起不来时 Runtime 自己把会话收掉，这里不留半个。
+        session = self._runtime.create(SessionSpec(mode=req.mode, argv=argv))
         self._uids[req.sid] = session.uid
-        try:
-            runner = SessionRunner(session)
-            runner.start()
-        except Exception:
-            self._uids.pop(req.sid, None)
-            self._registry.close(session.uid)
-            raise
-        self._runners[session.uid] = runner
         return self._summary(req.sid)
 
     def _close(self, sid: str) -> None:
-        """摘除会话：**同步摘除 ＋ 线程里释放**。
+        """摘除会话：**同步摘除 + 线程里释放**（两阶段都在 `Runtime` 里）。
 
         宿主关闭在部分平台上会长时间阻塞（Windows 上要等控制台客户端退出，可达数百秒），
         压在所有者线程上会冻住所有会话。摘除之后把耗时的释放交给别的线程。
@@ -161,22 +155,7 @@ class KernelHandler:
         uid = self._uids.pop(sid, None)
         if uid is None:
             raise CoreError(f"会话不存在: {sid}")
-        runner = self._runners.pop(uid, None)
-        session = self._registry.detach(uid)
-        self._releasing = [thread for thread in self._releasing if thread.is_alive()]
-        thread = threading.Thread(
-            target=self._release, args=(session, runner), name=f"release-{sid}", daemon=True
-        )
-        thread.start()
-        self._releasing.append(thread)
-
-    @staticmethod
-    def _release(session: Session, runner: SessionRunner | None) -> None:
-        try:
-            session.close()  # 先强杀进程树再关宿主，可能要等
-        finally:
-            if runner is not None:
-                runner.stop()
+        self._runtime.close(uid)
 
     def _resize(self, req: Request) -> dict[str, Any]:
         self._terminal(req.sid).resize(req.cols, req.rows)
@@ -236,21 +215,20 @@ class KernelHandler:
     # 内部
     # ════════════════════════════════════════════════════════════
 
-    def _session(self, sid: str) -> Session:
+    def _uid_of(self, sid: str) -> str:
         uid = self._uids.get(sid)
         if uid is None:
             raise CoreError(f"会话不存在: {sid}")
-        return self._registry.get(uid)
+        return uid
+
+    def _session(self, sid: str) -> Session:
+        return self._runtime.get(self._uid_of(sid))
 
     def _terminal(self, sid: str) -> TerminalSession:
         session = self._session(sid)
         if not isinstance(session, TerminalSession):
             raise CoreError(f"{session.mode} 会话没有屏幕")
         return session
-
-    def _runner(self, sid: str) -> SessionRunner:
-        session = self._session(sid)
-        return self._runners[session.uid]
 
     @staticmethod
     def _fail(error: BaseException) -> Answer:

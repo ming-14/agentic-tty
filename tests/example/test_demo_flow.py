@@ -34,7 +34,8 @@ def _pump_until_output(
     while time.monotonic() < deadline:
         if needle in session.read_all(Stream.STDOUT):
             return True
-        if runner.pump():
+        runner.pump()
+        if session.drained:
             break
         time.sleep(0.01)
     return needle in session.read_all(Stream.STDOUT)

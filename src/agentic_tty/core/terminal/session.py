@@ -8,7 +8,7 @@ from __future__ import annotations
 from ...foundation.logs import get_logger
 from ..errors import CoreError
 from ..ports import HostFactory, HostMetadata, SessionSpec, Stream, TerminalHost
-from ..session.base import Session
+from ..session.base import ResizeEvent, Session
 
 _logger = get_logger("core.terminal.session")
 
@@ -27,6 +27,8 @@ class TerminalSession(Session):
         super().__init__(uid, spec, host_factory, journal_budget_bytes=journal_budget_bytes)
         self._cols = spec.cols
         self._rows = spec.rows
+        # 尺寸变更史（按 offset 升序）：订阅者靠它在字节流里插帧，见 `resize_events`。
+        self._resizes: list[ResizeEvent] = []
 
     @property
     def cols(self) -> int:
@@ -41,7 +43,13 @@ class TerminalSession(Session):
         self._terminal_host().resize(cols, rows)
         self._cols = cols
         self._rows = rows
+        # 记在**字节 offset 空间**里：此刻日志末尾之后的字节按新尺寸解释。
+        self._resizes.append(ResizeEvent(self.journal.end_offset, cols, rows))
         _logger.info("会话尺寸已变更 uid=%s -> %dx%d", self.uid, cols, rows)
+
+    def resize_events(self, since: int = 0) -> tuple[ResizeEvent, ...]:
+        """尺寸变更事件（按 offset 升序，只给 `offset >= since` 的）。"""
+        return tuple(event for event in self._resizes if event.offset >= since)
 
     def rebuild_bytes(self) -> bytes:
         """重建字节（RIS + 模式恢复 + scrollback + 可见区）。"""
