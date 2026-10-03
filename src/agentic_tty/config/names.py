@@ -18,6 +18,10 @@ from pathlib import Path
 PREFIX = "agentic-tty-"
 """本机对象（管道 / 锁 / socket）的名字前缀。"""
 
+DEFAULT_INSTANCE = "default"
+"""默认实例名。**两端共用同一个约定**——守护进程不带 `--name` 时用它，消费者不带配置时
+也连它。它是**共同约定**，不是某一方的私产。"""
+
 
 def runtime_dir(instance: str) -> Path:
     """本机放运行时文件的目录（锁 / 端点 / 日志）——不保证已存在。

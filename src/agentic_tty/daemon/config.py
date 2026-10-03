@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import ConfigError
+from ..config.names import DEFAULT_INSTANCE
 
 _OPTIONAL: dict[str, Any] = {"runtime_dir": Path, "listen": str}
 """默认值是 `None` 的字段给个显式转换——空串按"不给"处理。"""
@@ -43,7 +44,7 @@ def _coerce(key: str, value: Any, default: Any) -> Any:
 class DaemonConfig:
     """守护进程的装配参数。"""
 
-    name: str = "default"
+    name: str = DEFAULT_INSTANCE
     """**实例名**：单实例锁名与运行时目录名都由它派生。多份配置、多用户靠它共存。"""
     runtime_dir: Path | None = None
     """运行时目录（锁 / 端点 / 日志）；留空取 `config.names.runtime_dir(name)`。"""
