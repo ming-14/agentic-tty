@@ -17,7 +17,7 @@ class DaemonConfig:
     name: str = "default"
     """**实例名**：单实例锁名与运行时目录名都由它派生。多份配置、多用户靠它共存。"""
     runtime_dir: Path | None = None
-    """运行时目录（pid / 锁 / 端点 / 日志）；留空取 `default_runtime_dir(name)`。"""
+    """运行时目录（锁 / 端点 / 日志）；留空取 `default_runtime_dir(name)`。"""
 
     listen: str | None = None
     """接入点用的**端点名**（挂成 `pipe://agentic-tty-<它>`）。**留空不挂监听**。

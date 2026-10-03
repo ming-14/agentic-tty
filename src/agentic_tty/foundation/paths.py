@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 def default_runtime_dir(name: str) -> Path:
-    """本机放运行时文件的目录（pid / 锁 / 端点）——不保证已存在。"""
+    """本机放运行时文件的目录（锁 / 端点）——不保证已存在。"""
     if sys.platform == "win32":
         base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
     else:

@@ -12,7 +12,7 @@ r"""本机管道传输：一个名字、多条连接、双向字节流。
       Windows →  \\\\.\\pipe\\agentic-tty-<名字>-<目录哈希>
       POSIX   →  <运行时目录>/agentic-tty-<名字>.sock
 
-目录由**地址**给出（`pipe_address`），所以 pid / 锁 / 端点落在同一个目录里；同机多份
+目录由**地址**给出（`pipe_address`），所以锁 / 端点落在同一个目录里；同机多份
 配置、多用户各自一份，互不相撞。
 
 **一个名字上可以同时有多条连接**（Windows 命名管道叫"实例"，POSIX 是 accept 出的新
@@ -48,7 +48,7 @@ def pipe_address(name: str, runtime_dir: Path | None = None) -> str:
     """拼一个管道地址。给了运行时目录就带上——**两端都用它算端点位置**。
 
     地址是端点位置的唯一来源：`pipe://<名字>` 用平台默认目录，`pipe://<名字>/<目录>`
-    用给定目录。这样 pid / 锁 / 端点才会落在同一个目录里。
+    用给定目录。这样锁 / 端点才会落在同一个目录里。
     """
     if runtime_dir is None:
         return f"pipe://{name}"

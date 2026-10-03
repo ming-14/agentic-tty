@@ -20,5 +20,5 @@ NAME = "daemon-test"
 
 
 def runtime_dir() -> Path:
-    """那个守护进程的运行时目录：pid / 锁 / 端点都在它里面。"""
+    """那个守护进程的运行时目录：锁 / 端点 / 日志都在它里面。"""
     return default_runtime_dir(NAME)

@@ -222,7 +222,7 @@ def test_listen_needs_a_name():
 
 
 def test_endpoint_follows_the_runtime_dir_in_the_address(tmp_path: Path):
-    """端点位置由**地址**给出——pid / 锁 / 端点因此落在同一个目录里。"""
+    """端点位置由**地址**给出——锁 / 端点因此落在同一个目录里。"""
     name = _unique("probe")
     here = parse_address(pipe_address(name, tmp_path))
     there = parse_address(pipe_address(name, tmp_path / "other"))
