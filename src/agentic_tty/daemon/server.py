@@ -31,6 +31,7 @@ from pathlib import Path
 
 from ..foundation.logs import add_rotating_file, get_logger
 from ..foundation.paths import default_runtime_dir
+from ..transport.pipe import pipe_address
 from .access_point import AccessPoint
 from .config import DaemonConfig
 from .errors import AlreadyRunning, DaemonError, NotStarted
@@ -200,11 +201,17 @@ class Daemon:
         self._handler = self._handler_factory()
 
     def _mount_access_point(self) -> None:
-        """挂接入点——配置里给了管道名才挂（它是守护进程对外的唯一口子）。"""
+        """挂接入点——配置里给了管道名才挂（它是守护进程对外的唯一口子）。
+
+        端点落在**运行时目录**里（与 pid / 锁同一处），所以地址要带上它。
+        """
         name = self._config.listen
         if name is None:
             return
-        self._access_point = AccessPoint(name, on_request=self.submit, on_input=self.submit_input)
+        address = pipe_address(name, self._dir)
+        self._access_point = AccessPoint(
+            address, on_request=self.submit, on_input=self.submit_input
+        )
         self._access_point.open()
 
     def _write_pid(self) -> None:

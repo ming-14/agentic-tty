@@ -17,6 +17,8 @@ import pytest
 
 from agentic_tty.transport import registry as transports
 from agentic_tty.transport.errors import ConnectionClosed, TransportError
+from agentic_tty.transport.pipe import pipe_address, pipe_path
+from agentic_tty.transport.stream import parse_address
 
 _DEADLINE = 10.0
 _SRC = str(Path(__file__).resolve().parents[2] / "src")
@@ -217,3 +219,24 @@ def test_connect_to_missing_name_is_refused():
 def test_listen_needs_a_name():
     with pytest.raises(TransportError):
         transports.listen("pipe://")
+
+
+def test_endpoint_follows_the_runtime_dir_in_the_address(tmp_path: Path):
+    """端点位置由**地址**给出——pid / 锁 / 端点因此落在同一个目录里。"""
+    name = _unique("probe")
+    here = parse_address(pipe_address(name, tmp_path))
+    there = parse_address(pipe_address(name, tmp_path / "other"))
+
+    if sys.platform == "win32":
+        # 命名管道名是全局的、没有目录——目录被并进名字：同目录同名，异目录异名。
+        assert pipe_path(here) == pipe_path(parse_address(pipe_address(name, tmp_path)))
+        assert pipe_path(here) != pipe_path(there)
+    else:
+        assert pipe_path(here) == str(tmp_path / f"agentic-tty-{name}.sock")
+        assert pipe_path(there) == str(tmp_path / "other" / f"agentic-tty-{name}.sock")
+
+
+def test_address_without_a_dir_uses_the_platform_default():
+    """不给目录就用平台默认——`pipe://<名字>` 的旧写法照旧。"""
+    name = _unique("probe")
+    assert pipe_path(parse_address(pipe_address(name))) == pipe_path(parse_address(_uri(name)))

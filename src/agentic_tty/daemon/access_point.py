@@ -31,7 +31,7 @@ from ..protocol.frame import (
 )
 from ..transport.errors import ConnectionClosed
 from ..transport.pipe import PipeTransport
-from ..transport.stream import Address, Connection, Listener
+from ..transport.stream import Connection, Listener, parse_address
 from .handler import Reply
 
 _logger = get_logger("daemon.access_point")
@@ -69,10 +69,6 @@ class WireRequest:
 
     envelope: Envelope
     connection: _Connection
-
-
-def _pipe_address(name: str) -> Address:
-    return Address(scheme="pipe", netloc=name, raw=f"pipe://{name}")
 
 
 def _encode_answer(answer: object) -> bytes:
@@ -123,12 +119,12 @@ class AccessPoint:
 
     def __init__(
         self,
-        name: str,
+        address: str,
         *,
         on_request: Callable[[object], object],
         on_input: Callable[[str, bytes], object],
     ) -> None:
-        self._name = name
+        self._address = address
         self._on_request = on_request
         self._on_input = on_input
         self._listener: Listener | None = None
@@ -137,7 +133,7 @@ class AccessPoint:
     @property
     def address(self) -> str:
         """实际挂上的地址。"""
-        return str(self._listener.address) if self._listener is not None else f"pipe://{self._name}"
+        return str(self._listener.address) if self._listener is not None else self._address
 
     @property
     def connection_count(self) -> int:
@@ -146,7 +142,7 @@ class AccessPoint:
 
     def open(self) -> None:
         """挂监听。"""
-        self._listener = PipeTransport().listen(_pipe_address(self._name))
+        self._listener = PipeTransport().listen(parse_address(self._address))
         _logger.info("接入点已挂监听 %s", self._listener.address)
 
     def pump(self, timeout: float) -> None:

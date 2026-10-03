@@ -6,12 +6,14 @@ r"""本机管道传输：一个名字、多条连接、双向字节流。
 
 与 `tcp.py` 同形——差别只在"地址怎么变成一条通道"，上层拿到的永远只是一个 `Connection`：
 
-    pipe://<名字>
-      Windows →  \\\\.\\pipe\\agentic-tty-<名字>
+    pipe://<名字>                    → 平台默认运行时目录
+    pipe://<名字>/<运行时目录>        → 用给定目录
+
+      Windows →  \\\\.\\pipe\\agentic-tty-<名字>-<目录哈希>
       POSIX   →  <运行时目录>/agentic-tty-<名字>.sock
 
-名字与 pid / 锁 / 端点文件共用同一套运行时目录，因此同机多份配置、多用户各自一份，
-互不相撞。
+目录由**地址**给出（`pipe_address`），所以 pid / 锁 / 端点落在同一个目录里；同机多份
+配置、多用户各自一份，互不相撞。
 
 **一个名字上可以同时有多条连接**（Windows 命名管道叫"实例"，POSIX 是 accept 出的新
 socket），每条是独立的一条双向字节流，互不干扰。这是"多个消费者连同一个守护进程"的
@@ -21,6 +23,7 @@ socket），每条是独立的一条双向字节流，互不干扰。这是"多�
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import socket
 import struct
 import sys
@@ -41,11 +44,36 @@ _POLL_INTERVAL = 0.005
 _BUFFER = 1 << 16
 
 
-def pipe_path(name: str) -> str:
-    """把地址里的名字解析成本平台的实际路径（诊断与日志用）。"""
+def pipe_address(name: str, runtime_dir: Path | None = None) -> str:
+    """拼一个管道地址。给了运行时目录就带上——**两端都用它算端点位置**。
+
+    地址是端点位置的唯一来源：`pipe://<名字>` 用平台默认目录，`pipe://<名字>/<目录>`
+    用给定目录。这样 pid / 锁 / 端点才会落在同一个目录里。
+    """
+    if runtime_dir is None:
+        return f"pipe://{name}"
+    posix = Path(runtime_dir).as_posix()
+    return f"pipe://{name}{posix}" if posix.startswith("/") else f"pipe://{name}/{posix}"
+
+
+def _runtime_dir(address: Address) -> Path:
+    """端点目录：地址给了就用它，没给就按名字取平台默认。"""
+    if not address.path:
+        return default_runtime_dir(address.netloc)
+    # URL 的路径一定带前导斜杠；Windows 上那会毁掉盘符路径（`/C:\x` 不是绝对路径）。
+    text = address.path[1:] if sys.platform == "win32" else address.path
+    return Path(text)
+
+
+def pipe_path(address: Address) -> str:
+    """把管道地址解析成本平台的实际端点——`listen` 与 `connect` 都走这里。"""
+    name = address.netloc
+    runtime_dir = _runtime_dir(address)
     if sys.platform == "win32":
-        return rf"\\.\pipe\{_PREFIX}{name}"
-    return str(default_runtime_dir(name) / f"{_PREFIX}{name}.sock")
+        # 命名管道名是全局的、没有目录——把目录并进名字，好让同机多份配置互不相撞。
+        digest = hashlib.sha256(str(runtime_dir).encode("utf-8")).hexdigest()[:16]
+        return rf"\\.\pipe\{_PREFIX}{name}-{digest}"
+    return str(runtime_dir / f"{_PREFIX}{name}.sock")
 
 
 class _PipeIO(Protocol):
@@ -308,8 +336,8 @@ class _WinPipeIO:
 class _WinPipeListener:
     """Windows 命名管道监听点：一个名字，多条连接。"""
 
-    def __init__(self, name: str, address: Address) -> None:
-        self._path = pipe_path(name)
+    def __init__(self, address: Address) -> None:
+        self._path = pipe_path(address)
         self._address = address
         self._pending: int | None = None
         self._closed = False
@@ -506,8 +534,8 @@ class PipeTransport:
         if not name:
             raise TransportError(f"管道地址必须给名字: {address}")
         if sys.platform == "win32":
-            return _WinPipeListener(name, address)  # type: ignore[return-value]
-        return _PosixPipeListener(pipe_path(name), address)  # type: ignore[return-value]
+            return _WinPipeListener(address)  # type: ignore[return-value]
+        return _PosixPipeListener(pipe_path(address), address)  # type: ignore[return-value]
 
     def connect(self, address: Address, *, timeout: float = 5.0) -> Connection:
         if not address.netloc:
@@ -523,7 +551,7 @@ def _connect_windows(address: Address, timeout: float) -> Connection:
     等到了也可能被别人抢走（`ERROR_PIPE_BUSY`），所以打开要重试到超时为止。
     """
     k32 = _k32()
-    path = pipe_path(address.netloc)
+    path = pipe_path(address)
     deadline = time.monotonic() + max(0.0, timeout)
     while True:
         left = max(0.0, deadline - time.monotonic())
@@ -546,7 +574,7 @@ def _connect_windows(address: Address, timeout: float) -> Connection:
 
 
 def _connect_posix(address: Address, timeout: float) -> Connection:
-    path = pipe_path(address.netloc)
+    path = pipe_path(address)
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         sock.settimeout(timeout)

@@ -24,7 +24,7 @@ from agentic_tty.protocol.frame import (
     encode_control,
 )
 from agentic_tty.protocol.response import ok_response
-from agentic_tty.transport.pipe import PipeTransport
+from agentic_tty.transport.pipe import PipeTransport, pipe_address
 from agentic_tty.transport.stream import Connection, parse_address
 
 _DEADLINE = 2.0
@@ -49,13 +49,10 @@ class _Seam:
 
 
 @pytest.fixture
-def point() -> Iterator[tuple[AccessPoint, _Seam]]:
+def point(tmp_path) -> Iterator[tuple[AccessPoint, _Seam]]:
     seam = _Seam()
-    access_point = AccessPoint(
-        f"agentic-tty-test-{uuid4().hex[:8]}",
-        on_request=seam.on_request,
-        on_input=seam.on_input,
-    )
+    address = pipe_address(f"agentic-tty-test-{uuid4().hex[:8]}", tmp_path / "run")
+    access_point = AccessPoint(address, on_request=seam.on_request, on_input=seam.on_input)
     access_point.open()
     try:
         yield access_point, seam

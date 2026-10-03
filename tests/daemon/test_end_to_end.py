@@ -19,7 +19,7 @@ from agentic_tty.protocol.contracts.daemon_ipc import STREAM_STDOUT
 from agentic_tty.protocol.envelope import from_json, make_request, to_json
 from agentic_tty.protocol.frame import ControlFrame, FrameReader, encode_bytes, encode_control
 from agentic_tty.protocol.response import data_of, error_of, failed_response, ok_response
-from agentic_tty.transport.pipe import PipeTransport
+from agentic_tty.transport.pipe import PipeTransport, pipe_address
 from agentic_tty.transport.stream import Connection, parse_address
 
 _DEADLINE = 5.0
@@ -71,11 +71,12 @@ class _Running:
 
     def __init__(self, tmp_path) -> None:
         self.name = f"agentic-tty-e2e-{uuid4().hex[:8]}"
+        self.runtime_dir = tmp_path / "run"
         self.handler = _EchoHandler()
         self.daemon = Daemon(
             DaemonConfig(
                 name=self.name,
-                runtime_dir=tmp_path / "run",
+                runtime_dir=self.runtime_dir,
                 write_log_file=False,
                 listen=self.name,
                 tick_interval=0.001,
@@ -98,7 +99,8 @@ class _Running:
         self.daemon.stop(2)
 
     def connect(self) -> Connection:
-        return PipeTransport().connect(parse_address(f"pipe://{self.name}"), timeout=_DEADLINE)
+        address = pipe_address(self.name, self.runtime_dir)
+        return PipeTransport().connect(parse_address(address), timeout=_DEADLINE)
 
     def wait_inputs(self) -> list[tuple[str, bytes]]:
         deadline = time.monotonic() + _DEADLINE
