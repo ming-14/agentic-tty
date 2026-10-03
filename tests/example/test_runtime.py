@@ -6,6 +6,7 @@ import time
 
 from agentic_tty.core.ports import SUBPROCESS, SessionSpec, Stream
 from agentic_tty.core.runtime.input_queue import InputVerdict
+from agentic_tty.core.runtime.runner import SessionRunner
 from agentic_tty.core.runtime.runtime import Runtime
 from agentic_tty.core.session.registry import SessionRegistry
 from agentic_tty.example.core_test.runtime_fakehost import FakeHost, FakeProgram
@@ -64,5 +65,24 @@ def test_send_input_reaches_the_driver():
     session = runtime.create(SessionSpec(mode=SUBPROCESS, argv=("x",)))
     try:
         assert runtime.send_input(session.uid, b"hi\n") is InputVerdict.QUEUED
+    finally:
+        runtime.close_all()
+
+
+def test_runner_factory_takes_over_the_driver():
+    """给了 `runner_factory` 就由它造驱动——示例层正是靠它注入小水位。
+
+    默认硬上限是 1 MiB，101 字节本该照收；这里被工厂压到 100B，于是拒收——证明工厂生效。
+    """
+    registry = SessionRegistry(lambda spec: FakeHost(spec, FakeProgram(exit_after=None)))
+    runtime = Runtime(
+        registry,
+        runner_factory=lambda session: SessionRunner(
+            session, input_max_bytes=100, input_high_watermark=60, input_low_watermark=20
+        ),
+    )
+    session = runtime.create(SessionSpec(mode=SUBPROCESS, argv=("x",)))
+    try:
+        assert runtime.send_input(session.uid, b"a" * 101) is InputVerdict.REJECTED
     finally:
         runtime.close_all()

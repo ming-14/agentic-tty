@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from agentic_tty.core.ports import Stream
 from agentic_tty.core.process.session import ProcessSession
+from agentic_tty.core.runtime.runner import Exited, Ingested, StreamEof
 from agentic_tty.example.core_test import render
 from agentic_tty.example.core_test.programs import PROGRAMS
 from agentic_tty.example.core_test.runtime_fakehost import FakeHost
@@ -76,3 +77,24 @@ def test_status_text_carries_uid_drain_and_exit(fake_registry):
     assert "exit=" in status
     assert "进行中" in status  # 脚本化宿主没排空
     assert render.metadata(session) == ""  # 非终端会话没有标题 / cwd
+
+
+def test_input_text_points_out_the_soft_watermark():
+    assert render.input_text(0, drained=True) == " · 输入 0B"
+    assert render.input_text(70, drained=False) == " · 输入 70B（越软水位）"
+
+
+def test_event_lines_render_each_kind_of_pump_event():
+    """`pump_all()` 交出的三类事件：哪一路进了哪一段、哪一路排空、何时拿到退出码。"""
+    events = [
+        Ingested(Stream.STDOUT, 0, 3),
+        Ingested(Stream.STDERR, 0, 1),
+        StreamEof(Stream.STDERR),
+        Exited(2),
+    ]
+    assert render.event_lines(events) == [
+        "进 stdout [0, 3) +3B\n",
+        "进 stderr [0, 1) +1B\n",
+        "排空 stderr\n",
+        "退出 code=2\n",
+    ]

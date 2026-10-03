@@ -1,12 +1,15 @@
 """把会话渲染成界面要显示的文本与行值——只碰 core，不碰 Tk。
 
 界面（`example/ui/`）不认识会话，认识会话的这一层就是这里：视图、格栅、原始字节、
-进程、状态栏那行，全是从会话快照直接算出来的。
+进程、事件、状态栏那行，全是从会话与驱动快照直接算出来的。
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from ...core.runtime.monitor import windows_of
+from ...core.runtime.runner import Exited, Ingested, PumpEvent, StreamEof
 from ...core.session.base import Session
 from ...core.terminal.session import TerminalSession
 
@@ -41,6 +44,25 @@ def status_text(session: Session) -> str:
         f"{drained} · exit={session.exit_code} · uid={session.uid[:8]}"
         f"{metadata(session)}"
     )
+
+
+def input_text(depth: int, drained: bool) -> str:
+    """状态栏里的输入队列那一段：积压字节数；越过软水位时点出来。"""
+    return f" · 输入 {depth}B" + ("" if drained else "（越软水位）")
+
+
+def event_lines(events: Iterable[PumpEvent]) -> list[str]:
+    """把一轮事件渲染成行——`pump_all()` 交出的东西，消费者靠它知道"哪一路进了哪段"。"""
+    lines = []
+    for event in events:
+        if isinstance(event, Ingested):
+            size = event.end - event.start
+            lines.append(f"进 {event.stream} [{event.start}, {event.end}) +{size}B\n")
+        elif isinstance(event, StreamEof):
+            lines.append(f"排空 {event.stream}\n")
+        elif isinstance(event, Exited):
+            lines.append(f"退出 code={event.exit_code}\n")
+    return lines
 
 
 def view_text(session: Session, *, full: bool) -> str:

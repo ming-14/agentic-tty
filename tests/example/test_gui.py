@@ -15,7 +15,11 @@ from agentic_tty.core.runtime.input_queue import InputVerdict  # noqa: E402
 from agentic_tty.core.runtime.runtime import Runtime  # noqa: E402
 from agentic_tty.example.core_test import render  # noqa: E402
 from agentic_tty.example.core_test.gui import App  # noqa: E402
-from agentic_tty.example.core_test.sessions import ExampleMode, session_spec  # noqa: E402
+from agentic_tty.example.core_test.sessions import (  # noqa: E402
+    ExampleMode,
+    make_runner_factory,
+    session_spec,
+)
 from agentic_tty.example.ui import Page, ViewRange  # noqa: E402
 
 
@@ -306,4 +310,17 @@ def test_subscription_page_collects_new_output(root, fake_registry):
     assert app._subscription is not None
     assert app._subscription.next_offset == session.journal.end_offset
     fake_registry.close(session.uid)
+    app.on_close()
+
+
+def test_flood_input_reports_rejection(root, fake_registry):
+    """「灌满输入队列」：整块拒收，判定写在状态栏——绝不静默丢字节。"""
+    app = App(root)
+    # 台子的驱动带**小水位**（示例层的装配），否则 4KB 撞不到 1 MiB 的默认硬上限
+    app._runtime = Runtime(fake_registry, runner_factory=make_runner_factory())
+    session = app._runtime.create(session_spec(ExampleMode.SUBPROCESS, ("x",)))
+    app._selected = session.uid
+
+    app._flood_input()
+    assert "rejected" in app._status.text
     app.on_close()

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 
 from ...foundation.logs import get_logger
 from ..errors import CoreError
@@ -29,18 +30,29 @@ _logger = get_logger("core.runtime.runtime")
 
 DEFAULT_RELEASE_TIMEOUT = 5.0
 
+RunnerFactory = Callable[[Session], SessionRunner]
+"""驱动的构造方式。给了就**接管全部参数**（含 `wakeup`），没给就用内置那份。"""
+
 
 class Runtime:
-    """会话 + 驱动的成对管理。"""
+    """会话 + 驱动的成对管理。
+
+    **三个注入点**（缺省一律用内置的）：`registry=` 会话表、`wakeup=` 唤醒通道、
+    `runner_factory=` 驱动构造。传了 `runner_factory` 之后 `wakeup=` 不再起作用——
+    接管了构造就接管了全部，与 `SessionKind.host_factory` 是同一个规矩。
+    """
 
     def __init__(
         self,
         registry: SessionRegistry | None = None,
         *,
         wakeup: Wakeup | None = None,
+        runner_factory: RunnerFactory | None = None,
     ) -> None:
         self._registry = registry if registry is not None else SessionRegistry()
-        self._wakeup = wakeup
+        self._runner_factory = runner_factory or (
+            lambda session: SessionRunner(session, wakeup=wakeup)
+        )
         self._runners: dict[str, SessionRunner] = {}
         self._releasing: list[threading.Thread] = []
 
@@ -50,7 +62,7 @@ class Runtime:
         """创建会话并起驱动；驱动起不来就把会话收掉，不留半个。"""
         session = self._registry.create(spec)
         try:
-            runner = SessionRunner(session, wakeup=self._wakeup)
+            runner = self._runner_factory(session)
             runner.start()
         except Exception:
             # 走两阶段释放：宿主关闭可能长时间阻塞，不能压在调用线程上。

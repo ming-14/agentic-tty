@@ -8,6 +8,7 @@
 - `subprocess` → `ProcessSession` + `SubprocessHost`：core.runtime 的真子进程宿主。
 
 会话类与宿主工厂**成对**注册，因此选 `pty` 永远得到真 PTY，假宿主只由 `fake` 模式产生。
+`create_runtime` 再把注册表与驱动工厂一起装进 `Runtime`——验证台要的就是这个。
 """
 
 from __future__ import annotations
@@ -19,7 +20,11 @@ from ...core import ports
 from ...core.errors import CoreError
 from ...core.ports import HostFactory, SessionSpec
 from ...core.process.session import ProcessSession
+from ...core.runtime.bridge import Wakeup
 from ...core.runtime.host_factory import create_host
+from ...core.runtime.runner import SessionRunner
+from ...core.runtime.runtime import RunnerFactory, Runtime
+from ...core.session.base import Session
 from ...core.session.registry import SessionKind, SessionRegistry
 from ...core.terminal.session import TerminalSession
 from .programs import PROGRAMS
@@ -27,6 +32,12 @@ from .runtime_fakehost import FakeHost
 
 EXAMPLE_JOURNAL_BUDGET = 1 << 20
 """示例层用更小的日志预算，便于观察裁剪与重建。"""
+
+EXAMPLE_INPUT_MAX_BYTES = 4 << 10
+EXAMPLE_INPUT_HIGH_WATERMARK = 2 << 10
+EXAMPLE_INPUT_LOW_WATERMARK = 512
+"""示例层用更小的输入水位，便于观察 HOLD / REJECTED——默认那套（1 MiB / 256 KiB /
+64 KiB）是给生产的，手敲键盘永远碰不到。"""
 
 
 class ExampleMode(StrEnum):
@@ -68,4 +79,29 @@ def create_registry(
             ExampleMode.SUBPROCESS: SessionKind(ProcessSession),
         },
         journal_budget_bytes=journal_budget_bytes,
+    )
+
+
+def make_runner_factory(wakeup: Wakeup | None = None) -> RunnerFactory:
+    """示例层的驱动工厂：给会话配**小水位**，好让 HOLD / REJECTED 在台子上碰得到。"""
+
+    def make_runner(session: Session) -> SessionRunner:
+        return SessionRunner(
+            session,
+            wakeup=wakeup,
+            input_max_bytes=EXAMPLE_INPUT_MAX_BYTES,
+            input_high_watermark=EXAMPLE_INPUT_HIGH_WATERMARK,
+            input_low_watermark=EXAMPLE_INPUT_LOW_WATERMARK,
+        )
+
+    return make_runner
+
+
+def create_runtime(
+    registry: SessionRegistry | None = None, *, wakeup: Wakeup | None = None
+) -> Runtime:
+    """装配示例层的运行时：三种模式的注册表（可换）+ 小水位的驱动工厂。"""
+    return Runtime(
+        registry if registry is not None else create_registry(),
+        runner_factory=make_runner_factory(wakeup),
     )

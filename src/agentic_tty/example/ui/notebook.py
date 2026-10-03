@@ -11,7 +11,7 @@ from .common import HINT_COLOR, fixed_font, set_text
 
 
 class Page(StrEnum):
-    """详情页的键（两台验证台共用同一套页名）。"""
+    """详情页的键（两台验证台共用同一套页名，各台按需要装自己那几页）。"""
 
     SCREEN = "screen"
     SVG = "svg"
@@ -19,6 +19,7 @@ class Page(StrEnum):
     CELLS = "cells"
     RAW = "raw"
     SUB = "sub"
+    EVENTS = "events"
     PROCS = "procs"
 
 

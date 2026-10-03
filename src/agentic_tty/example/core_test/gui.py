@@ -1,8 +1,8 @@
 """示例层的 Tk 管理台：接入核心层接口，手动起会话、看屏幕、发输入。
 
-    python -m agentic_tty.example
+    python -m agentic_tty.example.core_test
 
-**Tk 的 mainloop 就是所有者线程**：界面回调与 `SessionRunner.pump()` 都跑在同一
+**Tk 的 mainloop 就是所有者线程**：界面回调与 `Runtime.pump_all()` 都跑在同一
 线程，所以这里不需要任何锁——这正是核心层"单线程所有者"约定带来的好处。
 宿主的读由 core.runtime 的读线程代劳（`SessionRunner`），界面线程从不阻塞。
 
@@ -12,7 +12,8 @@ Tk 队列，主线程只在 `_tick` 里 drain 这个廉价队列。因为 **Tk �
 进程树变化这类没有读线程事件，只能靠它扫到。
 
 模式三选一：`fake` 跑示例假程序（命令框下拉即假程序名）；`pty` / `subprocess`
-跑真命令（命令框直接输入，留空 = 平台默认 shell）。
+跑真命令（命令框直接输入，留空 = 平台默认 shell）。输入队列的**小水位**由
+`sessions.create_runtime` 注入，好让 `HOLD` / `REJECTED` 在台子上碰得到。
 
 本文件只做**编排**（会话、运行时驱动、唤醒线程、订阅、刷新节奏）：
 
@@ -27,14 +28,14 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from queue import Empty, Queue
-from tkinter import messagebox, ttk
+from tkinter import messagebox, simpledialog, ttk
 
+from ...core.errors import CoreError
 from ...core.process.session import ProcessSession
 from ...core.runtime.bridge import Wakeup
 from ...core.runtime.host_factory import check_dependencies
 from ...core.runtime.input_queue import InputVerdict
-from ...core.runtime.runner import SessionRunner
-from ...core.runtime.runtime import Runtime
+from ...core.runtime.runner import PumpEvent
 from ...core.runtime.shell import default_shell
 from ...core.session.base import Session
 from ...core.session.subscription import Subscription
@@ -55,7 +56,7 @@ from ..ui import (
 )
 from . import render
 from .programs import PROGRAMS
-from .sessions import ExampleMode, create_registry, session_spec
+from .sessions import EXAMPLE_INPUT_MAX_BYTES, ExampleMode, create_runtime, session_spec
 
 _logger = get_logger("example.core_test.gui")
 
@@ -66,6 +67,8 @@ _REFRESH_EVERY = 8
 _RELEASE_JOIN_SECONDS = 5.0
 # 唤醒线程的等待粒度：它靠这个周期检查"该收工了吗"
 _WAKE_POLL = 0.2
+# 「事件」页只留最后这么多行——它每轮都在长
+_EVENT_KEEP_LINES = 200
 
 
 class App:
@@ -88,10 +91,12 @@ class App:
             target=self._wake_loop, name="wakeup", daemon=True
         )
         # 会话与它的驱动**成对**交给 core.runtime：注册表、读写线程、两阶段释放都在它那
-        self._runtime = Runtime(create_registry(), wakeup=self._wakeup)
+        self._runtime = create_runtime(wakeup=self._wakeup)
         # 订阅流页：用 core 的 Subscription 按游标取增量（演示订阅机制）
         self._subscription: Subscription | None = None
         self._sub_uid: str | None = None
+        self._sub_pull_max: int | None = None  # 每次拉取上限；None = 一次把日志尾部全给
+        self._events_uid: str | None = None  # 「事件」页当前记的是哪个会话
         self._build_ui()
         self._select_session(None)  # 初始无会话：pty 专属控件按此状态摆好
         self._wake_thread.start()
@@ -142,10 +147,13 @@ class App:
         self._tabs.add_text(Page.CELLS, "格栅")
         self._tabs.add_text(Page.RAW, "原始字节", small=True)
         self._tabs.add_text(Page.SUB, "订阅流", small=True)
+        self._tabs.add_text(Page.EVENTS, "事件", small=True)
         self._tabs.add_text(Page.PROCS, "进程")
 
         self._input = InputBar(right, on_send=self._send_input, on_interrupt=self._send_interrupt)
         self._stdin_btn = self._input.add_button("关 stdin", self._close_stdin)
+        self._input.add_button("灌满输入队列", self._flood_input)
+        self._input.add_button("订阅批量", self._set_pull_batch)
         self._size = SizeBar(
             right,
             on_apply=self._resize,
@@ -186,7 +194,7 @@ class App:
             # 有活就立刻处理；另外每 _REFRESH_EVERY 轮兜底一次（进程退出、进程树
             # 变化这类没有读线程事件，只能靠兜底扫到）
             if woken or self._ticks % _REFRESH_EVERY == 0:
-                self._runtime.pump_all()
+                self._refresh_events(self._runtime.pump_all())
                 self._refresh_tree()
                 self._refresh_detail()
         except Exception:
@@ -201,10 +209,6 @@ class App:
     def _selected_session(self) -> Session | None:
         """当前选中的会话；没选中或已被摘除则为 None。"""
         return self._runtime.find(self._selected) if self._selected else None
-
-    def _selected_runner(self) -> SessionRunner | None:
-        """当前选中会话的运行时驱动；没选中或已释放则为 None。"""
-        return self._runtime.runner(self._selected) if self._selected else None
 
     def _sync_command_box(self) -> None:
         """按当前模式摆命令框：fake 给假程序下拉并默认 repl，真形态清空留给自由输入。"""
@@ -282,8 +286,7 @@ class App:
 
     def _send_input(self, newline: bool = False) -> None:
         session = self._selected_session()
-        runner = self._selected_runner()
-        if session is None or runner is None:
+        if session is None:
             return
         tail = b""
         if newline:
@@ -291,18 +294,53 @@ class App:
             # 输入缓冲里。子进程的 stdin 是普通字节流，换行保持 LF。
             tail = b"\r" if isinstance(session, TerminalSession) else b"\n"
         data = self._input.text.encode() + tail
-        if runner.submit_input(data) is InputVerdict.REJECTED:
+        verdict = self._submit(session, data)
+        if verdict is None:
+            return
+        if verdict is InputVerdict.REJECTED:
             messagebox.showwarning("发送失败", "输入超过硬上限，本次输入被拒绝")
             return
         self._input.clear()
-        self._status.set(f"已入队 {len(data)} 字节（由写线程写出）")
+        hint = "（越软水位：应让发送方本端排队）" if verdict is InputVerdict.HOLD else ""
+        self._status.set(f"已入队 {len(data)} 字节（由写线程写出）{hint}")
 
     def _send_interrupt(self) -> None:
-        runner = self._selected_runner()
-        if runner is None:
+        session = self._selected_session()
+        if session is not None and self._submit(session, b"\x03") is not None:  # Ctrl+C
+            self._status.set("已入队 Ctrl+C")
+
+    def _flood_input(self) -> None:
+        """一次灌到硬上限之上：演示 `REJECTED`——整块拒收，绝不静默丢半个。"""
+        session = self._selected_session()
+        if session is None:
             return
-        runner.submit_input(b"\x03")  # Ctrl+C
-        self._status.set("已入队 Ctrl+C")
+        blob = b"x" * (EXAMPLE_INPUT_MAX_BYTES + 1)
+        verdict = self._submit(session, blob)
+        if verdict is not None:
+            self._status.set(
+                f"灌入 {len(blob)} 字节 → {verdict}（硬上限 {EXAMPLE_INPUT_MAX_BYTES}B）"
+            )
+
+    def _set_pull_batch(self) -> None:
+        """设订阅流页每次拉取的上限；0 = 不设上限（一次把日志尾部整段复制出来）。"""
+        value = simpledialog.askinteger(
+            "订阅批量",
+            "每次至多拉多少字节（0 = 不限）",
+            initialvalue=self._sub_pull_max or 0,
+            minvalue=0,
+        )
+        if value is None:
+            return
+        self._sub_pull_max = value or None
+        self._status.set(f"订阅批量 = {self._sub_pull_max or '不限'}")
+
+    def _submit(self, session: Session, data: bytes) -> InputVerdict | None:
+        """把一段字节交给该会话的写线程；失败时提示并返回 None。"""
+        try:
+            return self._runtime.send_input(session.uid, data)
+        except CoreError as exc:  # 会话刚被摘掉、驱动已释放
+            messagebox.showerror("发送失败", str(exc))
+            return None
 
     def _resize(self) -> None:
         session = self._selected_session()
@@ -360,7 +398,7 @@ class App:
     def _refresh_detail(self) -> None:
         session = self._selected_session()
         if session is None:
-            for key in (Page.VIEW, Page.CELLS, Page.RAW, Page.PROCS, Page.SUB):
+            for key in (Page.VIEW, Page.CELLS, Page.RAW, Page.PROCS, Page.SUB, Page.EVENTS):
                 self._tabs.set_text(key, "")
             self._subscription = None
             self._sub_uid = None
@@ -373,29 +411,56 @@ class App:
         self._tabs.set_text(Page.PROCS, render.processes_text(session))
         self._refresh_subscription(session)
         self._refresh_screen_views(session)
-        self._status.set(render.status_text(session))
+        self._status.set(render.status_text(session) + self._input_state(session))
+
+    def _input_state(self, session: Session) -> str:
+        """状态栏上的输入队列那一段：积压字节数与是否已回落。"""
+        runner = self._runtime.runner(session.uid)
+        if runner is None:
+            return ""
+        return render.input_text(runner.input_depth, runner.input_drained)
+
+    def _refresh_events(self, events: dict[str, list[PumpEvent]]) -> None:
+        """「事件」页：`pump_all()` 交出的本轮事件——消费者靠它知道"哪一路进了哪段"。
+
+        换会话就清空（那些事件属于上一个会话）。
+        """
+        session = self._selected_session()
+        uid = session.uid if session is not None else None
+        if self._events_uid != uid:
+            self._events_uid = uid
+            self._tabs.set_text(Page.EVENTS, "")
+        if session is None:
+            return
+        for line in render.event_lines(events.get(uid, ())):
+            self._append(Page.EVENTS, line, keep_lines=_EVENT_KEEP_LINES)
 
     def _refresh_subscription(self, session: Session) -> None:
         """订阅流页：用 core 的 `Subscription` 按游标取增量——这就是订阅机制的用法。
 
         换会话就重建订阅；**游标从当前末尾起**，所以页里只有"订阅之后的新增"。
         尺寸变更与字节共用同一个 offset 空间、随拉取一并交出，这里先列标记（带 offset）
-        再铺字节。
+        再铺字节。设了「订阅批量」就是分片拉取，每片把它的 offset 窗口也标出来。
         """
         if self._subscription is None or self._sub_uid != session.uid:
             self._subscription = Subscription(session, cursor=session.journal.end_offset)
             self._sub_uid = session.uid
             self._tabs.set_text(Page.SUB, "")
-            self._append_sub(f"── 订阅自 offset {self._subscription.next_offset} ──\n")
-        pull = self._subscription.pull()
+            self._append(Page.SUB, f"── 订阅自 offset {self._subscription.next_offset} ──\n")
+        pull = self._subscription.pull(max_bytes=self._sub_pull_max)
+        if self._sub_pull_max is not None and pull.data:
+            self._append(Page.SUB, f"── 分片 [{pull.start}, {self._subscription.next_offset}) ──\n")
         for event in pull.resizes:
-            self._append_sub(f"── 尺寸 {event.cols}×{event.rows} @offset {event.offset} ──\n")
+            self._append(Page.SUB, f"── 尺寸 {event.cols}×{event.rows} @offset {event.offset} ──\n")
         if pull.data:
-            self._append_sub(pull.data.decode("utf-8", errors="replace"))
+            self._append(Page.SUB, pull.data.decode("utf-8", errors="replace"))
 
-    def _append_sub(self, text: str) -> None:
-        page = self._tabs.text(Page.SUB)
+    def _append(self, key: Page, text: str, *, keep_lines: int | None = None) -> None:
+        """往文本页追加；`keep_lines` 限制保留的行数（「事件」页每轮都在长）。"""
+        page = self._tabs.text(key)
         page.insert(tk.END, text)
+        if keep_lines is not None:
+            page.delete("1.0", f"end-{keep_lines}l")  # 内容不足时 Tk 夹到 1.0，等于不删
         page.see(tk.END)
 
     def _refresh_screen_views(self, session: Session) -> None:
