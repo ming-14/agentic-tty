@@ -16,8 +16,8 @@ from __future__ import annotations
 
 from .errors import ConfigError
 from .names import PREFIX, endpoint_name, lock_name, runtime_dir
-from .resolve import ENV_PREFIX, resolve
-from .sources import env_values, file_values
+from .resolve import resolve
+from .sources import ENV_PREFIX, env_values, file_values
 
 __all__ = [
     "ENV_PREFIX",

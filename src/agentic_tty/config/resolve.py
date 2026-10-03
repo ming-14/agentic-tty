@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import ConfigError
-from .sources import ENV_PREFIX, env_values, file_values
+from .sources import env_values, file_values
 
 
 def resolve(
@@ -20,7 +20,6 @@ def resolve(
     argv: Mapping[str, Any] | None = None,
     environ: Mapping[str, str] | None = None,
     file: Path | None = None,
-    prefix: str = ENV_PREFIX,
 ) -> dict[str, Any]:
     """合并出最终值表；`defaults` 的键就是**认得的键**。
 
@@ -30,7 +29,7 @@ def resolve(
     if file is not None:
         layers.append(file_values(file))
     if environ is not None:
-        layers.append(env_values(environ, prefix=prefix))
+        layers.append(env_values(environ))
     if argv is not None:
         layers.append(argv)
 

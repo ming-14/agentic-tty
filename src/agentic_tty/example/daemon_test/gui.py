@@ -76,7 +76,7 @@ class App:
         # 连接在**后台线程**里做：连不上要重试，而主线程得跑 mainloop 不能阻塞
         self._connected = False
         self._closing = threading.Event()
-        self._states: Queue[tuple[str, str]] = Queue()
+        self._states: Queue[str] = Queue()
         self._build_ui()
         self._sync_pty_controls(None)
         self._connect_thread = threading.Thread(
@@ -107,26 +107,27 @@ class App:
         """
         while not self._closing.is_set():
             if self._client.try_connect(timeout=_CONNECT_TRY):
-                self._states.put(("connected", ""))
+                self._states.put("connected")
                 return
-            self._states.put(("starting" if is_held(lock()) else "down", ""))
+            self._states.put("starting" if is_held(lock()) else "down")
             time.sleep(_CONNECT_RETRY)
 
     def _drain_states(self) -> None:
         while True:
             try:
-                state, detail = self._states.get_nowait()
+                state = self._states.get_nowait()
             except Empty:
                 return
-            self._apply_state(state, detail)
+            self._apply_state(state)
 
-    def _apply_state(self, state: str, detail: str) -> None:
+    def _apply_state(self, state: str) -> None:
         if state == "connected":
-            self._connected = True  # 具体的 pid / uptime 等第一条 daemon_status 答复
+            self._connected = True
+            self._daemon_state.set("已连接，取状态中…")  # pid / uptime 等第一条答复
         elif state == "starting":
             self._daemon_state.set("守护进程正在初始化…（锁已占，监听还没挂上）")
         else:
-            self._daemon_state.set(f"守护进程未启动（重试连接中…）{detail}")
+            self._daemon_state.set("守护进程未启动（重试连接中…）")
 
     # ════════════════════════════════════════════════════════════
     # 界面

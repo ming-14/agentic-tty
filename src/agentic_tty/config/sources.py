@@ -17,15 +17,13 @@ ENV_PREFIX = "AGENTIC_TTY_"
 """环境变量的前缀：`AGENTIC_TTY_RUNTIME_DIR` → `runtime_dir`。"""
 
 
-def env_values(
-    environ: Mapping[str, str], *, prefix: str = ENV_PREFIX
-) -> dict[str, str]:
-    """把带前缀的环境变量收成扁平表；键名去掉前缀并转小写。"""
+def env_values(environ: Mapping[str, str]) -> dict[str, str]:
+    """把带 `ENV_PREFIX` 的环境变量收成扁平表；键名去掉前缀并转小写。"""
     values: dict[str, str] = {}
     for key, value in environ.items():
-        if not key.startswith(prefix):
+        if not key.startswith(ENV_PREFIX):
             continue
-        name = key[len(prefix) :].lower()
+        name = key[len(ENV_PREFIX) :].lower()
         if name:
             values[name] = value
     return values
@@ -40,8 +38,8 @@ def file_values(path: Path) -> dict[str, Any]:
     try:
         with path.open("rb") as handle:
             data = tomllib.load(handle)
-    except FileNotFoundError as exc:
-        raise ConfigError(f"配置文件不存在: {path}") from exc
+    except OSError as exc:  # 不存在 / 读不了 / 是个目录
+        raise ConfigError(f"配置文件读不了: {path}: {exc}") from exc
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"配置文件不是合法 TOML: {path}: {exc}") from exc
     return {str(key).replace("-", "_"): value for key, value in data.items()}
