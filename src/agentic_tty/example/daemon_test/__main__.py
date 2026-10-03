@@ -28,7 +28,7 @@ def main() -> int:
     configure()
     name = ConsumerConfig().name
     _logger.info("连 %s", address(name))
-    from .gui import main as run_gui  # 拉 Tk 放在这里
+    from .gui import main as run_gui  # 延迟导入：拉 Tk 要 resvg-py，不必替 import 本模块的人付
 
     return run_gui(name)
 

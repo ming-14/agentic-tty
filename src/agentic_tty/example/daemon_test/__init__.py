@@ -1,15 +1,15 @@
 """守护进程的验证台：**纯消费者**——连一个已经在跑的守护进程，一切经接入点往返。
 
     # 终端 1：你自己起守护进程
-    cd src && python -m agentic_tty.daemon --name daemon-test
+    cd src && python -m agentic_tty.daemon
     # 终端 2：台子连上去
-    cd src && python -m agentic_tty.example.daemon_test --name daemon-test
+    cd src && python -m agentic_tty.example.daemon_test
 
 **不依赖安装**：`agentic_tty` 就在 `src/` 下，从那里起（或给 `PYTHONPATH=src`）就能 import。
 
 **本格只连、不启动**：只 import 公共层（`config` / `foundation` / `protocol` / `transport`）与
 `example/ui`——不 import `core`，也不 import `daemon`，**更不拉起任何进程**。守护进程是独立的
-进程，**只由它自己支配**；名字由用户给，地址两端各算一次。
+进程，**只由它自己支配**；名字是**配置常量**，地址两端各算一次。
 
 **三态**靠两个公共信号分出来（`config.constants` 给名字、`foundation.instance` 问在不在）：
 

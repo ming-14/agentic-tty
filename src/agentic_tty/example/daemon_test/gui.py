@@ -20,13 +20,11 @@ from pathlib import Path
 from queue import Empty, Queue
 from tkinter import messagebox, ttk
 
-from ...config import endpoint_name, lock_name, runtime_dir
 from ...foundation.instance import is_held
 from ...foundation.logs import get_logger
 from ...protocol.contracts.daemon_ipc import Command, ReadMode, SessionRef
 from ...protocol.frame import BytesFrame
 from ...protocol.response import data_of, error_of, is_ok
-from ...transport.pipe import pipe_address
 from ..ui import (
     EXPORT_SCALE,
     HINT_COLOR,
@@ -41,6 +39,7 @@ from ..ui import (
     ViewRange,
     ask_save,
 )
+from . import address, lock
 from .client import Answer, Client
 
 _logger = get_logger("example.daemon_test.gui")
@@ -61,9 +60,9 @@ class App:
 
     def __init__(self, root: tk.Tk, instance: str) -> None:
         self._root = root
-        # 名字是**给进来的**：地址与锁名都由它算——两端各算一次，必然一致
-        self._address = pipe_address(endpoint_name(instance), runtime_dir(instance))
-        self._lock = lock_name(instance, runtime_dir(instance))
+        # 名字是**给进来的**（入口从配置常量取的）：地址与锁名都按它算，两端各算一次
+        self._address = address(instance)
+        self._lock = lock(instance)
         self._answers: Queue[Answer] = Queue()
         # 请求 → 用途：答复回来时靠 mid 认出它属于哪一次询问
         self._want: dict[str, str] = {}
