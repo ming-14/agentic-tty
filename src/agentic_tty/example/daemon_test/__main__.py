@@ -6,8 +6,10 @@
 拉起的子进程由 `_child_env()` 自己把 `src` 补进 `PYTHONPATH`，所以子进程不受 cwd 影响。
 
 **本格是消费者**：守护进程按**模块名字符串**拉起（`python -m agentic_tty.daemon`），不 import
-它——那是"操作者"的动作，不是依赖。关窗时把子进程 `terminate()` 掉：`Daemon` 装了 SIGTERM
+它——那是"操作者的动作"，不是依赖。关窗时把子进程 `terminate()` 掉：`Daemon` 装了 SIGTERM
 处理器，POSIX 上优雅收尾；Windows 没有 SIGTERM（是硬杀），会话进程由作业对象兜底。
+
+**就绪 = 连得上**（`Client.connect` 自己重连到超时）——不需要任何就绪文件。
 """
 
 from __future__ import annotations
@@ -15,10 +17,10 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 from ...foundation.logs import configure, get_logger
+from ...transport.errors import TransportError
 from ...transport.pipe import pipe_address
 from . import NAME, runtime_dir
 
@@ -26,9 +28,6 @@ _logger = get_logger("example.daemon_test")
 
 _DAEMON_MODULE = "agentic_tty.daemon"
 """守护进程的模块名。**只是个字符串**——拉起它不等于 import 它。"""
-_READY_TIMEOUT = 15.0
-"""等守护进程写 pid 的上限。"""
-_READY_POLL = 0.05
 
 
 def _child_env() -> dict[str, str]:
@@ -42,24 +41,9 @@ def _child_env() -> dict[str, str]:
     return env
 
 
-def _wait_ready(server: subprocess.Popen) -> bool:
-    """等守护进程写 pid（写 pid 就是"装好了"）；它先死了就直接放弃。"""
-    deadline = time.monotonic() + _READY_TIMEOUT
-    pid_path = runtime_dir() / "daemon.pid"
-    while time.monotonic() < deadline:
-        if pid_path.exists():
-            return True
-        if server.poll() is not None:
-            return False
-        time.sleep(_READY_POLL)
-    return False
-
-
 def main() -> int:
     configure()
-    pid_path = runtime_dir() / "daemon.pid"
-    # 上一轮硬杀（Windows 没有 SIGTERM）会留下陈旧 pid，会让"就绪"误判。
-    pid_path.unlink(missing_ok=True)
+    address = pipe_address(NAME, runtime_dir())
     server = subprocess.Popen(
         [sys.executable, "-m", _DAEMON_MODULE, "--name", NAME],
         env=_child_env(),
@@ -67,12 +51,15 @@ def main() -> int:
         stderr=sys.stderr,
     )
     try:
-        if not _wait_ready(server):
-            _logger.error("守护进程没起来（见上面的日志）")
-            return 1
-        from .gui import main as run_gui  # 起不来就不必拉 Tk
+        from .gui import main as run_gui  # 连不上就不必拉 Tk
 
-        return run_gui(pipe_address(NAME, runtime_dir()))
+        try:
+            return run_gui(address)
+        except TransportError as exc:
+            # 连不上说明确实没有可用的守护进程：子进程起不来，或它在别处被顶掉了。
+            # （已经有一个同名守护进程在跑时它的管道是连得上的，不会走到这里。）
+            _logger.error("连不上守护进程 %s: %s（子进程返回码 %s）", address, exc, server.poll())
+            return 1
     finally:
         server.terminate()
         try:
@@ -80,8 +67,6 @@ def main() -> int:
         except subprocess.TimeoutExpired:
             server.kill()
             server.wait(timeout=5.0)
-        # 硬杀时守护进程来不及自己删 pid（POSIX 上它是优雅收尾，这一步是空操作）。
-        pid_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

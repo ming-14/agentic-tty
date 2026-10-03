@@ -128,11 +128,6 @@ def test_fake_handler_satisfies_the_seam():
     assert isinstance(FakeHandler(), RequestHandler)
 
 
-def test_startup_writes_pid(tmp_path):
-    with running(tmp_path) as (daemon, _handler, _replies):
-        assert daemon.pid_path.read_text(encoding="utf-8").isdigit()
-
-
 def test_second_daemon_on_the_same_lock_is_rejected(tmp_path):
     """单实例是硬要求：两个守护进程会各自维护互斥的会话坐标。
 
@@ -173,7 +168,7 @@ def test_start_failure_rolls_back_the_lock(tmp_path):
     )
     with pytest.raises(RuntimeError):
         broken.start()
-    assert not broken.pid_path.exists()
+    assert not broken.running
 
     healthy = Daemon(
         config, FakeHandler, on_reply=lambda _r: None, check_dependencies=lambda: None
@@ -254,12 +249,10 @@ def test_handler_poll_crash_does_not_kill_the_loop(tmp_path):
         assert replies[0].answer == "answer:ping"
 
 
-def test_stop_shuts_the_handler_down_and_removes_pid(tmp_path):
+def test_stop_shuts_the_handler_down(tmp_path):
     with running(tmp_path) as (daemon, handler, _replies):
-        pid_path = daemon.pid_path
-        assert pid_path.exists()
+        assert daemon.running
     assert handler.shutdown_called
-    assert not pid_path.exists()
     assert not daemon.running
 
 

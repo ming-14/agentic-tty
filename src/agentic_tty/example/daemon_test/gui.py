@@ -408,7 +408,11 @@ class App:
 
 def main(address: str) -> int:
     root = tk.Tk()
-    app = App(root, address)
+    try:
+        app = App(root, address)  # 连不上会抛 TransportError，交给入口去报
+    except Exception:
+        root.destroy()  # 别留一个空窗口
+        raise
     root.protocol("WM_DELETE_WINDOW", app.on_close)
     root.mainloop()
     return 0

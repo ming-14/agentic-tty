@@ -2,9 +2,9 @@
 
 **它没有业务代码**，也不实现网络。它管三件事：
 
-1. **自身的生命周期**：装配顺序即依赖顺序——取单实例锁 → 依赖检查（由入口注入）→
-   数据目录与日志 → 构造请求处理层 → 挂接入点 → 写 pid → 装信号 → 进循环；每一步
-   都能回滚，停止时逆序收尾并带整体超时兜底。
+1. **自身的生命周期**：装配顺序即依赖顺序——取单实例锁 → 依赖检查（由装配层注入）→
+   数据目录与日志 → 构造请求处理层 → 挂接入点 → 装信号 → 进循环；每一步都能回滚，
+   停止时逆序收尾并带整体超时兜底。
 2. **承载核心层**：把 `core` 装进这个进程，并做唯一的**所有者线程**。
 3. **转发**：接入点（本机管道）上的请求进接缝，答复按请求身份写回它来的那条连接。
 
@@ -27,7 +27,6 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
 
 from ..foundation.logs import add_rotating_file, get_logger
 from ..foundation.paths import default_runtime_dir
@@ -113,11 +112,6 @@ class Daemon:
     # ════════════════════════════════════════════════════════════
 
     @property
-    def pid_path(self) -> Path:
-        """就绪后写入自身 pid，供外部确认"它起来了吗"。"""
-        return self._dir / "daemon.pid"
-
-    @property
     def running(self) -> bool:
         return self._started and not self._stop_requested.is_set()
 
@@ -173,13 +167,12 @@ class Daemon:
             self._prepare_dirs()
             self._build_handler()
             self._mount_access_point()
-            self._write_pid()
             self._install_signals()
         except Exception:
             self._rollback()
             raise
         self._started = True
-        _logger.info("守护进程就绪 pid=%s dir=%s", os.getpid(), self._dir)
+        _logger.info("守护进程已起来 pid=%s dir=%s", os.getpid(), self._dir)
 
     def _acquire_lock(self) -> None:
         # 最早取锁：两个进程同时初始化会各自维护互斥的会话坐标。
@@ -203,7 +196,7 @@ class Daemon:
     def _mount_access_point(self) -> None:
         """挂接入点——配置里给了管道名才挂（它是守护进程对外的唯一口子）。
 
-        端点落在**运行时目录**里（与 pid / 锁同一处），所以地址要带上它。
+        端点落在**运行时目录**里（与锁同一处），所以地址要带上它。
         """
         name = self._config.listen
         if name is None:
@@ -213,9 +206,6 @@ class Daemon:
             address, on_request=self.submit, on_input=self.submit_input
         )
         self._access_point.open()
-
-    def _write_pid(self) -> None:
-        self.pid_path.write_text(str(os.getpid()), encoding="utf-8")
 
     def _install_signals(self) -> None:
         self._signals = install_shutdown_handler(self._on_signal)
@@ -231,7 +221,6 @@ class Daemon:
 
     def _rollback(self) -> None:
         """逆序回滚：装了什么就撤什么。每个撤除都幂等，所以不必记账。"""
-        self._remove_pid()
         self._restore_signals()
         if self._access_point is not None:
             self._access_point.close()
@@ -386,7 +375,6 @@ class Daemon:
         else:
             handler = self._handler
             finished = True if handler is None else self._shutdown(handler, budget)
-        self._remove_pid()
         self._restore_signals()
         if self._access_point is not None:
             self._access_point.close()
@@ -444,9 +432,6 @@ class Daemon:
         thread.start()
         thread.join(max(0.0, budget))
         return not thread.is_alive()
-
-    def _remove_pid(self) -> None:
-        self.pid_path.unlink(missing_ok=True)
 
     def _release_lock(self) -> None:
         if self._lock is not None:

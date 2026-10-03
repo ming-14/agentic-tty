@@ -3,11 +3,15 @@
 **只碰 `protocol` / `transport`**——不认识 core，也不认识 daemon。读在**后台线程**里做
 （Tk 主线程要跑 `mainloop`、不能阻塞），凑齐的答复经 `on_reply` 交出去，界面在 tick 里
 取。请求与答复靠 `mid` 关联；答复可能是控制帧（文本）也可能是字节帧（位图 / 字节流）。
+
+**连不上就重连**：守护进程可能还在起（监听还没挂上）。**能连上就是"它装好了"**——挂监听
+排在"建请求处理层"之后，所以连得上就一定服务得了，不需要任何就绪文件。
 """
 
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -32,6 +36,10 @@ _logger = get_logger("example.daemon_test.client")
 _POLL = 0.05
 """recv 的等待粒度；也是读线程"该收工了吗"的响应粒度。"""
 _BUFFER = 1 << 16
+_CONNECT_TRY = 0.2
+"""单次连接尝试的等待上限——连不上就再来一次，别把整个预算花在一次上。"""
+_RETRY_INTERVAL = 0.05
+"""两次尝试之间的间隔。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,9 +65,19 @@ class Client:
     def connected(self) -> bool:
         return self._connection is not None
 
-    def connect(self, timeout: float = 5.0) -> None:
-        """连上去并起读线程。"""
-        self._connection = PipeTransport().connect(parse_address(self._address), timeout=timeout)
+    def connect(self, timeout: float = 15.0) -> None:
+        """连上去并起读线程。**连不上就重试到超时**（守护进程可能还在起）。"""
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                self._connection = PipeTransport().connect(
+                    parse_address(self._address), timeout=_CONNECT_TRY
+                )
+                break
+            except TransportError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(_RETRY_INTERVAL)
         self._reader = threading.Thread(target=self._read_loop, name="daemon-client", daemon=True)
         self._reader.start()
 
