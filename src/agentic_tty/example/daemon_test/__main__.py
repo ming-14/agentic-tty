@@ -52,8 +52,9 @@ def _wait_ready(server: subprocess.Popen) -> bool:
 
 def main() -> int:
     configure()
+    pid_path = runtime_dir() / "daemon.pid"
     # 上一轮硬杀（Windows 没有 SIGTERM）会留下陈旧 pid，会让"就绪"误判。
-    (runtime_dir() / "daemon.pid").unlink(missing_ok=True)
+    pid_path.unlink(missing_ok=True)
     server = subprocess.Popen(
         [sys.executable, "-m", "agentic_tty.example.daemon_test.server"],
         env=_child_env(),
@@ -74,6 +75,8 @@ def main() -> int:
         except subprocess.TimeoutExpired:
             server.kill()
             server.wait(timeout=5.0)
+        # 硬杀时守护进程来不及自己删 pid（POSIX 上它是优雅收尾，这一步是空操作）。
+        pid_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
