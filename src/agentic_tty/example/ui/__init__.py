@@ -4,8 +4,6 @@
 （`core_test/render.py`）。所以换任何一台台子都能直接用。
 """
 
-from __future__ import annotations
-
 from .bars import InputBar, SessionBar, SizeBar, StatusBar
 from .common import HINT_COLOR, ask_save, set_text, svg_size
 from .notebook import DetailNotebook, Page, ViewRange

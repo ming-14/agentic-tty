@@ -6,8 +6,6 @@
 `SessionRunner` 代劳。界面细节见 `gui.py`。
 """
 
-from __future__ import annotations
-
 import sys
 
 from ...foundation.logs import configure

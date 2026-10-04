@@ -1,7 +1,5 @@
 """各层的配置对象：**字段默认值就是配置常量**——没有别的地方可配。"""
 
-from __future__ import annotations
-
 from dataclasses import FrozenInstanceError
 
 import pytest

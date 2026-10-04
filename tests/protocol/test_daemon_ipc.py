@@ -1,7 +1,5 @@
 """守护进程 ↔ 下游消费者：uid 级契约。"""
 
-from __future__ import annotations
-
 import pytest
 
 from agentic_tty.core.ports import Stream

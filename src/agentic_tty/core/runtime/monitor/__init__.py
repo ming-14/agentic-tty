@@ -4,8 +4,6 @@
 免得把作业对象的代码拆到两个文件里。
 """
 
-from __future__ import annotations
-
 from .probe import WindowInfo, windows_of
 
 __all__ = ["WindowInfo", "windows_of"]

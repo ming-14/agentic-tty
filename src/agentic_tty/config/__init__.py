@@ -9,8 +9,6 @@
 `transport` 不再自带前缀。
 """
 
-from __future__ import annotations
-
 from .constants import DEFAULT_INSTANCE, PREFIX, endpoint_name, lock_name, runtime_dir
 from .consumer import ConsumerConfig
 from .daemon import DaemonConfig

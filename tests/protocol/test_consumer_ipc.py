@@ -1,7 +1,5 @@
 """下游消费者 ↔ 它的客户端：sid 级契约。"""
 
-from __future__ import annotations
-
 import pytest
 
 from agentic_tty.protocol.contracts.consumer_ipc import (

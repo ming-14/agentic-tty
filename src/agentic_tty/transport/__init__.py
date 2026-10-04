@@ -15,5 +15,3 @@
 `protocol.frame.FrameReader`——它只要求装配方注入一个"返回 bytes 的函数"，所以
 传输不需要为帧做任何事，`protocol` 也不需要认识连接。
 """
-
-from __future__ import annotations

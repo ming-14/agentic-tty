@@ -1,7 +1,5 @@
 """响应约定：通用底座，两条边界共用。"""
 
-from __future__ import annotations
-
 import pytest
 
 from agentic_tty.protocol.envelope import make_request

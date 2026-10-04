@@ -1,7 +1,5 @@
 """`localpty` 的终端模型适配测试（纯逻辑，不需要真 PTY）。"""
 
-from __future__ import annotations
-
 from agentic_tty.core.runtime.local_pty.screen import PyteScreen
 from agentic_tty.core.runtime.local_pty.svg import render_svg
 

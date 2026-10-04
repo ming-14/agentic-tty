@@ -4,8 +4,6 @@
 错误都是**可预期**的结果，不是内部缺陷——调用方拿到就应断开这条连接。
 """
 
-from __future__ import annotations
-
 from ..foundation.errors import AgenticTtyError
 
 

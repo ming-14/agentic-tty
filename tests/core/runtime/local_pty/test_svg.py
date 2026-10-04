@@ -1,7 +1,5 @@
 """`localpty` 屏幕渲染测试（纯逻辑）。"""
 
-from __future__ import annotations
-
 import pytest
 
 from agentic_tty.core.runtime.local_pty.screen import PyteScreen

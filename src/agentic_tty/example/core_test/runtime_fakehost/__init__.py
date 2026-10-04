@@ -9,8 +9,6 @@
 "摄入与日志相邻"、视图链路、生命周期这类核心语义，出不了真实的屏幕。
 """
 
-from __future__ import annotations
-
 from .fake_host import FakeHost, FakeProgram
 
 __all__ = ["FakeHost", "FakeProgram"]

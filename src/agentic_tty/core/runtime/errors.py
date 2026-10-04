@@ -1,7 +1,5 @@
 """宿主实现错误。"""
 
-from __future__ import annotations
-
 from ...foundation.errors import AgenticTtyError
 
 

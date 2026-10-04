@@ -1,7 +1,5 @@
 """守护进程错误。"""
 
-from __future__ import annotations
-
 from ..foundation.errors import AgenticTtyError
 
 
