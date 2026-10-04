@@ -63,12 +63,14 @@ class Runtime:
         session = self._registry.create(spec)
         try:
             runner = self._runner_factory(session)
+            # 先入表再启动：`start()` 半途抛错时 `close()` 才找得到这个驱动去停，
+            # 否则它已经起的读写线程没人收。
+            self._runners[session.uid] = runner
             runner.start()
         except Exception:
             # 走两阶段释放：宿主关闭可能长时间阻塞，不能压在调用线程上。
             self.close(session.uid)
             raise
-        self._runners[session.uid] = runner
         return session
 
     def get(self, uid: str) -> Session:
@@ -102,7 +104,10 @@ class Runtime:
     # ── 释放（两阶段）─────────────────────────────────────────
 
     def close(self, uid: str) -> None:
-        """摘除一个会话，并把释放交给别的线程（**不在调用线程上等宿主关闭**）。"""
+        """摘除一个会话，并把释放交给别的线程（**不在调用线程上等宿主关闭**）。
+
+        未知 uid 抛 `SessionNotFound`（与 `SessionRegistry.detach` 同口径）。
+        """
         self._release(self._registry.detach(uid), self._runners.pop(uid, None))
 
     def close_all(self, *, timeout: float = DEFAULT_RELEASE_TIMEOUT) -> None:

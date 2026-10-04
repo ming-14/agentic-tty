@@ -31,8 +31,10 @@ _ALLOWED: dict[str, frozenset[str]] = {
 
 # 受限第三方 → 只允许出现在这些目录前缀下
 _ALLOWED_THIRD_PARTY: dict[str, frozenset[str]] = {
-    # 原生扩展只允许 pywezterm 宿主那个格子碰——纯子进程场景因此不拖进 pywezterm
+    # 原生扩展只允许各自的宿主格子碰——纯子进程场景因此不拖进 pywezterm
     "pywezterm": frozenset({"core/runtime/pywezterm_pty"}),
+    # 位图渲染：宿主出 PNG 一份，验证台把 SVG 栅格化给 Tk 显示一份（Tk 没有 SVG 解码器）
+    "resvg_py": frozenset({"core/runtime/local_pty", "example/ui"}),
     # web 框架只允许出现在 web 层
     "fastapi": frozenset({"web"}),
     "starlette": frozenset({"web"}),

@@ -69,7 +69,10 @@ class HostLifecycle(Protocol):
         ...
 
     def try_wait(self) -> int | None:
-        """非阻塞查询退出码；None 表示仍在运行。"""
+        """非阻塞查询退出码；None 表示仍在运行。
+
+        宿主已释放后不再作答，一律返 `None`——退出码在会话停止时就已经取走。
+        """
         ...
 
     def poll_eof(self, stream: Stream = Stream.STDOUT) -> bool:

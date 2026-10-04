@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
+from agentic_tty.core.errors import SessionNotFound
 from agentic_tty.core.ports import SUBPROCESS, SessionSpec, Stream
 from agentic_tty.core.runtime.input_queue import InputVerdict
 from agentic_tty.core.runtime.runner import SessionRunner
@@ -58,6 +61,38 @@ def test_close_detaches_synchronously():
     assert runtime.find(session.uid) is None
     assert runtime.runner(session.uid) is None
     runtime.close_all()
+
+
+def test_close_unknown_uid_raises():
+    """未知 uid 报 `SessionNotFound`，不静默当成功。"""
+    runtime = _runtime()
+    with pytest.raises(SessionNotFound):
+        runtime.close("no-such-uid")
+
+
+class _BoomRunner:
+    """`start()` 必炸的驱动替身。"""
+
+    def __init__(self) -> None:
+        self.stopped = False
+
+    def start(self) -> None:
+        raise RuntimeError("boom")
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
+def test_create_stops_the_driver_when_start_fails():
+    """`start()` 半途抛错：会话收掉，驱动也要停——已起的读写线程不能没人收。"""
+    registry = SessionRegistry(lambda spec: FakeHost(spec, FakeProgram(exit_after=None)))
+    runner = _BoomRunner()
+    runtime = Runtime(registry, runner_factory=lambda session: runner)
+    with pytest.raises(RuntimeError):
+        runtime.create(SessionSpec(mode=SUBPROCESS, argv=("x",)))
+    runtime.close_all()  # 释放走的是别的线程，这里等它落地
+    assert runtime.list() == []
+    assert runner.stopped
 
 
 def test_send_input_reaches_the_driver():

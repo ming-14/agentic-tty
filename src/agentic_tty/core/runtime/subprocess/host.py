@@ -118,6 +118,8 @@ class SubprocessHost:
         return None if self._closed else self._proc.pid
 
     def read(self, max_bytes: int = 65536, timeout: float | None = 0.2) -> bytes:
+        if self._closed:  # 管道已关，`fileno()` 会抛
+            return b""
         return _read_pipe(self._proc.stdout, max_bytes, timeout)
 
     def write(self, data: bytes) -> None:
@@ -131,6 +133,8 @@ class SubprocessHost:
             pass  # 子进程已关 stdin：不是错误
 
     def try_wait(self) -> int | None:
+        if self._closed:
+            return None
         return self._proc.poll()
 
     def poll_eof(self, stream: Stream = Stream.STDOUT) -> bool:
@@ -165,6 +169,8 @@ class SubprocessHost:
     # ── ProcessHost ────────────────────────────────────────────
 
     def read_stderr(self, max_bytes: int = 65536, timeout: float | None = 0.2) -> bytes:
+        if self._closed:
+            return b""
         return _read_pipe(self._proc.stderr, max_bytes, timeout)
 
     def close_stdin(self) -> None:

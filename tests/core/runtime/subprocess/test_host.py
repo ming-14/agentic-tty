@@ -49,6 +49,26 @@ def test_blocking_read_returns_eof_after_exit():
         host.close()
 
 
+def test_read_returns_empty_after_close():
+    """关闭后两路都读空——与 `pty` / `local_pty` 同口径，不抛。"""
+    host = SubprocessHost(_spec(_py("import time;time.sleep(30)")))
+    host.kill()
+    host.close()
+    assert host.read(timeout=0.05) == b""
+    assert host.read_stderr(timeout=0.05) == b""
+
+
+def test_try_wait_answers_none_after_close():
+    """关闭后不再作答——与 `pty` / `local_pty` 同口径（原语关句柄后也答不上来）。"""
+    host = SubprocessHost(_spec(_py("import time;time.sleep(30)")))
+    host.kill()
+    try:
+        assert _wait_exit(host, 3.0) is not None  # 先等它真的退出，退出码此时已经拿到
+    finally:
+        host.close()
+    assert host.try_wait() is None
+
+
 def test_timed_read_returns_empty_without_data():
     host = SubprocessHost(_spec(_py("import time;time.sleep(5)")))
     try:
