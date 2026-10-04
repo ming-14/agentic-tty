@@ -10,10 +10,9 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 
-from ..config import DaemonConfig, endpoint_name, runtime_dir
+from ..config import DaemonConfig
 from ..core.runtime.host_factory import check_dependencies
 from ..foundation.logs import configure, get_logger
-from ..transport.pipe import pipe_address
 from .handler import RequestHandler
 from .kernel import KernelHandler
 from .server import Daemon
@@ -21,26 +20,14 @@ from .server import Daemon
 _logger = get_logger("daemon.assembly")
 
 
-def endpoint_address(config: DaemonConfig) -> str:
-    """配置指向的那个接入点地址——与 `Daemon` 实际挂的是同一个（含运行时目录那一段）。
-
-    `mount_endpoint` 为假时没有接入点，返回空串。
-    """
-    if not config.mount_endpoint:
-        return ""
-    directory = config.runtime_dir or runtime_dir(config.name)
-    return pipe_address(endpoint_name(config.name), directory)
-
-
 def build(
-    config: DaemonConfig, *, handler_factory: Callable[[], RequestHandler] | None = None
+    config: DaemonConfig, *, handler_factory: Callable[[str], RequestHandler] | None = None
 ) -> Daemon:
     """按配置装配守护进程：请求处理层（core 在里面）＋ 接入点。
 
-    不给 `handler_factory` 就用自带的 `KernelHandler`。
+    不给 `handler_factory` 就用自带的 `KernelHandler`；地址由 `Daemon` 算好后交给它。
     """
-    address = endpoint_address(config)
-    factory = handler_factory or (lambda: KernelHandler(endpoint=address))
+    factory = handler_factory or (lambda endpoint: KernelHandler(endpoint=endpoint))
     return Daemon(config, factory, check_dependencies=check_dependencies)
 
 

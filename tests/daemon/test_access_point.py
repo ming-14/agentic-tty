@@ -6,14 +6,15 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable, Iterator
 from uuid import uuid4
 
 import pytest
 
-from agentic_tty.daemon.access_point import AccessPoint, ByteChunk, WireRequest
-from agentic_tty.daemon.handler import Reply
+from agentic_tty.daemon.access_point import AccessPoint, ByteChunk, WireRequest, _Connection
+from agentic_tty.daemon.handler import Delivery, Reply
 from agentic_tty.protocol.contracts.daemon_ipc import STREAM_STDIN, STREAM_STDOUT
 from agentic_tty.protocol.envelope import Envelope, from_json, make_request, to_json
 from agentic_tty.protocol.frame import (
@@ -24,6 +25,7 @@ from agentic_tty.protocol.frame import (
     encode_control,
 )
 from agentic_tty.protocol.response import ok_response
+from agentic_tty.transport.errors import ConnectionClosed
 from agentic_tty.transport.pipe import PipeTransport, pipe_address
 from agentic_tty.transport.stream import Connection, parse_address
 
@@ -91,7 +93,7 @@ def test_request_gets_its_answer_back(point: tuple[AccessPoint, _Seam]):
         assert _pump_until(access_point, lambda: len(seam.requests) == 1)
         request = seam.requests[0]
         answer = ok_response("ping", request.envelope.mid, {"pong": True})
-        assert access_point.send(Reply(request=request, answer=answer)) is True
+        assert access_point.send(Reply(request=request, answer=answer)) is Delivery.SENT
 
         frames = _read_frames(connection)
         assert isinstance(frames[0], ControlFrame)
@@ -131,7 +133,7 @@ def test_byte_answer_goes_back_as_a_bytes_frame(point: tuple[AccessPoint, _Seam]
         assert _pump_until(access_point, lambda: len(seam.requests) == 1)
         request = seam.requests[0]
         chunk = ByteChunk(tag=STREAM_STDOUT, key=request.envelope.mid, data=b"\x00\x01raw")
-        assert access_point.send(Reply(request=request, answer=chunk)) is True
+        assert access_point.send(Reply(request=request, answer=chunk)) is Delivery.SENT
 
         frames = _read_frames(connection)
         assert frames == [
@@ -144,7 +146,10 @@ def test_byte_answer_goes_back_as_a_bytes_frame(point: tuple[AccessPoint, _Seam]
 def test_unknown_request_is_not_routed(point: tuple[AccessPoint, _Seam]):
     """不是本接入点发出的请求，`send` 要明确说"不是我的"。"""
     access_point, _seam = point
-    assert access_point.send(Reply(request=object(), answer=ok_response("x", "m"))) is False
+    assert (
+        access_point.send(Reply(request=object(), answer=ok_response("x", "m")))
+        is Delivery.NOT_MINE
+    )
 
 
 def test_two_connections_do_not_mix(point: tuple[AccessPoint, _Seam]):
@@ -163,7 +168,7 @@ def test_two_connections_do_not_mix(point: tuple[AccessPoint, _Seam]):
             for name, connection in (("a", first), ("b", second)):
                 request = by_type[name]
                 answer = ok_response(name, request.envelope.mid, {"who": name})
-                assert access_point.send(Reply(request=request, answer=answer)) is True
+                assert access_point.send(Reply(request=request, answer=answer)) is Delivery.SENT
                 frames = _read_frames(connection)
                 assert from_json(frames[0].data).payload.output["data"] == {"who": name}
         finally:
@@ -183,3 +188,68 @@ def test_malformed_envelope_drops_the_connection(point: tuple[AccessPoint, _Seam
         assert seam.requests == []
     finally:
         connection.close()
+
+
+class _DeadConnection:
+    """底层连接：一读就报对端关闭，并记录 `close()` 是否真的被调到。"""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    @property
+    def peer(self) -> str:
+        return "fake"
+
+    def recv(self, max_bytes: int = 65536, timeout: float | None = 0.2) -> bytes:
+        raise ConnectionClosed("对端断了")
+
+    def send(self, data: bytes) -> None:
+        pass
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_a_broken_connection_closes_its_underlying_handle():
+    """读出错时必须真的关掉底层句柄——只置 `closed` 标志会让 `close()` 变空转，句柄泄漏。"""
+    underlying = _DeadConnection()
+    connection = _Connection(underlying, outbox_bytes=1024)
+    assert connection.read() == []
+    assert connection.closed is True
+    assert underlying.closed is True
+
+
+class _BlockedConnection:
+    """底层连接：写一直阻塞（对端不读），用来把出站队列顶满。"""
+
+    def __init__(self) -> None:
+        self.gate = threading.Event()
+
+    @property
+    def peer(self) -> str:
+        return "blocked"
+
+    def recv(self, max_bytes: int = 65536, timeout: float | None = 0.2) -> bytes:
+        return b""
+
+    def send(self, data: bytes) -> None:
+        self.gate.wait()
+
+    def close(self) -> None:
+        self.gate.set()
+
+
+def test_a_full_outbox_is_refused_not_blocked():
+    """队列满了要**明确拒收**——既不阻塞调用方，也不丢字节。
+
+    字节账要把**正在写的那一帧**算进去，否则写线程一取走队列就空了，上限形同虚设。
+    """
+    underlying = _BlockedConnection()
+    connection = _Connection(underlying, outbox_bytes=8)
+    try:
+        assert connection.enqueue(b"1234") is True  # 队空：永远收下
+        assert connection.enqueue(b"5678") is True  # 4 + 4 = 8，刚好
+        assert connection.enqueue(b"9") is False  # 越界，拒收
+    finally:
+        connection.close()
+        connection.join_writer(2.0)

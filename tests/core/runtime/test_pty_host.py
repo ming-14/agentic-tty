@@ -24,13 +24,20 @@ def _pty_available() -> bool:
 pytestmark = pytest.mark.skipif(not _pty_available(), reason="pywezterm 不可用")
 
 
+_WAIT_LIMIT = 30.0
+"""等条件的时限（排空 / 作业里出现成员）。
+
+判定看条件，秒表只用来兜真正的回归：机器忙时进程起得慢，按固定秒表卡会把"慢"
+误报成"回归"。"""
+
+
 def _echo_argv() -> list[str]:
     if sys.platform == "win32":
         return ["cmd.exe", "/c", "echo pty-hello"]
     return ["/bin/sh", "-c", "echo pty-hello"]
 
 
-def _drain(host, deadline_s: float = 5.0) -> bytes:
+def _drain(host, deadline_s: float = _WAIT_LIMIT) -> bytes:
     """带截止时间地读空。
 
     PTY 在进程退出后不返回 EOF，不能无限等；排空由宿主判定（`poll_eof`），
@@ -145,11 +152,13 @@ def test_pty_grandchild_forked_immediately_stays_in_job():
     )
     host = PtyHost(SessionSpec(mode=PTY, argv=[sys.executable, "-c", code]))
     try:
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and not host.descendants():
+        members: tuple[int, ...] = ()
+        deadline = time.monotonic() + _WAIT_LIMIT
+        while not members and time.monotonic() < deadline:
+            members = host.descendants()
             time.sleep(0.05)
         # 作业里恰好是"根 + 孙进程"：孙进程没逃逸，conhost 也没混进来
-        assert len(host.descendants()) == 1
+        assert len(members) == 1, f"作业成员 {members}，根 pid {host.pid}"
     finally:
         host.kill()
         host.close()

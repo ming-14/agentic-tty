@@ -18,14 +18,14 @@ class DaemonConfig:
 
     name: str = DEFAULT_INSTANCE
     """**实例名**：单实例锁名、运行时目录名、接入点地址都由它派生。"""
-    runtime_dir: Path | None = None
+    directory: Path | None = None
     """运行时目录（锁 / 端点 / 日志）；留空取 `config.runtime_dir(name)`。"""
 
     mount_endpoint: bool = True
     """是否挂接入点。`False` 留给进程内嵌入 / 单测——它们不经本机管道接入。"""
 
     tick_interval: float = 0.005
-    """所有者循环每轮之间的间隔。"""
+    """接入点最多隔多久被轮询一次；会话输出会立刻唤醒循环，不受它限制。"""
     drain_timeout: float = 5.0
     """draining 阶段最多给在途命令多久跑完。"""
     stop_timeout: float = 10.0

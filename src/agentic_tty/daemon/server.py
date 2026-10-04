@@ -30,7 +30,7 @@ from ..foundation.logs import add_rotating_file, get_logger
 from ..transport.pipe import pipe_address
 from .access_point import AccessPoint
 from .errors import AlreadyRunning, DaemonError, NotStarted
-from .handler import Reply, RequestHandler
+from .handler import Delivery, Reply, RequestHandler
 from .platform.signals import InstalledSignals, install_shutdown_handler
 
 _logger = get_logger("daemon.server")
@@ -75,7 +75,7 @@ class Daemon:
     def __init__(
         self,
         config: DaemonConfig,
-        handler_factory: Callable[[], RequestHandler],
+        handler_factory: Callable[[str], RequestHandler],
         *,
         check_dependencies: Callable[[], None],
         on_reply: Callable[[Reply], None] | None = None,
@@ -84,7 +84,11 @@ class Daemon:
         self._handler_factory = handler_factory
         self._on_reply = on_reply
         self._check_dependencies = check_dependencies
-        self._dir = config.runtime_dir or runtime_dir(config.name)
+        self._dir = config.directory or runtime_dir(config.name)
+        # 地址只在这里算一次：装配层与处理层都不再预测它（预测错了只会静默连不上）。
+        self._address = (
+            pipe_address(endpoint_name(config.name), self._dir) if config.mount_endpoint else ""
+        )
 
         self._lock: InstanceLock | None = None
         self._handler: RequestHandler | None = None
@@ -109,6 +113,11 @@ class Daemon:
     @property
     def running(self) -> bool:
         return self._started and not self._stop_requested.is_set()
+
+    @property
+    def address(self) -> str:
+        """接入点地址（由实例名派生）；不挂接入点时为空串。"""
+        return self._address
 
     def request_stop(self) -> None:
         """请求停止（信号处理器与外部调用都走这里）。"""
@@ -153,11 +162,13 @@ class Daemon:
         """按固定顺序装配；任一步失败就逆序回滚，绝不留半个进程。"""
         if self._started:
             raise DaemonError("守护进程已启动")
-        # 复位：上一次 stop() 之后这些标志还留着，不复位会让 run() 一进去就退出。
+        # 复位：上一轮的残留不能带进这一轮——停止标志不复位会让 run() 一进去就退出，
+        # 入站队列不清则会把上一轮没排空的请求投给新的处理层。
         self._stop_requested.clear()
         self._stopped.clear()
         self._shutdown_done = False
         self._loop_ran = False
+        self._inbound = queue.Queue(self._config.inbound_maxsize)
         try:
             self._acquire_lock()
             self._check_dependencies()
@@ -188,15 +199,14 @@ class Daemon:
             )
 
     def _build_handler(self) -> None:
-        self._handler = self._handler_factory()
+        """建请求处理层，并把**本进程的接入点地址**交给它——它要在状态里报这个，猜不得。"""
+        self._handler = self._handler_factory(self._address)
 
     def _mount_access_point(self) -> None:
-        """挂接入点。地址由**实例名**算出来（`endpoint_name()` 加前缀 ＋ 运行时目录）。"""
         if not self._config.mount_endpoint:
             return
-        address = pipe_address(endpoint_name(self._config.name), self._dir)
         self._access_point = AccessPoint(
-            address, on_request=self._serve, on_input=self._serve_input
+            self._address, on_request=self._serve, on_input=self._serve_input
         )
         self._access_point.open()
 
@@ -262,7 +272,7 @@ class Daemon:
         self._loop_ran = True
         try:
             while not self._stop_requested.is_set():
-                self._wait_for_work()
+                self._wait_for_work(handler)
                 self._drain_inbound(handler)
                 self._pump_handler(handler)
                 self._deliver(self._poll_handler(handler))
@@ -270,16 +280,25 @@ class Daemon:
         finally:
             self._stopped.set()
 
-    def _wait_for_work(self) -> None:
-        """这一轮的空闲等待。
+    def _wait_for_work(self, handler: RequestHandler) -> None:
+        """这一轮的空闲等待：**被"有活"驱动**，不靠定时器。
 
-        接入点在场就在它的 `accept` 上等（顺带读一轮连接，请求当轮就处理掉）；
-        没挂接入点（进程内消费者）就纯定时。
+        先等处理层的活（会话输出一到就立刻返回）；再**非阻塞**收一轮接入点（新连接 /
+        连接上的请求），`tick_interval` 只剩"接入点最多隔多久被看一眼"。断掉的连接在这里
+        报给处理层——写线程也会关连接，所以统一由所有者线程转达。
         """
-        if self._access_point is not None:
-            self._access_point.pump(self._config.tick_interval)
-        else:
-            time.sleep(self._config.tick_interval)
+        try:
+            handler.wait(self._config.tick_interval)
+        except Exception:
+            _logger.exception("空闲等待失败（已隔离，循环继续）")
+        if self._access_point is None:
+            return
+        self._access_point.pump(0.0)
+        for connection in self._access_point.take_closed():
+            try:
+                handler.on_disconnected(connection)
+            except Exception:
+                _logger.exception("注销断连订阅失败（已隔离，循环继续）")
 
     def _drain_inbound(self, handler: RequestHandler, limit: int | None = _INBOUND_BATCH) -> None:
         """把**跨线程**投进来的请求与上行字节交给处理层。**只在所有者线程上跑。**
@@ -357,14 +376,21 @@ class Daemon:
         整段都兜住异常——它在所有者线程上跑，一次交答复失败不能炸穿循环。
         """
         try:
-            if self._access_point is not None and self._access_point.send(reply):
-                return
-            if self._on_reply is None:
-                _logger.warning("答复无处可去（没挂接入点，也没给 on_reply）")
-                return
-            self._on_reply(reply)
+            self._handler_ready().on_reply(reply.request, self._route(reply))
         except Exception:
             _logger.exception("交回答复失败（已隔离，循环继续）")
+
+    def _route(self, reply: Reply) -> Delivery:
+        """把答复交给消费者，返回投递结果：接入点在场就写回它来的那条连接，否则走 `on_reply`。"""
+        if self._access_point is not None:
+            delivery = self._access_point.send(reply)
+            if delivery is not Delivery.NOT_MINE:
+                return delivery
+        if self._on_reply is None:
+            _logger.warning("答复无处可去（没挂接入点，也没给 on_reply）")
+            return Delivery.GONE
+        self._on_reply(reply)
+        return Delivery.SENT
 
     # ════════════════════════════════════════════════════════════
     # 收尾

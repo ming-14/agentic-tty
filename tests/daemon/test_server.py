@@ -17,8 +17,10 @@ import pytest
 
 from agentic_tty.config import DaemonConfig
 from agentic_tty.daemon.errors import AlreadyRunning, DaemonError, NotStarted
-from agentic_tty.daemon.handler import Reply, RequestHandler
+from agentic_tty.daemon.handler import Delivery, Reply, RequestHandler
 from agentic_tty.daemon.server import Daemon, SubmitOutcome
+from agentic_tty.transport.pipe import PipeTransport
+from agentic_tty.transport.stream import parse_address
 
 _DEADLINE = 5.0
 
@@ -29,6 +31,9 @@ class FakeHandler:
     def __init__(self) -> None:
         self.inputs: list[tuple[str, bytes]] = []
         self.pumps = 0
+        self.waits = 0
+        self.deliveries: list[tuple[object, Delivery]] = []
+        self.disconnects: list[object] = []
         self.shutdown_called = False
         self.shutdown_block: float | None = None
         self.deferred: list[object] = []
@@ -66,6 +71,16 @@ class FakeHandler:
         if self.pump_boom:
             raise RuntimeError("pump 故意炸")
 
+    def wait(self, timeout: float) -> None:
+        self.waits += 1
+        time.sleep(timeout)
+
+    def on_reply(self, request: object, delivery: Delivery) -> None:
+        self.deliveries.append((request, delivery))
+
+    def on_disconnected(self, connection: object) -> None:
+        self.disconnects.append(connection)
+
     def shutdown(self) -> None:
         if self.shutdown_block is not None:
             time.sleep(self.shutdown_block)
@@ -84,14 +99,14 @@ def make_daemon(
     replies: list[Reply] = []
     config = DaemonConfig(
         name=f"agentic-tty-test-{uuid4().hex[:8]}",
-        runtime_dir=tmp_path / "run",
+        directory=tmp_path / "run",
         write_log_file=False,
         tick_interval=0.001,
         **overrides,
     )
     daemon = Daemon(
         config,
-        lambda: handler,
+        lambda _endpoint: handler,
         on_reply=replies.append,
         check_dependencies=check or (lambda: None),
     )
@@ -124,27 +139,36 @@ def wait_for(predicate: Callable[[], bool], timeout: float = _DEADLINE) -> bool:
     return predicate()
 
 
+def _fake(_endpoint: str) -> FakeHandler:
+    """工厂：守护进程把接入点地址交给它，假处理层用不上这个。"""
+    return FakeHandler()
+
+
 def test_fake_handler_satisfies_the_seam():
     assert isinstance(FakeHandler(), RequestHandler)
+
+
+def test_address_is_empty_when_no_access_point_is_mounted(tmp_path):
+    """不挂接入点（进程内嵌入 / 单测）时没有地址——由 `Daemon` 一处算，别处不预测。"""
+    daemon, _handler, _replies = make_daemon(tmp_path, mount_endpoint=False)
+    assert daemon.address == ""
 
 
 def test_second_daemon_on_the_same_lock_is_rejected(tmp_path):
     """单实例是硬要求：两个守护进程会各自维护互斥的会话坐标。
 
-    用同一份配置（同 runtime_dir、同 name）——Windows 上锁名是全局命名空间、Linux 上
-    是 runtime_dir 里的锁文件，两边都靠"同一份配置"才能都撞上。
+    用同一份配置（同 directory、同 name）——Windows 上锁名是全局命名空间、Linux 上
+    是 directory 里的锁文件，两边都靠"同一份配置"才能都撞上。
     """
     config = DaemonConfig(
         name=f"agentic-tty-test-{uuid4().hex[:8]}",
-        runtime_dir=tmp_path / "run",
+        directory=tmp_path / "run",
         write_log_file=False,
     )
-    first = Daemon(config, FakeHandler, on_reply=lambda _r: None, check_dependencies=lambda: None)
+    first = Daemon(config, _fake, on_reply=lambda _r: None, check_dependencies=lambda: None)
     first.start()
     try:
-        other = Daemon(
-            config, FakeHandler, on_reply=lambda _r: None, check_dependencies=lambda: None
-        )
+        other = Daemon(config, _fake, on_reply=lambda _r: None, check_dependencies=lambda: None)
         with pytest.raises(AlreadyRunning):
             other.start()
         assert not other.running
@@ -156,23 +180,19 @@ def test_start_failure_rolls_back_the_lock(tmp_path):
     """依赖检查失败要能把已取的锁放掉，否则之后永远起不来。"""
     config = DaemonConfig(
         name=f"agentic-tty-test-{uuid4().hex[:8]}",
-        runtime_dir=tmp_path / "run",
+        directory=tmp_path / "run",
         write_log_file=False,
     )
 
     def boom() -> None:
         raise RuntimeError("缺原生扩展")
 
-    broken = Daemon(
-        config, FakeHandler, on_reply=lambda _r: None, check_dependencies=boom
-    )
+    broken = Daemon(config, _fake, on_reply=lambda _r: None, check_dependencies=boom)
     with pytest.raises(RuntimeError):
         broken.start()
     assert not broken.running
 
-    healthy = Daemon(
-        config, FakeHandler, on_reply=lambda _r: None, check_dependencies=lambda: None
-    )
+    healthy = Daemon(config, _fake, on_reply=lambda _r: None, check_dependencies=lambda: None)
     healthy.start()
     try:
         assert healthy.running
@@ -197,6 +217,12 @@ def test_run_pumps_the_handler(tmp_path):
         assert wait_for(lambda: handler.pumps >= 3)
 
 
+def test_run_waits_on_the_handler(tmp_path):
+    """空闲等待交给处理层——循环由"有活"驱动，不自己定时睡。"""
+    with running(tmp_path) as (_daemon, handler, _replies):
+        assert wait_for(lambda: handler.waits >= 3)
+
+
 def test_submit_gets_an_answer_that_carries_the_request(tmp_path):
     """投进去的请求要原样出现在答复里——延迟答复就靠这个身份找回归属。"""
     with running(tmp_path) as (daemon, _handler, replies):
@@ -219,6 +245,23 @@ def test_submit_input_reaches_the_handler(tmp_path):
     with running(tmp_path) as (daemon, handler, _replies):
         assert daemon.submit_input("sid-1", b"hello\n") is SubmitOutcome.DELIVERED
         assert wait_for(lambda: handler.inputs == [("sid-1", b"hello\n")])
+
+
+def test_delivery_result_is_reported_to_the_handler(tmp_path):
+    """投递结果要回告处理层——订阅推送的节奏（没被收下就别再推）建立在这上面。"""
+    with running(tmp_path) as (daemon, handler, replies):
+        assert daemon.submit("ping") is SubmitOutcome.DELIVERED
+        assert wait_for(lambda: bool(replies))
+        assert handler.deliveries == [("ping", Delivery.SENT)]
+
+
+def test_a_dropped_connection_is_reported_to_the_handler(tmp_path):
+    """连接断了要报给处理层——它靠这个注销挂在上面的订阅。"""
+    with running(tmp_path) as (daemon, handler, _replies):
+        connection = PipeTransport().connect(parse_address(daemon.address), timeout=_DEADLINE)
+        assert wait_for(lambda: daemon._access_point.connection_count == 1)
+        connection.close()
+        assert wait_for(lambda: bool(handler.disconnects))
 
 
 def test_handler_crash_becomes_a_failure_answer(tmp_path):

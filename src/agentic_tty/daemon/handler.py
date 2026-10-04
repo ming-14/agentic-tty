@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
 
@@ -27,6 +28,23 @@ class Reply:
     answer: object = None
 
 
+class Delivery(StrEnum):
+    """一条答复的投递结果——**回告给处理层**，它据此决定还要不要为这条请求产出下一段。
+
+    订阅推送的节奏就建立在这上面：没被收下就别再 `pull`（游标停住），游标落后到裁剪点
+    自然走重同步。**不需要客户端的 `ack`**——管道本身已经是有限缓冲，这一道闸就够了。
+    """
+
+    SENT = "sent"
+    """已进连接的写缓冲；写线程保证最终写出（它宁可阻塞也不丢字节）。"""
+    CONGESTED = "congested"
+    """写缓冲满了，**没有收下**——先别再为这条请求产出，下一轮再试。"""
+    GONE = "gone"
+    """连接没了——这条请求的订阅作废。"""
+    NOT_MINE = "not_mine"
+    """不是本接入点发出的请求（进程内消费者投的）。守护进程自己另找去处，不转给处理层。"""
+
+
 @runtime_checkable
 class RequestHandler(Protocol):
     """请求处理层。"""
@@ -37,6 +55,9 @@ class RequestHandler(Protocol):
         返回 `None` 表示**已登记等待**，答复稍后由 `poll` 交出——等待不能在这里阻塞，
         否则一个慢等待会把所有会话冻住。`poll` 交出的延迟答复必须带上本方法收到的那个
         请求对象（`Reply.request`）。
+
+        一条请求也可以**先回一条答复、之后再由 `poll` 交出后续**（订阅：先 ack，推送随后
+        跟上）——它们都带同一个请求对象。
         """
         ...
 
@@ -62,6 +83,30 @@ class RequestHandler(Protocol):
 
     def pump(self) -> None:
         """按轮推进（例如排空各会话的读桥、推进等待判定）。"""
+        ...
+
+    def wait(self, timeout: float) -> None:
+        """空闲钩子：阻塞到"可能有活"，或超时。
+
+        所有者循环没有别的事可等时调它——实现方在这里等自己的异步工作（如会话输出的
+        唤醒通道），**有活就立刻返回**，别把整轮睡死。没有异步工作的实现直接睡过去即可。
+        """
+        ...
+
+    def on_reply(self, request: object, delivery: Delivery) -> None:
+        """一条答复的投递结果。**投订阅推送的节奏全靠它。**
+
+        `CONGESTED` 时不要再为这条请求 `pull`（数据还在，下一轮重发）；`GONE` 时把这条
+        请求的订阅丢掉。
+        """
+        ...
+
+    def on_disconnected(self, connection: object) -> None:
+        """一条连接没了：把挂在它上面的订阅全部注销。
+
+        `connection` 就是 `handle` 收到的请求对象上带着的那个连接凭据——处理层只拿它当
+        键，不认识它是什么。
+        """
         ...
 
     def shutdown(self) -> None:

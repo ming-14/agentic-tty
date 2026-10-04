@@ -9,27 +9,53 @@ from __future__ import annotations
 
 import os
 import time
+from collections import deque
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Any, cast
 
-from ..core.errors import CoreError
+from ..core.errors import CoreError, OffsetTrimmed
 from ..core.ports import PTY, SUBPROCESS, SessionSpec, Stream
 from ..core.process.session import ProcessSession
+from ..core.runtime.bridge import Wakeup
 from ..core.runtime.runtime import Runtime
 from ..core.runtime.shell import default_shell
 from ..core.session.base import Session
 from ..core.session.registry import SessionKind, SessionRegistry
 from ..core.session.state import SessionState
+from ..core.session.subscription import Subscription
 from ..core.terminal.session import TerminalSession
 from ..foundation.ids import now_timestamp
 from ..foundation.logs import get_logger
-from ..protocol.contracts.daemon_ipc import Command, ReadMode, SessionRef, stream_tag
+from ..protocol.contracts.daemon_ipc import Command, Event, ReadMode, SessionRef, stream_tag
 from ..protocol.envelope import Envelope
 from ..protocol.response import failed_response, ok_response
 from .access_point import ByteChunk, WireRequest
-from .handler import Reply
+from .handler import Delivery, Reply
 
 _logger = get_logger("daemon.kernel")
+
+_PUSH_BUDGET = 1 << 16
+"""每轮每个订阅最多取多少字节——分片拉取，别把积压一次倒完。"""
+_PUSH_INFLIGHT = 8
+"""每个订阅最多允许多少帧在途（尚未被投递确认）——出站队列有限，别把它撑满。"""
+
+
+@dataclass
+class _Sub:
+    """一条订阅：游标 ＋ 在途的推送帧。
+
+    在途帧存下来是因为**取出来的字节不能丢**：`pull()` 一调，游标就往前走了，若这一帧
+    没被收下（连接堵住），只能原样重发。
+    """
+
+    request: WireRequest
+    session: Session
+    stream: Stream
+    cursor: Subscription
+    out: deque[Envelope | ByteChunk] = field(default_factory=deque)
+    done: bool = False
+    """会话已排空：`out` 交完就注销。"""
 
 
 def _text(op: Mapping[str, Any], key: str, default: str = "") -> str:
@@ -53,15 +79,20 @@ class KernelHandler:
     """默认的 `RequestHandler`：uid 级请求 → core 操作。"""
 
     def __init__(self, registry: SessionRegistry | None = None, *, endpoint: str = "") -> None:
+        # 读线程读到数据就投一个信号，所有者循环靠它阻塞等待，不必定时轮询所有会话。
+        self._wakeup = Wakeup()
         self._runtime = Runtime(
             registry
             or SessionRegistry(
                 kinds={PTY: SessionKind(TerminalSession), SUBPROCESS: SessionKind(ProcessSession)}
-            )
+            ),
+            wakeup=self._wakeup,
         )
         self._endpoint = endpoint
         self._started_at = now_timestamp()
         self._started_monotonic = time.monotonic()
+        self._subs: dict[str, _Sub] = {}
+        """订阅表：**订阅 id = 那条 `subscribe` 请求的 `mid`**（连接内唯一）。"""
 
     # ════════════════════════════════════════════════════════════
     # RequestHandler（只在所有者线程上被调用，因此不需要锁）
@@ -70,16 +101,44 @@ class KernelHandler:
     def handle(self, request: object) -> Reply | None:
         wire = cast(WireRequest, request)
         try:
-            answer = self._dispatch(wire.envelope)
+            answer = self._dispatch(wire)
         except (CoreError, OSError, ValueError) as exc:
             return Reply(request=wire, answer=_failed(wire.envelope, exc))
         return Reply(request=wire, answer=answer)
 
     def poll(self) -> list[Reply]:
-        return []
+        """交出本轮可以推的帧——每个订阅最多一帧，且在途数受上限约束。"""
+        replies: list[Reply] = []
+        for sub_id, sub in list(self._subs.items()):
+            reply = self._push(sub_id, sub)
+            if reply is not None:
+                replies.append(reply)
+        return replies
 
     def pending(self) -> int:
+        """压着等的请求数——**订阅不算**：它是长期挂着的，算进来会让收尾白等满 `drain_timeout`。"""
         return 0
+
+    def on_reply(self, request: object, delivery: Delivery) -> None:
+        """投递结果：收下了就把在途那帧划掉；连接没了就把这条订阅丢掉。
+
+        没收下（`CONGESTED`）什么都不做——在途帧还留着，下一轮原样重发，游标不动。
+        """
+        wire = cast(WireRequest, request)
+        sub = self._subs.get(wire.envelope.mid)
+        if sub is None:
+            return
+        if delivery is Delivery.SENT:
+            if sub.out:
+                sub.out.popleft()
+        elif delivery is Delivery.GONE:
+            self._subs.pop(wire.envelope.mid, None)
+
+    def on_disconnected(self, connection: object) -> None:
+        """连接没了：把挂在它上面的订阅全部注销。"""
+        stale = [sid for sid, sub in self._subs.items() if sub.request.connection is connection]
+        for sub_id in stale:
+            self._subs.pop(sub_id, None)
 
     def failure(self, request: object, error: BaseException) -> Reply:
         wire = cast(WireRequest, request)
@@ -95,14 +154,26 @@ class KernelHandler:
     def pump(self) -> None:
         self._runtime.pump_all()
 
+    def wait(self, timeout: float) -> None:
+        """等会话侧的活（读线程经 `Wakeup` 投的信号），或超时。
+
+        醒来后把积压的信号一并清掉：一轮就能把所有会话的桥排空，剩下的信号再叫醒只是白跑
+        一遍，而且读线程**每读到一个块就投一个**，不清就会越积越多。
+        """
+        self._wakeup.wait(timeout)
+        while self._wakeup.pending:
+            self._wakeup.wait(0)
+
     def shutdown(self) -> None:
+        self._subs.clear()
         self._runtime.close_all()
 
     # ════════════════════════════════════════════════════════════
     # 命令
     # ════════════════════════════════════════════════════════════
 
-    def _dispatch(self, envelope: Envelope) -> Envelope | ByteChunk:
+    def _dispatch(self, wire: WireRequest) -> Envelope | ByteChunk:
+        envelope = wire.envelope
         command = envelope.type
         op = envelope.payload.op
         if command == Command.DAEMON_STATUS:
@@ -119,7 +190,77 @@ class KernelHandler:
             return self._read(envelope, op)
         if command == Command.RESIZE_SESSION:
             return self._resize(envelope, op)
+        if command == Command.SUBSCRIBE:
+            return self._subscribe(wire)
+        if command == Command.UNSUBSCRIBE:
+            self._subs.pop(_text(op, "sub_id"), None)
+            return ok_response(command, envelope.mid, {})
         raise ValueError(f"未知命令: {command}")
+
+    # ════════════════════════════════════════════════════════════
+    # 订阅
+    # ════════════════════════════════════════════════════════════
+
+    def _subscribe(self, wire: WireRequest) -> Envelope:
+        """登记一条订阅：**订阅 id 就是这条请求的 `mid`**，推送按它分派回同一条连接。"""
+        envelope = wire.envelope
+        op = envelope.payload.op
+        session = self._runtime.get(_text(op, "uid"))
+        stream = Stream(_text(op, "stream", Stream.STDOUT.value))
+        cursor = op.get("cursor")
+        sub = Subscription(session, stream, None if cursor is None else int(cursor))
+        self._subs[envelope.mid] = _Sub(wire, session, stream, sub)
+        return ok_response(
+            envelope.type,
+            envelope.mid,
+            {"sub_id": envelope.mid, "offset": sub.next_offset, "lossy": sub.lossy},
+        )
+
+    def _push(self, sub_id: str, sub: _Sub) -> Reply | None:
+        while len(sub.out) < _PUSH_INFLIGHT and not sub.done:
+            if not self._fill(sub_id, sub):
+                break
+        if not sub.out:
+            if sub.done:
+                self._subs.pop(sub_id, None)
+            return None
+        return Reply(sub.request, sub.out[0])
+
+    def _fill(self, sub_id: str, sub: _Sub) -> bool:
+        """按游标再取一帧放进 `out`；没有新东西返回 False。"""
+        try:
+            pull = sub.cursor.pull(_PUSH_BUDGET)
+        except OffsetTrimmed:
+            # 客户端太慢，游标被日志裁掉了：换个新游标重同步，它自带一份快照
+            sub.cursor = Subscription(sub.session, sub.stream)
+            sub.out.append(ok_response(Event.RESYNC, sub_id, {"lossy": sub.cursor.lossy}))
+            return True
+        added = False
+        tag = stream_tag(sub.stream.value)
+        # 尺寸变更可能落在这一段字节**中间**：按它把字节切开，发出去就是
+        # 「旧尺寸的字节 / resize 帧 / 新尺寸的字节」——订阅者不必自己对齐 offset。
+        cut = 0
+        for event in pull.resizes:
+            at = event.offset - pull.start
+            if at > cut:
+                sub.out.append(ByteChunk(tag, sub_id, pull.data[cut:at]))
+            sub.out.append(
+                ok_response(
+                    Event.RESIZE,
+                    sub_id,
+                    {"offset": event.offset, "cols": event.cols, "rows": event.rows},
+                )
+            )
+            cut = at
+            added = True
+        if cut < len(pull.data):
+            sub.out.append(ByteChunk(tag, sub_id, pull.data[cut:]))
+            added = True
+        if not pull.data and sub.session.drained:
+            sub.out.append(ok_response(Event.ENDED, sub_id, {"exit_code": sub.session.exit_code}))
+            sub.done = True
+            added = True
+        return added
 
     def _status(self, envelope: Envelope) -> Envelope:
         return ok_response(

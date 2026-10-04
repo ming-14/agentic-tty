@@ -376,7 +376,8 @@ class _WinPipeListener:
         if self._closed:
             raise ConnectionClosed("监听点已关闭")
         handle = self._pending
-        assert handle is not None  # `_hand_off` / `_drop` 之后一定立刻建好下一个
+        if handle is None:
+            raise TransportError("监听点没有待用实例")
         op = _OverlappedOp()
         try:
             if not _k32().ConnectNamedPipe(handle, ctypes.byref(op.overlapped)):

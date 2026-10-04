@@ -21,7 +21,7 @@ from agentic_tty.daemon.kernel import KernelHandler
 from agentic_tty.daemon.server import Daemon
 from agentic_tty.example.daemon_test import address
 from agentic_tty.example.daemon_test.client import Answer, Client
-from agentic_tty.protocol.contracts.daemon_ipc import Command, SessionRef
+from agentic_tty.protocol.contracts.daemon_ipc import Command, Event, SessionRef
 from agentic_tty.protocol.response import data_of, error_of, is_ok
 
 _DEADLINE = 15.0
@@ -40,7 +40,7 @@ def running(tmp_path, monkeypatch) -> Iterator[str]:
     config = DaemonConfig(name=name, write_log_file=False, tick_interval=0.001)
     daemon = Daemon(
         config,
-        lambda: KernelHandler(endpoint=address(name)),
+        lambda endpoint: KernelHandler(endpoint=endpoint),
         check_dependencies=lambda: None,  # 测子进程会话，不必碰原生扩展
     )
     daemon.start()
@@ -84,6 +84,25 @@ class _Session:
         answer = self.ask(command, op)
         assert answer.envelope is not None and is_ok(answer.envelope), answer
         return data_of(answer.envelope)
+
+    def drain(self, mid: str, until: str, timeout: float = _DEADLINE) -> list[Answer]:
+        """收 `mid` 上的所有答复，直到出现 `until` 类型的控制帧。
+
+        订阅的推送与建立订阅那条请求**共用同一个 `mid`**，所以只能这样一路收到结束帧。
+        """
+        seen: list[Answer] = []
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                answer = self.answers.get(timeout=0.05)
+            except Empty:
+                continue
+            if answer.mid != mid:
+                continue
+            seen.append(answer)
+            if answer.envelope is not None and answer.envelope.type == until:
+                return seen
+        raise AssertionError(f"没等到 {until}（已收 {len(seen)} 帧）")
 
     def create(self, *argv: str) -> SessionRef:
         op = {"mode": "subprocess", "argv": list(argv)}
@@ -140,6 +159,22 @@ def test_unknown_command_comes_back_as_a_failed_answer(running: tuple[str, Daemo
         assert not is_ok(answer.envelope)
         failure = error_of(answer.envelope)
         assert failure is not None and failure.code == "ValueError"
+
+
+def test_subscribe_pushes_bytes_then_ends(running: tuple[str, DaemonConfig]):
+    """订阅：先 ack，再按游标推字节帧（`key` = 订阅 id），会话排空后收到 `ended`。"""
+    name = running
+    with _Session(address(name)) as session:
+        ref = session.create(sys.executable, "-u", "-c", "print('hello', flush=True)")
+        mid = session.client.request(Command.SUBSCRIBE, {"uid": ref.uid, "stream": "stdout"})
+        answers = session.drain(mid, Event.ENDED)
+
+        ack = answers[0]
+        assert ack.envelope is not None and is_ok(ack.envelope)
+        assert data_of(ack.envelope)["sub_id"] == mid
+
+        blob = b"".join(answer.chunk.data for answer in answers if answer.chunk is not None)
+        assert b"hello" in blob, blob
 
 
 def _pump(root, predicate, timeout: float = 20.0) -> bool:

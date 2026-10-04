@@ -35,7 +35,11 @@ _FORKING_CODE = (
 )
 
 
-def _wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> bool:
+def _wait_until(predicate: Callable[[], bool], timeout: float = 30.0) -> bool:
+    """等条件成立。
+
+    时限只用来兜真正的回归（进程起得慢不是回归），判定看条件本身。
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():

@@ -23,6 +23,7 @@ def runtime_dir(instance: str) -> Path:
     """本机放运行时文件的目录（锁 / 端点 / 日志）——不保证已存在。
 
     "该放哪"是平台知识（Windows 的 `%LOCALAPPDATA%`、Linux 的 XDG 目录），不是领域语义。
+    目录名带项目前缀：`LOCALAPPDATA` / XDG 是所有程序共用的，叫 `default` 的目录会跟别人抢名字。
     """
     if sys.platform == "win32":
         base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
@@ -32,7 +33,7 @@ def runtime_dir(instance: str) -> Path:
             or os.environ.get("XDG_STATE_HOME")
             or str(Path.home() / ".local" / "state")
         )
-    return Path(base) / instance
+    return Path(base) / f"{PREFIX}{instance}"
 
 
 def endpoint_name(instance: str) -> str:

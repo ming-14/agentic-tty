@@ -15,7 +15,7 @@ def test_endpoint_name_carries_the_prefix():
 def test_runtime_dir_is_per_instance(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-    assert runtime_dir("daemon-test") == tmp_path / "daemon-test"
+    assert runtime_dir("daemon-test") == tmp_path / f"{PREFIX}daemon-test"
 
 
 def test_lock_name_follows_the_platform(tmp_path: Path):

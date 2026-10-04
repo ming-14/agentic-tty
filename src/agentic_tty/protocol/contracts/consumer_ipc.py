@@ -51,12 +51,13 @@ class Command(StrEnum):
 class ViewMode(StrEnum):
     """`read_terminal` 要哪个视图。
 
-    取值与 `daemon_ipc.ReadMode` 一致是刻意的（同一套视图语义），但**两份分区各留一份、
-    互不 import**——改这条边界不牵动那条。
+    与 `daemon_ipc.ReadMode` 同属一套视图语义（取值一致），但**各留一份、互不 import**——
+    改这条边界不牵动那条。
     """
 
     SCREEN = "screen"
     TEXT = "text"
+    SVG = "svg"
     IMAGE = "image"
     BYTES = "bytes"
 

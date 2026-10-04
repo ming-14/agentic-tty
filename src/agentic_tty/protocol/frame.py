@@ -57,8 +57,15 @@ class BytesFrame:
     data: bytes
 
 
+def _check_payload(length: int) -> None:
+    """与解码器同一道上限：超限的帧对端必然拒收并断连。"""
+    if length > _MAX_PAYLOAD:
+        raise FrameError(f"帧负载超限: {length} > {_MAX_PAYLOAD}")
+
+
 def encode_control(data: bytes) -> bytes:
     """把信封字节封成控制帧。"""
+    _check_payload(len(data))
     return _HEADER.pack(KIND_CONTROL, len(data)) + data
 
 
@@ -70,6 +77,7 @@ def encode_bytes(tag: int, key: str, data: bytes) -> bytes:
     if len(key_bytes) > _KEY_MAX:
         raise FrameError(f"帧键过长（{len(key_bytes)} 字节）: {key!r}")
     payload = bytes((tag, len(key_bytes))) + key_bytes + data
+    _check_payload(len(payload))
     return _HEADER.pack(KIND_BYTES, len(payload)) + payload
 
 
@@ -94,8 +102,7 @@ class FrameDecoder:
         frames: list[ControlFrame | BytesFrame] = []
         while len(self._buf) >= _HEADER.size:
             kind, length = _HEADER.unpack_from(self._buf)
-            if length > _MAX_PAYLOAD:
-                raise FrameError(f"帧负载超限: {length} > {_MAX_PAYLOAD}")
+            _check_payload(length)
             total = _HEADER.size + length
             if len(self._buf) < total:
                 break

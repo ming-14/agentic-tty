@@ -3,8 +3,14 @@
 守护进程不认识 `sid`——那是下游消费者的语义。因此这一侧所有的键一律是 `uid`；
 返回条件、会话标签这些属于消费者的东西，一概不在这里。
 
-原语直接对着 core 的能力：起会话、读、改尺寸、看状态。**写不占命令**——它走字节帧
-上行（`STREAM_STDIN`），一个字节都不用进 JSON。
+原语直接对着 core 的能力：起会话、读、改尺寸、看状态、**订阅**。**写不占命令**——它走
+字节帧上行（`STREAM_STDIN`），一个字节都不用进 JSON。
+
+**订阅**（`subscribe` / `unsubscribe`）：
+- `subscribe` 的 `op` 是 `{uid, stream?, cursor?}`，答复的 `data` 是 `{sub_id, offset, lossy}`。
+- **订阅 id 就是那条 `subscribe` 请求的 `mid`**（连接内唯一），客户端按它分派推送。
+- 推送全是**下行帧**：字节走字节帧（`key` = 订阅 id），说不清的走控制帧（`mid` = 订阅 id，
+  `type` 取 `Event`）。
 """
 
 from __future__ import annotations
@@ -25,6 +31,22 @@ class Command(StrEnum):
     LIST_SESSIONS = "list_sessions"
     READ_SESSION = "read_session"
     RESIZE_SESSION = "resize_session"
+    SUBSCRIBE = "subscribe"
+    UNSUBSCRIBE = "unsubscribe"
+
+
+class Event(StrEnum):
+    """订阅推送里**非字节**的通知（以控制帧发，`mid` = 订阅 id）。
+
+    字节本身走字节帧；这里只放字节流说不清的三件事。
+    """
+
+    RESIZE = "resize"
+    """`offset` 起（含）的字节按 `cols × rows` 解释——raw 订阅者据此在字节流里插帧。"""
+    RESYNC = "resync"
+    """接下来是**重同步快照**；`lossy` 为真表示前面那段字节找不回来了。"""
+    ENDED = "ended"
+    """会话已排空，不会再有字节；订阅到此为止。"""
 
 
 # 流标签：线上的 1 字节取值 ↔ 流名。流名必须与 core 的 `Stream` 取值一致

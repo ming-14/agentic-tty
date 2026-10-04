@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from agentic_tty.config import DaemonConfig, endpoint_name
 from agentic_tty.daemon.access_point import WireRequest
-from agentic_tty.daemon.handler import Reply
+from agentic_tty.daemon.handler import Delivery, Reply
 from agentic_tty.daemon.server import Daemon
 from agentic_tty.protocol.contracts.daemon_ipc import STREAM_STDIN
 from agentic_tty.protocol.envelope import from_json, make_request, to_json
@@ -62,6 +62,15 @@ class _EchoHandler:
     def pump(self) -> None:
         pass
 
+    def wait(self, timeout: float) -> None:
+        time.sleep(timeout)
+
+    def on_reply(self, request: object, delivery: Delivery) -> None:
+        pass
+
+    def on_disconnected(self, connection: object) -> None:
+        pass
+
     def shutdown(self) -> None:
         pass
 
@@ -76,12 +85,12 @@ class _Running:
         self.daemon = Daemon(
             DaemonConfig(
                 name=self.name,
-                runtime_dir=self.runtime_dir,
+                directory=self.runtime_dir,
                 write_log_file=False,
                 tick_interval=0.001,
                 **overrides,
             ),
-            lambda: self.handler,
+            lambda _endpoint: self.handler,
             check_dependencies=lambda: None,
         )
         self._thread: threading.Thread | None = None

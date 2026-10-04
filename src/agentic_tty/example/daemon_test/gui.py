@@ -22,7 +22,7 @@ from tkinter import messagebox, ttk
 
 from ...foundation.instance import is_held
 from ...foundation.logs import get_logger
-from ...protocol.contracts.daemon_ipc import Command, ReadMode, SessionRef
+from ...protocol.contracts.daemon_ipc import Command, Event, ReadMode, SessionRef
 from ...protocol.frame import BytesFrame
 from ...protocol.response import data_of, error_of, is_ok
 from ..ui import (
@@ -73,6 +73,8 @@ class App:
         self._ticks = 0
         self._tick_job: str | None = None
         self._export_path: str | None = None
+        self._sub_mid: str | None = None
+        """当前订阅的 id（= 那条 `subscribe` 请求的 mid）；推送与它同 mid。"""
 
         self._client = Client(self._address, on_reply=self.on_reply)
         # 连接在**后台线程**里做：连不上要重试，而主线程得跑 mainloop 不能阻塞
@@ -172,8 +174,10 @@ class App:
         self._screen = ScreenView(self._tabs, on_format_change=self._on_format_change)
         self._tabs.add_view_page(self._refresh_detail)
         self._tabs.add_text(Page.RAW, "原始字节", small=True)
+        self._tabs.add_text(Page.SUB, "订阅流", small=True)
 
         self._input = InputBar(right, on_send=self._send_input, on_interrupt=self._send_interrupt)
+        self._input.add_button("订阅选中", self._subscribe_selected)
         self._size = SizeBar(
             right,
             on_apply=self._resize,
@@ -223,6 +227,9 @@ class App:
         self._want[mid] = purpose
 
     def _dispatch(self, answer: Answer) -> None:
+        if answer.mid == self._sub_mid:
+            self._apply_push(answer)
+            return
         purpose = self._want.pop(answer.mid, None)
         if purpose is None:
             return
@@ -267,6 +274,56 @@ class App:
             self._screen.set_image(chunk.data, "<位图不可用>")
         elif purpose == "export":
             self._write_export(chunk.data)
+
+    # ════════════════════════════════════════════════════════════
+    # 订阅
+    # ════════════════════════════════════════════════════════════
+
+    def _subscribe_selected(self) -> None:
+        """订阅选中会话的 stdout——之后不再靠每轮拉取，守护进程按游标把增量推过来。"""
+        uid = self._selected
+        if uid is None:
+            self._status.set("先选一个会话")
+            return
+        self._unsubscribe()
+        try:
+            mid = self._client.request(
+                Command.SUBSCRIBE, {"uid": uid, "stream": "stdout"}
+            )
+        except Exception as exc:
+            self._status.set(f"订阅失败: {exc}")
+            return
+        self._sub_mid = mid
+        self._tabs.set_text(Page.SUB, f"── 订阅 {uid[:8]} 的 stdout ──\n")
+
+    def _unsubscribe(self) -> None:
+        mid, self._sub_mid = self._sub_mid, None
+        if mid is not None:
+            self._ask(Command.UNSUBSCRIBE, "unsubscribe", {"sub_id": mid})
+
+    def _apply_push(self, answer: Answer) -> None:
+        """订阅推送：字节进「订阅流」页，控制帧按类型记一行。"""
+        if answer.chunk is not None:
+            self._append_sub(repr(answer.chunk.data))
+            return
+        envelope = answer.envelope
+        if envelope is None:
+            return
+        data = data_of(envelope)
+        if envelope.type == Event.ENDED:
+            self._append_sub(f"── 结束 exit={data.get('exit_code')} ──\n")
+            self._sub_mid = None
+        elif envelope.type == Event.RESYNC:
+            self._append_sub(f"── 重同步 lossy={data.get('lossy')} ──\n")
+        elif envelope.type == Event.RESIZE:
+            self._append_sub(
+                f"── 尺寸 {data.get('cols')}×{data.get('rows')} @ {data.get('offset')} ──\n"
+            )
+
+    def _append_sub(self, text: str) -> None:
+        box = self._tabs.text(Page.SUB)
+        box.insert(tk.END, text)
+        box.see(tk.END)
 
     def _apply_svg(self, data: dict) -> None:
         """屏幕页：SVG 变了才重渲染；变了就要再取一次位图（那是另一次请求往返）。"""
@@ -385,6 +442,8 @@ class App:
 
     def _select_session(self, uid: str | None) -> None:
         """把当前会话切到 `uid`（无会话传 `None`）：树选中、pty 专属控件、详情一起到位。"""
+        if uid != self._selected:
+            self._unsubscribe()  # 订阅绑着会话，换会话就退掉
         self._selected = uid
         self._tree.set_selection(uid)
         self._sized_for = None

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from agentic_tty.protocol import frame as frame_module
 from agentic_tty.protocol.errors import FrameError
 from agentic_tty.protocol.frame import (
     KIND_BYTES,
@@ -91,6 +92,19 @@ def test_oversized_payload_is_rejected():
     header = bytes((KIND_CONTROL,)) + (17 << 20).to_bytes(4, "big")
     with pytest.raises(FrameError, match="超限"):
         _decode_all(header)
+
+
+def test_encode_rejects_oversized_control_payload(monkeypatch):
+    """编码器与解码器同一道上限——超限的帧对端必然拒收，发送端就该先报错。"""
+    monkeypatch.setattr(frame_module, "_MAX_PAYLOAD", 8)
+    with pytest.raises(FrameError, match="超限"):
+        encode_control(b"x" * 9)
+
+
+def test_encode_rejects_oversized_bytes_payload(monkeypatch):
+    monkeypatch.setattr(frame_module, "_MAX_PAYLOAD", 8)
+    with pytest.raises(FrameError, match="超限"):
+        encode_bytes(_TAG_A, "k", b"x" * 16)
 
 
 def test_unknown_frame_kind_is_rejected():
