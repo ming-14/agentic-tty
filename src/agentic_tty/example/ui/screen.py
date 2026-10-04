@@ -15,7 +15,7 @@ from tkinter import messagebox, ttk
 try:
     import resvg_py
 except ImportError as exc:  # 依赖缺失就说清楚怎么补，不静默降级
-    raise ImportError("Tk 验证台渲染 SVG 需要 resvg-py：pip install -e .[gui]") from exc
+    raise ImportError("Tk 验证台渲染 SVG 需要 resvg-py（随 agentic-tty 一起装）") from exc
 
 from .common import HINT_COLOR, ask_save, set_text, svg_size
 from .notebook import DetailNotebook, Page

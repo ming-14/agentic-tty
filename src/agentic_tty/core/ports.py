@@ -13,6 +13,7 @@ from typing import Protocol, runtime_checkable
 # 内置模式的标签。模式是开放字符串，由接入方定义，core 不校验。
 PTY = "pty"
 SUBPROCESS = "subprocess"
+LOCALPTY = "localpty"
 
 
 class Stream(StrEnum):
@@ -38,7 +39,8 @@ class SessionSpec:
 class HostMetadata:
     """终端元数据。
 
-    `title` 目前恒为占位值——底层 `pywezterm` 的标题接口不工作（见 `PtyHost.metadata`）。
+    `title` 取程序设的窗口标题（OSC 0/2）。`pywezterm` 的标题接口不工作，那个宿主
+    给的是占位值（见 `PtyHost.metadata`）；`localpty` 能拿到真的。
     `cwd` 优先取 OSC 7（程序自己 `cd` 之后的真实目录），拿不到则退回会话创建时的目录。
     """
 

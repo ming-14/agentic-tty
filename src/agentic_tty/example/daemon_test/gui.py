@@ -160,7 +160,7 @@ class App:
 
         self._bar = SessionBar(
             self._root,
-            modes=(("pty", "pty"), ("subprocess", "subprocess")),
+            modes=(("pty", "pty"), ("localpty", "localpty"), ("subprocess", "subprocess")),
             value="pty",
             buttons=(("创建会话", self._create_session), ("关闭选中", self._close_selected)),
             hint="（留空 = 平台默认 shell）",

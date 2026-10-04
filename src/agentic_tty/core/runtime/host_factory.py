@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
-from ..ports import PTY, SUBPROCESS, HostLifecycle, SessionSpec
+from ..ports import LOCALPTY, PTY, SUBPROCESS, HostLifecycle, SessionSpec
 from .errors import DependencyMissing, HostSpawnError
 from .pty_host import PtyHost, require_pywezterm
 from .subprocess_host import SubprocessHost
 
 
 def create_host(spec: SessionSpec) -> HostLifecycle:
-    """按模式标签选择宿主（内置 pty / subprocess 两种）。"""
+    """按模式标签选择宿主（内置 pty / subprocess / localpty 三种）。"""
     if spec.mode == PTY:
         return PtyHost(spec)
+    if spec.mode == LOCALPTY:
+        # 惰性导入：纯 pty / subprocess 场景不该把 pyte 与位图渲染器拖进来
+        from .localpty import LocalPtyHost
+
+        return LocalPtyHost(spec)
     if spec.mode == SUBPROCESS:
         return SubprocessHost(spec)
     raise HostSpawnError(f"未知会话模式: {spec.mode!r}")

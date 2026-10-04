@@ -115,6 +115,7 @@ class App:
             modes=(
                 ("fake", ExampleMode.FAKE.value),
                 ("pty", ExampleMode.PTY.value),
+                ("localpty", ExampleMode.LOCALPTY.value),
                 ("subprocess", ExampleMode.SUBPROCESS.value),
             ),
             value=ExampleMode.FAKE.value,
@@ -124,7 +125,7 @@ class App:
                 ("强杀", self._kill_selected),
                 ("关闭选中", self._close_selected),
             ),
-            hint="（fake 下拉选假程序；pty / subprocess 直接输入真命令）",
+            hint="（fake 下拉选假程序；pty / localpty / subprocess 直接输入真命令）",
             on_mode_change=self._sync_command_box,
         )
         # 初始模式是 fake，命令框按它摆（默认 repl）——不能只等用户点单选才填

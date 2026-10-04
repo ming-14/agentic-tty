@@ -3,7 +3,7 @@
 模式是**开放字符串**（见 `ports.SessionSpec.mode`）：注册表不写死 pty / subprocess，
 而是查一份 `标签 → 会话形态` 的映射。**形态 = 会话类 + 宿主工厂**，两者必须成对
 注册——拆成两份映射各自维护，就会出现"假宿主配真会话类"这类只在运行期才炸的组合。
-缺省给内置两种形态，接入方可传入自己的映射。
+缺省给内置三种形态，接入方可传入自己的映射。
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from ...foundation.ids import new_uid
 from ...foundation.logs import get_logger
 from ..errors import CoreError, SessionNotFound
-from ..ports import PTY, SUBPROCESS, HostFactory, SessionSpec
+from ..ports import LOCALPTY, PTY, SUBPROCESS, HostFactory, SessionSpec
 from ..process.session import ProcessSession
 from ..runtime.host_factory import create_host as default_host_factory
 from ..terminal.session import TerminalSession
@@ -40,6 +40,7 @@ class SessionKind:
 DEFAULT_KINDS: dict[str, SessionKind] = {
     PTY: SessionKind(TerminalSession),
     SUBPROCESS: SessionKind(ProcessSession),
+    LOCALPTY: SessionKind(TerminalSession),
 }
 
 

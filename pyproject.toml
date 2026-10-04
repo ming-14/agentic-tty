@@ -7,13 +7,16 @@ name = "agentic-tty"
 version = "0.0.0"
 description = "PTY 与子进程会话的守护进程核心"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    # localpty 后端的终端模型
+    "pyte>=0.8",
+    # 屏幕位图。Tk 的 PhotoImage 只吃位图、没有 SVG 解码器；resvg-py 自带渲染器，
+    # 不依赖系统装 cairo 之类的原生库。
+    "resvg-py>=0.5",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-timeout>=2.0", "ruff>=0.6"]
-# Tk 管理台要把 SVG 渲染成位图——Tk 的 PhotoImage 只吃位图，没有 SVG 解码器。
-# resvg-py 自带渲染器，不依赖系统安装 cairo 之类的原生库。
-gui = ["resvg-py>=0.5"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

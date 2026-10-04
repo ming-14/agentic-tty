@@ -1,10 +1,11 @@
 """示例层的会话装配：模式 → (会话类, 宿主工厂)，交给 core 的注册表创建。
 
-模式标签由 example 自己定义（`ExampleMode`，pty / subprocess 的值直接取自 core 的
-内置标签），core 只把 `SessionSpec.mode` 当开放字符串透传：
+模式标签由 example 自己定义（`ExampleMode`，pty / subprocess / localpty 的值直接取自
+core 的内置标签），core 只把 `SessionSpec.mode` 当开放字符串透传：
 
 - `fake`       → `ProcessSession` + `FakeHost`：脚本化的假子进程（双流、无终端模型）。
-- `pty`        → `TerminalSession` + `PtyHost`：core.runtime 的真 PTY 宿主。
+- `pty`        → `TerminalSession` + `PtyHost`：pywezterm 宿主（PTY + 终端模型一体）。
+- `localpty`   → `TerminalSession` + `LocalPtyHost`：平台原语（condrv / openpty）配 pyte。
 - `subprocess` → `ProcessSession` + `SubprocessHost`：core.runtime 的真子进程宿主。
 
 会话类与宿主工厂**成对**注册，因此选 `pty` 永远得到真 PTY，假宿主只由 `fake` 模式产生。
@@ -45,6 +46,7 @@ class ExampleMode(StrEnum):
 
     FAKE = "fake"
     PTY = ports.PTY
+    LOCALPTY = ports.LOCALPTY
     SUBPROCESS = ports.SUBPROCESS
 
 
@@ -66,9 +68,9 @@ def create_registry(
     host_factory: HostFactory = create_host,
     journal_budget_bytes: int = EXAMPLE_JOURNAL_BUDGET,
 ) -> SessionRegistry:
-    """装配示例层的注册表：三种模式各自声明会话类与宿主工厂。
+    """装配示例层的注册表：四种模式各自声明会话类与宿主工厂。
 
-    只有 `fake` 带专属宿主工厂（假宿主）；另两种用 `host_factory`——默认是 core 自带的
+    只有 `fake` 带专属宿主工厂（假宿主）；其余用 `host_factory`——默认是 core 自带的
     真宿主，测试可注入假宿主。
     """
     return SessionRegistry(
@@ -76,6 +78,7 @@ def create_registry(
         kinds={
             ExampleMode.FAKE: SessionKind(ProcessSession, _fake_host_factory),
             ExampleMode.PTY: SessionKind(TerminalSession),
+            ExampleMode.LOCALPTY: SessionKind(TerminalSession),
             ExampleMode.SUBPROCESS: SessionKind(ProcessSession),
         },
         journal_budget_bytes=journal_budget_bytes,
