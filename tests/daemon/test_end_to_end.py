@@ -34,6 +34,9 @@ class _EchoHandler:
     def __init__(self) -> None:
         self.inputs: list[tuple[str, bytes]] = []
 
+    def bind(self, stop: object) -> None:
+        pass
+
     def handle(self, request: object) -> Reply | None:
         wire = cast(WireRequest, request)
         envelope = wire.envelope

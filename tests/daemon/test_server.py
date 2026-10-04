@@ -30,6 +30,7 @@ class FakeHandler:
 
     def __init__(self) -> None:
         self.inputs: list[tuple[str, bytes]] = []
+        self.stop: object = None
         self.pumps = 0
         self.waits = 0
         self.deliveries: list[tuple[object, Delivery]] = []
@@ -40,6 +41,9 @@ class FakeHandler:
         self.failures: list[BaseException] = []
         self.pump_boom = False
         self.poll_boom = False
+
+    def bind(self, stop: object) -> None:
+        self.stop = stop
 
     def handle(self, request: object) -> Reply | None:
         if request == "defer":
@@ -363,3 +367,20 @@ def test_shutdown_drains_requests_that_were_already_acked(tmp_path):
     assert daemon.stop(2) is True
     assert any(reply.answer == "answer:ping" for reply in replies)
     assert handler.shutdown_called
+
+
+def test_handler_is_bound_to_the_daemon_stop_signal(tmp_path):
+    """处理层不能持有 `Daemon`，所以停机通道必须由守护进程注入——这就是那条通道。"""
+    with running(tmp_path) as (daemon, handler, _replies):
+        assert handler.stop is daemon
+
+
+def test_stop_signal_from_the_handler_ends_the_loop(tmp_path):
+    """处理层调 `request_stop()` 就等于守护进程自己收尾：循环退出、shutdown 跑过。"""
+    handler = FakeHandler()
+    with running(tmp_path, handler) as (daemon, _handler, _replies):
+        assert daemon.running
+        handler.stop.request_stop()
+        assert wait_for(lambda: not daemon.running)
+    assert handler.shutdown_called
+

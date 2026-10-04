@@ -133,3 +133,36 @@ def test_dropping_the_connection_drops_its_subscriptions():
         assert handler.poll() == []
     finally:
         session.close()
+
+
+def test_shutdown_daemon_acknowledges_before_stopping():
+    """先答复、再置停机标志——客户端拿得到 ack，守护进程随后收尾。"""
+    events: list[str] = []
+    handler = KernelHandler()
+    handler.bind(_Recorder(events))
+    wire = WireRequest(make_request(Command.SHUTDOWN_DAEMON), _CONNECTION)
+
+    reply = handler.handle(wire)
+    assert reply is not None
+    assert _data(reply.answer) == {"stopping": True}
+    assert events == ["stop"]
+
+
+def test_shutdown_daemon_without_a_channel_answers_so_false():
+    """进程内嵌入 / 单测直接构造本层时没绑通道：记一条日志、照常答复，不抛异常。"""
+    handler = KernelHandler()
+    wire = WireRequest(make_request(Command.SHUTDOWN_DAEMON), _CONNECTION)
+    reply = handler.handle(wire)
+
+    assert reply is not None
+    assert _data(reply.answer) == {"stopping": False}
+
+
+class _Recorder:
+    """假的停机通道：记下被调用过。"""
+
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    def request_stop(self) -> None:
+        self._events.append("stop")

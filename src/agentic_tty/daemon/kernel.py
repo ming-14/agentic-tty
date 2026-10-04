@@ -31,7 +31,7 @@ from ..protocol.contracts.daemon_ipc import Command, Event, ReadMode, SessionRef
 from ..protocol.envelope import Envelope
 from ..protocol.response import failed_response, ok_response
 from .access_point import ByteChunk, WireRequest
-from .handler import Delivery, Reply
+from .handler import Delivery, Reply, StopSignal
 
 _logger = get_logger("daemon.kernel")
 
@@ -93,10 +93,15 @@ class KernelHandler:
         self._started_monotonic = time.monotonic()
         self._subs: dict[str, _Sub] = {}
         """订阅表：**订阅 id = 那条 `subscribe` 请求的 `mid`**（连接内唯一）。"""
+        self._stop: StopSignal | None = None
+        """停机通道，由守护进程在装配时注入（见 `bind`）。"""
 
     # ════════════════════════════════════════════════════════════
     # RequestHandler（只在所有者线程上被调用，因此不需要锁）
     # ════════════════════════════════════════════════════════════
+
+    def bind(self, stop: StopSignal) -> None:
+        self._stop = stop
 
     def handle(self, request: object) -> Reply | None:
         wire = cast(WireRequest, request)
@@ -180,6 +185,8 @@ class KernelHandler:
         op = envelope.payload.op
         if command == Command.DAEMON_STATUS:
             return self._status(envelope)
+        if command == Command.SHUTDOWN_DAEMON:
+            return self._shutdown_daemon(envelope)
         if command == Command.CREATE_SESSION:
             return self._create(envelope, op)
         if command == Command.CLOSE_SESSION:
@@ -263,6 +270,21 @@ class KernelHandler:
             sub.done = True
             added = True
         return added
+
+    def _shutdown_daemon(self, envelope: Envelope) -> Envelope:
+        """置停机标志，让守护进程本轮循环结束后收尾。
+
+        **先答复、再置标志**：返回值由调用方立刻投递（接入点上是同步进该连接的出站队列），
+        所以客户端拿得到这条 ack；标志一置，循环下一轮就进 `_shutdown`，连接随之关闭。
+
+        没绑通道（进程内嵌入、单测直接构造本层）时只记一条日志——不值得为它抛异常。
+        """
+        if self._stop is None:
+            _logger.warning("没有停机通道，忽略 shutdown_daemon")
+            return ok_response(envelope.type, envelope.mid, {"stopping": False})
+        answer = ok_response(envelope.type, envelope.mid, {"stopping": True})
+        self._stop.request_stop()
+        return answer
 
     def _status(self, envelope: Envelope) -> Envelope:
         return ok_response(

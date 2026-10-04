@@ -199,8 +199,13 @@ class Daemon:
             )
 
     def _build_handler(self) -> None:
-        """建请求处理层，并把**本进程的接入点地址**交给它——它要在状态里报这个，猜不得。"""
+        """建请求处理层，并把**本进程的接入点地址**交给它——它要在状态里报这个，猜不得。
+
+        顺手把自己的停机通道也交过去（`Daemon` 本身满足 `StopSignal`）：处理层不能持有
+        守护进程，所以只能由这一侧注入。
+        """
         self._handler = self._handler_factory(self._address)
+        self._handler.bind(self)
 
     def _mount_access_point(self) -> None:
         if not self._config.mount_endpoint:

@@ -4,7 +4,8 @@
 答复里装的是什么**——所以这里的类型一律不透明：`object` 进、`object` 出；换请求处理层
 不用动 `daemon` 的机制一行。
 
-**所有方法都只在所有者线程上被调用**，实现里不需要任何锁。
+**除 `bind` 外，所有方法都只在所有者线程上被调用**，实现里不需要任何锁。
+`bind` 是装配期的入住钩子（进循环之前调一次），不是运行期调用。
 """
 
 from __future__ import annotations
@@ -46,8 +47,29 @@ class Delivery(StrEnum):
 
 
 @runtime_checkable
+class StopSignal(Protocol):
+    """要求守护进程停止的通道。
+
+    处理层想停守护进程时只能调它——**它不能自己持有 `Daemon`**，否则机制与处理层反向
+    依赖，接缝就废了。由守护进程在装配时注入（见 `bind`）。
+    """
+
+    def request_stop(self) -> None:
+        """请求守护进程停止；只是置标志，不阻塞、不关连接。"""
+        ...
+
+
+@runtime_checkable
 class RequestHandler(Protocol):
     """请求处理层。"""
+
+    def bind(self, stop: StopSignal) -> None:
+        """入住：接过守护进程给的停机通道。
+
+        由守护进程在构造本层之后、进循环之前调用一次。刻意不做成构造参数——那样
+        `handler_factory` 的签名（地址进、处理器出）就得跟着改。
+        """
+        ...
 
     def handle(self, request: object) -> Reply | None:
         """处理一条请求。

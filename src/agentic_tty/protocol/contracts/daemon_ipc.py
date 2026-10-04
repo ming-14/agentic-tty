@@ -26,6 +26,9 @@ class Command(StrEnum):
     """守护进程侧原语。"""
 
     DAEMON_STATUS = "daemon_status"
+    SHUTDOWN_DAEMON = "shutdown_daemon"
+    """让守护进程收尾退出。**进程级动作**：连着它的所有消费者的会话都会一起结束。
+    答复先回，收尾随后开始（见 `daemon/kernel.py`）。"""
     CREATE_SESSION = "create_session"
     CLOSE_SESSION = "close_session"
     LIST_SESSIONS = "list_sessions"
