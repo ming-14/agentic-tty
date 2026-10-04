@@ -17,15 +17,12 @@ class DaemonConfig:
     """守护进程的装配参数。"""
 
     name: str = DEFAULT_INSTANCE
-    """**实例名**：单实例锁名与运行时目录名都由它派生。"""
+    """**实例名**：单实例锁名、运行时目录名、接入点地址都由它派生。"""
     runtime_dir: Path | None = None
     """运行时目录（锁 / 端点 / 日志）；留空取 `config.runtime_dir(name)`。"""
 
-    listen: str | None = None
-    """接入点用的**端点名**（`config.endpoint_name()` 会加上项目前缀）。**留空不挂监听**。
-
-    `None` 是留给进程内嵌入 / 单测的"不挂监听"；跑守护进程时入口会给它填上实例名。
-    """
+    mount_endpoint: bool = True
+    """是否挂接入点。`False` 留给进程内嵌入 / 单测——它们不经本机管道接入。"""
 
     tick_interval: float = 0.005
     """所有者循环每轮之间的间隔。"""

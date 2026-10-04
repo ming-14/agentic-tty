@@ -2,9 +2,6 @@
 
 `sid` 在这一侧才诞生——守护进程侧载的是 `uid`。返回条件（`Condition`）也是这一侧的
 词汇：等待引擎住在这里，守护进程根本不知道"条件"为何物。
-
-命令集是**对客户端**的完整清单（起 shell / 起终端 / 起子进程 / 读 / 写 / 配置 / 通知），
-与 `daemon_ipc` 的 uid 级原语**刻意各留一份**，哪怕名字有重合。
 """
 
 from __future__ import annotations
@@ -67,9 +64,8 @@ class ViewMode(StrEnum):
 class Condition(StrEnum):
     """返回条件。求值优先级由等待引擎固定，不由请求方指定。
 
-    这里只放**已实现**的条件；完整词汇（`notify` / `matched` / `echo` / `gui` /
-    `cancelled`）未实现的暂不列出——客户端用了会拿到"未知返回条件"的明确报错，
-    而不是被静默忽略后等错东西。
+    只列**已实现**的条件；未实现的（`notify` / `matched` / `echo` / `gui` / `cancelled`）
+    不列出——客户端用了会拿到"未知返回条件"的明确报错，而不是被静默忽略后等错东西。
     """
 
     ENDED = "ended"

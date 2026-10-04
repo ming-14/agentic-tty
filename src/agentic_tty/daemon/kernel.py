@@ -1,8 +1,6 @@
 """守护进程的**默认请求处理层**：uid 级请求 → core 操作。
 
-它把 `daemon_ipc` 的命令翻成 core 调用——这就是守护进程对外的能力面。**本包只有它和
-`assembly.py` 碰 core**：`server.py` / `access_point.py` / `handler.py` / `platform/` 是"机制"，
-一行 core 都不碰，换掉这一层机制不用改（白名单由 AST 断言按文件强制）。
+它把 `daemon_ipc` 的命令翻成 core 调用——这就是守护进程对外的能力面。
 
 接缝上的请求对象是 `WireRequest`，答复必须原样把**同一个对象**带回去——路由靠它。
 """
@@ -54,14 +52,14 @@ def _failed(envelope: Envelope, error: BaseException) -> Envelope:
 class KernelHandler:
     """默认的 `RequestHandler`：uid 级请求 → core 操作。"""
 
-    def __init__(self, registry: SessionRegistry | None = None, *, listen: str = "") -> None:
+    def __init__(self, registry: SessionRegistry | None = None, *, endpoint: str = "") -> None:
         self._runtime = Runtime(
             registry
             or SessionRegistry(
                 kinds={PTY: SessionKind(TerminalSession), SUBPROCESS: SessionKind(ProcessSession)}
             )
         )
-        self._listen = listen
+        self._endpoint = endpoint
         self._started_at = now_timestamp()
         self._started_monotonic = time.monotonic()
 
@@ -88,7 +86,7 @@ class KernelHandler:
         return Reply(request=wire, answer=_failed(wire.envelope, error))
 
     def on_input(self, key: str, data: bytes) -> None:
-        """字节帧上行 = 往那个会话写字节——**键就是 uid**，标签在输入方向不用。"""
+        """字节帧上行 = 往那个会话写字节——**键就是 uid**。"""
         try:
             self._runtime.send_input(key, data)
         except CoreError as exc:  # 会话刚被关掉
@@ -132,7 +130,7 @@ class KernelHandler:
                 "started_at": self._started_at,
                 "uptime": round(time.monotonic() - self._started_monotonic, 3),
                 "sessions": len(self._runtime.list()),
-                "listen": self._listen,
+                "endpoint": self._endpoint,
             },
         )
 

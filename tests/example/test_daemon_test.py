@@ -37,10 +37,10 @@ def running(tmp_path, monkeypatch) -> Iterator[str]:
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
     name = f"test-{uuid4().hex[:8]}"
-    config = DaemonConfig(name=name, write_log_file=False, listen=name, tick_interval=0.001)
+    config = DaemonConfig(name=name, write_log_file=False, tick_interval=0.001)
     daemon = Daemon(
         config,
-        lambda: KernelHandler(listen=address(name)),
+        lambda: KernelHandler(endpoint=address(name)),
         check_dependencies=lambda: None,  # 测子进程会话，不必碰原生扩展
     )
     daemon.start()
@@ -94,7 +94,7 @@ def test_status_reports_the_endpoint(running: tuple[str, DaemonConfig]):
     name = running
     with _Session(address(name)) as session:
         data = session.data(Command.DAEMON_STATUS)
-        assert data["listen"] == address(name)
+        assert data["endpoint"] == address(name)
         assert data["sessions"] == 0
 
 

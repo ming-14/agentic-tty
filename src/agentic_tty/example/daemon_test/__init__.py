@@ -1,7 +1,4 @@
-"""守护进程的验证台：**纯消费者**——连一个已经在跑的守护进程，一切经接入点往返。
-
-只 import 公共层（`config` / `foundation` / `protocol` / `transport`）与 `example/ui`。
-"""
+"""守护进程的验证台：**纯消费者**——连一个已经在跑的守护进程，一切经接入点往返。"""
 
 from __future__ import annotations
 

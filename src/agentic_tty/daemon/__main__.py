@@ -29,8 +29,7 @@ def main(argv: list[str] | None = None) -> int:
         except OSError as exc:  # 目录不存在 / 没权限
             parser.error(f"--cwd 进不去: {exc}")
 
-    # 端点名就用实例名（`DaemonConfig.listen` 的 `None` 是留给进程内嵌入 / 单测的"不挂监听"）
-    return run(DaemonConfig(name=DEFAULT_INSTANCE, listen=DEFAULT_INSTANCE))
+    return run(DaemonConfig(name=DEFAULT_INSTANCE))
 
 
 if __name__ == "__main__":

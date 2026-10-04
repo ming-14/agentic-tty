@@ -24,6 +24,5 @@ class EnvelopeError(ProtocolError):
 class MessageError(ProtocolError):
     """消息体内字段缺失或类型不对。
 
-    与 `EnvelopeError` 分开只是为了定位方便——两者都是"对端送来的东西不合法"，
-    调用方按 `ProtocolError` 一把兜住即可。
+    与 `EnvelopeError` 分开只是为了定位方便——两者调用方都按 `ProtocolError` 兜住即可。
     """

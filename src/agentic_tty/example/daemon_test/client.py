@@ -1,11 +1,11 @@
 """协议客户端：连守护进程、发请求、收答复。
 
-**只碰 `protocol` / `transport`**——不认识 core，也不认识 daemon。读在**后台线程**里做
-（Tk 主线程要跑 `mainloop`、不能阻塞），凑齐的答复经 `on_reply` 交出去，界面在 tick 里
-取。请求与答复靠 `mid` 关联；答复可能是控制帧（文本）也可能是字节帧（位图 / 字节流）。
+读在**后台线程**里做（Tk 主线程要跑 `mainloop`、不能阻塞），凑齐的答复经 `on_reply`
+交出去，界面在 tick 里取。请求与答复靠 `mid` 关联；答复可能是控制帧（文本）也可能是
+字节帧（位图 / 字节流）。
 
-**连不上就重连**：守护进程可能还在起（监听还没挂上）。**能连上就是"它装好了"**——挂监听
-排在"建请求处理层"之后，所以连得上就一定服务得了，不需要任何就绪文件。
+**连不上就重连**：守护进程可能还在起（监听还没挂上）。**能连上就是"它装好了"**——
+挂监听排在"建请求处理层"之后，所以连得上就一定服务得了，不需要任何就绪文件。
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ...foundation.logs import get_logger
-from ...protocol.contracts.daemon_ipc import STREAM_STDOUT
+from ...protocol.contracts.daemon_ipc import STREAM_STDIN
 from ...protocol.envelope import Envelope, from_json, make_request, to_json
 from ...protocol.errors import ProtocolError
 from ...protocol.frame import (
@@ -99,7 +99,7 @@ class Client:
 
     def write(self, uid: str, data: bytes) -> None:
         """往某个会话写字节。**走字节帧**——字节不进 JSON，省掉 base64 的三分之一膨胀。"""
-        self._require().send(encode_bytes(STREAM_STDOUT, uid, data))
+        self._require().send(encode_bytes(STREAM_STDIN, uid, data))
 
     def close(self) -> None:
         self._closing.set()

@@ -1,15 +1,11 @@
 """守护进程本体：生命周期管理，承载核心层，转发。
 
-**它没有业务代码**，也不实现网络。它管三件事：
+装配顺序即依赖顺序——取单实例锁 → 依赖检查（由装配层注入）→ 数据目录与日志 →
+构造请求处理层 → 挂接入点 → 装信号 → 进循环；每一步都能回滚，停止时逆序收尾。
 
-1. **自身的生命周期**：装配顺序即依赖顺序——取单实例锁 → 依赖检查（由装配层注入）→
-   数据目录与日志 → 构造请求处理层 → 挂接入点 → 装信号 → 进循环；每一步都能回滚，
-   停止时逆序收尾并带整体超时兜底。
-2. **承载核心层**：把 `core` 装进这个进程，并做唯一的**所有者线程**。
-3. **转发**：接入点（本机管道）上的请求进接缝，答复按请求身份写回它来的那条连接。
-
-**请求与答复对它不透明**：接入点把线协议解成 `Envelope` 投进 `submit`；它在所有者线程
-上交给注入的处理层。没挂接入点（进程内消费者）时走构造时注入的 `on_reply`。
+**两条请求通路**：接入点上的请求已经在所有者线程上，直接交给处理层；跨线程投递
+（进程内消费者）走有界入站队列，投递方在队列满时等待、背压传回消费者。两条路都汇到
+同一个 `_dispatch`。
 
 **收尾也在所有者线程上做**：处理层只许被那一个线程碰（它的契约就是"不需要锁"），
 所以 `run()` 看到停止标志后自己 draining + 收尾；`stop()` 只负责"发信号 + 等它做完"。
@@ -123,15 +119,17 @@ class Daemon:
     # ════════════════════════════════════════════════════════════
 
     def submit(self, request: object) -> SubmitOutcome:
-        """把一条请求投给所有者线程。**任何线程都可以调用**，消费者的读线程用它。
+        """**跨线程**把一条请求投给所有者线程（消费者的读线程用它）。
 
         队列满时投递方等待——背压一路传回消费者，守护进程不无限缓冲。返回 `STOPPING`
         表示已被请求停止，调用方应当放弃这条请求。
+
+        接入点上的请求不走这里（它本来就在所有者线程上，见 `_serve`）。
         """
         return self._offer(request)
 
     def submit_input(self, key: str, data: bytes) -> SubmitOutcome:
-        """把一段上行字节投给所有者线程。**任何线程都可以调用。**
+        """**跨线程**把一段上行字节投给所有者线程。
 
         `key` 的语义由消费者定（如会话 uid）；与 `core.runtime` 的 `submit_input` 同名
         但含义不同——后者返回的是输入队列的判定。
@@ -193,18 +191,32 @@ class Daemon:
         self._handler = self._handler_factory()
 
     def _mount_access_point(self) -> None:
-        """挂接入点——配置里给了端点名才挂（它是守护进程对外的唯一口子）。
-
-        端点名要经 `endpoint_name()` 加前缀：**地址是"算出来"的，两端用同一套命名**。
-        """
-        name = self._config.listen
-        if name is None:
+        """挂接入点。地址由**实例名**算出来（`endpoint_name()` 加前缀 ＋ 运行时目录）。"""
+        if not self._config.mount_endpoint:
             return
-        address = pipe_address(endpoint_name(name), self._dir)
+        address = pipe_address(endpoint_name(self._config.name), self._dir)
         self._access_point = AccessPoint(
-            address, on_request=self.submit, on_input=self.submit_input
+            address, on_request=self._serve, on_input=self._serve_input
         )
         self._access_point.open()
+
+    def _serve(self, request: object) -> None:
+        """接入点来源的请求：**已经在所有者线程上**，直接处理并回写，不经队列。
+
+        进队列会死等——队列唯一的排空方就是本线程的 `_drain_inbound`，它排在接入点
+        之后才跑；一轮里投进来的条目一旦超过队列长度就再也出不去。
+        """
+        self._dispatch(self._handler_ready(), request)
+
+    def _serve_input(self, key: str, data: bytes) -> None:
+        """接入点来源的上行字节——同样在所有者线程上，直接交给处理层。"""
+        self._dispatch(self._handler_ready(), _Input(key, data))
+
+    def _handler_ready(self) -> RequestHandler:
+        handler = self._handler
+        if handler is None:  # 接入点在请求处理层建好之后才挂，正常到不了这儿
+            raise NotStarted("请求处理层未装配")
+        return handler
 
     def _install_signals(self) -> None:
         self._signals = install_shutdown_handler(self._on_signal)
@@ -245,9 +257,7 @@ class Daemon:
         """
         if not self._started:
             raise NotStarted("守护进程未启动")
-        handler = self._handler
-        if handler is None:
-            raise NotStarted("请求处理层未装配")
+        handler = self._handler_ready()
         _logger.info("进入事件循环 pid=%s", os.getpid())
         self._loop_ran = True
         try:
@@ -263,7 +273,7 @@ class Daemon:
     def _wait_for_work(self) -> None:
         """这一轮的空闲等待。
 
-        接入点在场就在它的 `accept` 上等（顺带读一轮连接，请求当轮就能进队列）；
+        接入点在场就在它的 `accept` 上等（顺带读一轮连接，请求当轮就处理掉）；
         没挂接入点（进程内消费者）就纯定时。
         """
         if self._access_point is not None:
@@ -272,7 +282,7 @@ class Daemon:
             time.sleep(self._config.tick_interval)
 
     def _drain_inbound(self, handler: RequestHandler, limit: int | None = _INBOUND_BATCH) -> None:
-        """把消费者投进来的请求与上行字节交给处理层。**只在所有者线程上跑。**
+        """把**跨线程**投进来的请求与上行字节交给处理层。**只在所有者线程上跑。**
 
         `limit=None` 表示一直取到队空——收尾时用（`submit` 已 ack 的必须处理掉）。
         """
@@ -283,12 +293,16 @@ class Daemon:
             except queue.Empty:
                 return
             taken += 1
-            if isinstance(item, _Input):
-                self._on_input(handler, item)
-            else:
-                reply = self._handle(handler, item)
-                if reply is not None:
-                    self._deliver_one(reply)
+            self._dispatch(handler, item)
+
+    def _dispatch(self, handler: RequestHandler, item: object) -> None:
+        """处理一条请求或一段上行字节——两条通路（接入点直投 / 队列排空）汇到这里。"""
+        if isinstance(item, _Input):
+            self._on_input(handler, item)
+            return
+        reply = self._handle(handler, item)
+        if reply is not None:
+            self._deliver_one(reply)
 
     def _on_input(self, handler: RequestHandler, item: _Input) -> None:
         try:

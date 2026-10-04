@@ -3,7 +3,8 @@
 守护进程不认识 `sid`——那是下游消费者的语义。因此这一侧所有的键一律是 `uid`；
 返回条件、会话标签这些属于消费者的东西，一概不在这里。
 
-原语直接对着 core 的能力：起会话、读写、订阅、改尺寸、看状态。
+原语直接对着 core 的能力：起会话、读、改尺寸、看状态。**写不占命令**——它走字节帧
+上行（`STREAM_STDIN`），一个字节都不用进 JSON。
 """
 
 from __future__ import annotations
@@ -23,16 +24,15 @@ class Command(StrEnum):
     CLOSE_SESSION = "close_session"
     LIST_SESSIONS = "list_sessions"
     READ_SESSION = "read_session"
-    WRITE_SESSION = "write_session"
     RESIZE_SESSION = "resize_session"
-    SUBSCRIBE = "subscribe"
-    UNSUBSCRIBE = "unsubscribe"
 
 
 # 流标签：线上的 1 字节取值 ↔ 流名。流名必须与 core 的 `Stream` 取值一致
-# （协议层不 import core，靠测试对齐）。
+# （协议层不 import core）。
 STREAM_STDOUT = 0x01
 STREAM_STDERR = 0x02
+STREAM_STDIN = 0x03
+"""上行字节的方向标签。输入只有一个方向，这个标签只为把上行与下行同型帧区分开。"""
 
 _STREAM_NAMES = {STREAM_STDOUT: "stdout", STREAM_STDERR: "stderr"}
 _STREAM_TAGS = {name: tag for tag, name in _STREAM_NAMES.items()}
@@ -71,22 +71,6 @@ class ReadMode(StrEnum):
     """可见屏幕的位图（png），以字节帧返回（pty 专属）。"""
     BYTES = "bytes"
     """字节流全量（原始真源），以字节帧返回。"""
-
-
-class Kind(StrEnum):
-    """`kind` 字段：呈现意图，表示层据此选渲染通道。"""
-
-    TEXT = "text"
-    SCREEN = "screen"
-    IMAGE = "image"
-    BYTES = "bytes"
-
-
-# 终端模型的字符格基准像素。`read_session` 的 image 模式由守护进程按这个基准渲染，
-# 客户端拿会话的 cols / rows 估算缩放；两端都得能拿到，所以放在共享契约里，
-# 而不是各自硬编码一份。
-DEFAULT_CELL_WIDTH = 8
-DEFAULT_CELL_HEIGHT = 17
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,7 +138,8 @@ class DaemonStatus:
     started_at: str
     uptime: float
     sessions: int
-    listen: str
+    endpoint: str
+    """接入点地址；不挂接入点时为空串。"""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -162,7 +147,7 @@ class DaemonStatus:
             "started_at": self.started_at,
             "uptime": self.uptime,
             "sessions": self.sessions,
-            "listen": self.listen,
+            "endpoint": self.endpoint,
         }
 
     @classmethod
@@ -175,7 +160,7 @@ class DaemonStatus:
                 started_at=str(raw["started_at"]),
                 uptime=float(raw["uptime"]),
                 sessions=int(raw["sessions"]),
-                listen=str(raw["listen"]),
+                endpoint=str(raw["endpoint"]),
             )
         except KeyError as exc:
             raise MessageError(f"守护进程状态缺少字段: {exc}") from exc

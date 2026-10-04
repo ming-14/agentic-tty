@@ -1,11 +1,7 @@
 """接入点：把线协议接进接缝。
 
-守护进程对外的**唯一口子**——本机管道（`transport` 的 `pipe://`），**不是网络**：
-不开 TCP 端口、外部不可达；一个名字上可以同时接多条连接，每条是独立的一条双向字节流。
-
-它做四件事：挂监听、accept、按连接解帧、把答复按请求身份写回。
-
-**接缝对它不透明**：它只认 `protocol` 的帧与信封，不认识 `sid`、等待引擎、订阅。
+本机管道（`transport` 的 `pipe://`）：一个名字上可以同时接多条连接，每条是独立的一条
+双向字节流。挂监听、accept、按连接解帧、把答复按请求身份写回。
 
 - 控制帧 → 解成 `Envelope`，包进 `WireRequest` 投 `on_request`。
 - 字节帧 → `on_input(key, data)`。
@@ -20,6 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from ..foundation.logs import get_logger
+from ..protocol.contracts.daemon_ipc import STREAM_STDIN
 from ..protocol.envelope import Envelope, from_json, to_json
 from ..protocol.errors import EnvelopeError, ProtocolError
 from ..protocol.frame import (
@@ -48,7 +45,6 @@ class ByteChunk:
     """答复里的一段原始字节（会话输出 / 订阅推送）——以字节帧回给对端。
 
     `tag` 是流标签（取值见 `protocol.contracts.daemon_ipc`），`key` 是消息 `mid`。
-    字节不走 JSON，否则每个字节都要 base64。
     """
 
     tag: int
@@ -60,9 +56,8 @@ class ByteChunk:
 class WireRequest:
     """接缝上的请求对象：一个信封 ＋ 它来的那条连接。
 
-    **路由不靠 `id(request)`**：答复迟早会来，而请求对象一旦被回收，它的 id 就会被别的
-    对象复用，答复就会回错连接。把连接直接挂在请求对象上，就不需要任何旁表——它活多久，
-    路由就在多久。
+    **路由不靠 `id(request)`**：请求对象一旦被回收，它的 id 就会被别的对象复用，
+    答复就会回错连接。把连接直接挂在请求对象上，就不需要任何旁表。
 
     请求处理层只用 `envelope`；`connection` 是接入点自己的路由凭据。
     """
@@ -217,12 +212,17 @@ class AccessPoint:
 
     def _dispatch(self, connection: _Connection, frame: ControlFrame | BytesFrame) -> None:
         if isinstance(frame, BytesFrame):
+            if frame.tag != STREAM_STDIN:
+                # 上行只认"输入"这一个标签；别的标签说明对端把下行帧发错了方向。
+                _logger.warning("上行字节标签不合法 peer=%s: %#x", connection.peer, frame.tag)
+                connection.close()
+                return
             self._on_input(frame.key, frame.data)
             return
         try:
             envelope = from_json(frame.data)
         except EnvelopeError as exc:
-            # 信封解不开：这条流作废（与 FrameReader 的"错位即作废"同一规矩）。
+            # 信封解不开 = 这条流作废（与 FrameReader"错位即作废"同一规矩）。
             _logger.warning("信封不合法 peer=%s: %s", connection.peer, exc)
             connection.close()
             return

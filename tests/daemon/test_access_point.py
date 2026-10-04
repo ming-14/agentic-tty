@@ -14,7 +14,7 @@ import pytest
 
 from agentic_tty.daemon.access_point import AccessPoint, ByteChunk, WireRequest
 from agentic_tty.daemon.handler import Reply
-from agentic_tty.protocol.contracts.daemon_ipc import STREAM_STDOUT
+from agentic_tty.protocol.contracts.daemon_ipc import STREAM_STDIN, STREAM_STDOUT
 from agentic_tty.protocol.envelope import Envelope, from_json, make_request, to_json
 from agentic_tty.protocol.frame import (
     BytesFrame,
@@ -104,8 +104,21 @@ def test_bytes_frame_reaches_on_input(point: tuple[AccessPoint, _Seam]):
     access_point, seam = point
     connection = _connect(access_point)
     try:
-        connection.send(encode_bytes(STREAM_STDOUT, "uid-1", b"hello"))
+        connection.send(encode_bytes(STREAM_STDIN, "uid-1", b"hello"))
         assert _pump_until(access_point, lambda: seam.inputs == [("uid-1", b"hello")])
+    finally:
+        connection.close()
+
+
+def test_upstream_frame_with_a_downstream_tag_is_rejected(point: tuple[AccessPoint, _Seam]):
+    """上行只认"输入"标签——拿下行标签冒充上行是对方的错，不是静默丢弃。"""
+    access_point, seam = point
+    connection = _connect(access_point)
+    try:
+        assert _pump_until(access_point, lambda: access_point.connection_count == 1)
+        connection.send(encode_bytes(STREAM_STDOUT, "uid-1", b"oops"))
+        assert _pump_until(access_point, lambda: access_point.connection_count == 0)
+        assert seam.inputs == []
     finally:
         connection.close()
 

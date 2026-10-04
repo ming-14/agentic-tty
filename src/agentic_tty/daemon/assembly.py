@@ -1,6 +1,5 @@
 """装配层：把 core 装进请求处理层，交给 `Daemon`，起它。
 
-与 `core` 自带 `core.runtime` 是同一手法——**默认实现自带，注入点保留**：
 `build(config, handler_factory=…)` 可以换成任何请求处理层，`Daemon` 与 core 一行不用改。
 
 **强制退出在这里**：`stop()` 带超时返回"是否停干净"，拿到否就 `os._exit`——库不杀进程。
@@ -23,11 +22,14 @@ _logger = get_logger("daemon.assembly")
 
 
 def endpoint_address(config: DaemonConfig) -> str:
-    """配置指向的那个接入点地址——与 `Daemon` 实际挂的是同一个（含运行时目录那一段）。"""
-    if config.listen is None:
+    """配置指向的那个接入点地址——与 `Daemon` 实际挂的是同一个（含运行时目录那一段）。
+
+    `mount_endpoint` 为假时没有接入点，返回空串。
+    """
+    if not config.mount_endpoint:
         return ""
     directory = config.runtime_dir or runtime_dir(config.name)
-    return pipe_address(endpoint_name(config.listen), directory)
+    return pipe_address(endpoint_name(config.name), directory)
 
 
 def build(
@@ -38,7 +40,7 @@ def build(
     不给 `handler_factory` 就用自带的 `KernelHandler`。
     """
     address = endpoint_address(config)
-    factory = handler_factory or (lambda: KernelHandler(listen=address))
+    factory = handler_factory or (lambda: KernelHandler(endpoint=address))
     return Daemon(config, factory, check_dependencies=check_dependencies)
 
 

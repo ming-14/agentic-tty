@@ -7,11 +7,10 @@ import pytest
 from agentic_tty.core.ports import Stream
 from agentic_tty.protocol.contracts.daemon_ipc import (
     STREAM_STDERR,
+    STREAM_STDIN,
     STREAM_STDOUT,
     Command,
     DaemonStatus,
-    Kind,
-    ReadMode,
     SessionRef,
     stream_name,
     stream_tag,
@@ -22,8 +21,7 @@ from agentic_tty.protocol.errors import MessageError, ProtocolError
 def test_uid_level_command_names():
     assert Command.CREATE_SESSION == "create_session"
     assert Command.READ_SESSION == "read_session"
-    assert Command.WRITE_SESSION == "write_session"
-    assert Command.SUBSCRIBE == "subscribe"
+    assert Command.RESIZE_SESSION == "resize_session"
 
 
 def test_stream_tag_roundtrip():
@@ -38,6 +36,11 @@ def test_stream_names_match_the_core_enum():
     assert stream_name(STREAM_STDERR) == Stream.STDERR.value
 
 
+def test_stdin_tag_is_distinct():
+    """上行有自己那一个标签——不借用下行的 stdout。"""
+    assert STREAM_STDIN not in (STREAM_STDOUT, STREAM_STDERR)
+
+
 def test_unknown_stream_is_rejected():
     with pytest.raises(MessageError, match="未知流"):
         stream_tag("stdin")
@@ -46,11 +49,6 @@ def test_unknown_stream_is_rejected():
 def test_unknown_stream_tag_is_rejected():
     with pytest.raises(MessageError, match="未知流标签"):
         stream_name(0x7F)
-
-
-def test_image_mode_aligns_with_the_rendering_channel():
-    """纯客户端没有终端模型，屏幕得由守护进程渲染好送过来。"""
-    assert ReadMode.IMAGE.value == Kind.IMAGE.value == "image"
 
 
 def test_session_ref_roundtrip():
@@ -107,7 +105,7 @@ def test_daemon_status_roundtrip():
         started_at="2026-10-01T21:00:00.000",
         uptime=12.5,
         sessions=2,
-        listen="pipe://agentic-tty",
+        endpoint="pipe://agentic-tty",
     )
     assert DaemonStatus.from_dict(status.to_dict()) == status
 

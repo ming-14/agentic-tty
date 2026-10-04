@@ -17,7 +17,7 @@ def test_name_comes_from_the_constant():
 
 def test_daemon_defaults_are_the_assembly_parameters():
     config = DaemonConfig()
-    assert config.listen is None  # None = 不挂监听（留给进程内嵌入 / 单测）
+    assert config.mount_endpoint is True
     assert config.tick_interval > 0
     assert config.stop_timeout > config.drain_timeout
     assert config.write_log_file is True

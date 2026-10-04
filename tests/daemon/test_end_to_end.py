@@ -15,7 +15,7 @@ from agentic_tty.config import DaemonConfig, endpoint_name
 from agentic_tty.daemon.access_point import WireRequest
 from agentic_tty.daemon.handler import Reply
 from agentic_tty.daemon.server import Daemon
-from agentic_tty.protocol.contracts.daemon_ipc import STREAM_STDOUT
+from agentic_tty.protocol.contracts.daemon_ipc import STREAM_STDIN
 from agentic_tty.protocol.envelope import from_json, make_request, to_json
 from agentic_tty.protocol.frame import ControlFrame, FrameReader, encode_bytes, encode_control
 from agentic_tty.protocol.response import data_of, error_of, failed_response, ok_response
@@ -69,7 +69,7 @@ class _EchoHandler:
 class _Running:
     """起一个真守护进程（挂接入点），退出时收尾。"""
 
-    def __init__(self, tmp_path) -> None:
+    def __init__(self, tmp_path, **overrides: object) -> None:
         self.name = f"e2e-{uuid4().hex[:8]}"
         self.runtime_dir = tmp_path / "run"
         self.handler = _EchoHandler()
@@ -78,8 +78,8 @@ class _Running:
                 name=self.name,
                 runtime_dir=self.runtime_dir,
                 write_log_file=False,
-                listen=self.name,
                 tick_interval=0.001,
+                **overrides,
             ),
             lambda: self.handler,
             check_dependencies=lambda: None,
@@ -137,7 +137,7 @@ def test_input_bytes_reach_the_handler_and_produce_no_answer(tmp_path):
     with _Running(tmp_path) as running:
         connection = running.connect()
         try:
-            connection.send(encode_bytes(STREAM_STDOUT, "uid-1", b"typed\n"))
+            connection.send(encode_bytes(STREAM_STDIN, "uid-1", b"typed\n"))
             assert running.wait_inputs() == [("uid-1", b"typed\n")]
             assert _read_frames(connection, budget=0.2) == []  # 上行字节是单向的
         finally:
@@ -157,5 +157,26 @@ def test_handler_failure_comes_back_as_a_failed_answer(tmp_path):
             failure = error_of(answer)
             assert failure is not None
             assert failure.code == "Boom"
+        finally:
+            connection.close()
+
+
+def test_access_point_answers_even_when_many_requests_arrive_at_once(tmp_path):
+    """接入点来源的请求在所有者线程上直投处理层，不进队列——绝不因队列满而自锁。
+
+    入站队列只有同线程的排空方；若接入点也往它里面塞，一轮里投进来的第 N 条（N > 队列
+    长度）就会死等一个永远轮不到的 `get`。这里把队列压到 1，一条连接上连发多条请求。
+    """
+    with _Running(tmp_path, inbound_maxsize=1) as running:
+        connection = running.connect()
+        try:
+            requests = [make_request("ping", op={"n": i}) for i in range(5)]
+            for request in requests:
+                connection.send(encode_control(to_json(request)))
+            frames = _read_frames(connection, count=len(requests))
+            control = [frame for frame in frames if isinstance(frame, ControlFrame)]
+            assert {from_json(frame.data).mid for frame in control} == {
+                request.mid for request in requests
+            }
         finally:
             connection.close()
