@@ -151,14 +151,17 @@ def test_input_bytes_and_byte_answer_stay_off_json(running: tuple[str, DaemonCon
 
 
 def test_unknown_command_comes_back_as_a_failed_answer(running: tuple[str, DaemonConfig]):
-    """守护进程不认识的命令要明确报错，不能让客户端干等。"""
+    """守护进程不认识的命令要明确报错，不能让客户端干等。
+
+    错误码是 `MessageError`——对端送错了东西属可预期结果，与解消息体字段同一类。
+    """
     name = running
     with _Session(address(name)) as session:
         answer = session.ask("nonsense")
         assert answer.envelope is not None
         assert not is_ok(answer.envelope)
         failure = error_of(answer.envelope)
-        assert failure is not None and failure.code == "ValueError"
+        assert failure is not None and failure.code == "MessageError"
 
 
 def test_subscribe_pushes_bytes_then_ends(running: tuple[str, DaemonConfig]):

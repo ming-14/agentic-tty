@@ -6,6 +6,10 @@
 
 from __future__ import annotations
 
+import logging
+
+import pytest
+
 from agentic_tty.core.ports import PTY, SessionSpec, Stream
 from agentic_tty.core.session.base import Session
 from agentic_tty.core.session.registry import SessionRegistry
@@ -166,3 +170,49 @@ class _Recorder:
 
     def request_stop(self) -> None:
         self._events.append("stop")
+
+
+@pytest.mark.parametrize(
+    ("label", "op", "command"),
+    [
+        ("未知 mode", {"mode": "bogus"}, Command.READ_SESSION),
+        ("未知 stream", {"mode": "bytes", "stream": "bogus"}, Command.READ_SESSION),
+        ("tail 不可转数字", {"mode": "bytes", "tail": [1]}, Command.READ_SESSION),
+        ("cols 不可转数字", {"cols": [1], "rows": 24}, Command.RESIZE_SESSION),
+        ("未知命令", {}, "no_such_command"),
+    ],
+)
+def test_peer_side_bad_input_becomes_a_failure_answer(label, op, command):
+    """对端送来的东西不合法**一律收成失败答复**，不许以裸异常穿透 `handle`。
+
+    `int()` 对列表抛 `TypeError`、枚举对不认识的值抛 `ValueError`——它们看着像程序错误，
+    实际都是"对端发错了"。穿透出去会被上层记成守护进程内部故障，归因完全错位。
+    """
+    registry = SessionRegistry(lambda spec: FakeHost(spec, FakeProgram()))
+    handler = KernelHandler(registry)
+    session = registry.create(SessionSpec(mode=PTY, argv=("x",)))
+    wire = WireRequest(make_request(command, op={"uid": session.uid, **op}), _CONNECTION)
+    try:
+        reply = handler.handle(wire)
+        assert reply is not None, f"{label}: 没有交出失败答复"
+        output = reply.answer.payload.output
+        assert output["ok"] is False, f"{label}: 竟然成功了"
+        assert output["error"]["code"] == "MessageError", f"{label}: 错误类型不对"
+    finally:
+        session.close()
+
+
+def test_unexpected_error_still_reports_a_stack(caplog):
+    """反过来：真出 bug（非 `AgenticTtyError`）必须留下堆栈——那才是该查的东西。"""
+    session = _session()
+    handler = KernelHandler()
+    handler._dispatch = lambda _wire: (_ for _ in ()).throw(RuntimeError("模拟内部 bug"))
+    wire = WireRequest(make_request(Command.DAEMON_STATUS), _CONNECTION)
+    try:
+        with caplog.at_level(logging.ERROR, logger="agentic_tty.daemon.kernel"):
+            reply = handler.handle(wire)
+        assert reply is not None
+        assert reply.answer.payload.output["error"]["code"] == "RuntimeError"
+        assert any(record.exc_info for record in caplog.records), "意外错误没有记堆栈"
+    finally:
+        session.close()

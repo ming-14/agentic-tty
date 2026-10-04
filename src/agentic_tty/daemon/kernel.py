@@ -12,7 +12,8 @@ import time
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, cast
+from enum import StrEnum
+from typing import Any, TypeVar, cast
 
 from ..core.errors import CoreError, OffsetTrimmed
 from ..core.ports import PTY, SUBPROCESS, SessionSpec, Stream
@@ -25,10 +26,12 @@ from ..core.session.registry import SessionKind, SessionRegistry
 from ..core.session.state import SessionState
 from ..core.session.subscription import Subscription
 from ..core.terminal.session import TerminalSession
+from ..foundation.errors import AgenticTtyError
 from ..foundation.ids import now_timestamp
 from ..foundation.logs import get_logger
 from ..protocol.contracts.daemon_ipc import Command, Event, ReadMode, SessionRef, stream_tag
 from ..protocol.envelope import Envelope
+from ..protocol.errors import MessageError
 from ..protocol.response import failed_response, ok_response
 from .access_point import ByteChunk, WireRequest
 from .handler import Delivery, Reply, StopSignal
@@ -39,6 +42,9 @@ _PUSH_BUDGET = 1 << 16
 """每轮每个订阅最多取多少字节——分片拉取，别把积压一次倒完。"""
 _PUSH_INFLIGHT = 8
 """每个订阅最多允许多少帧在途（尚未被投递确认）——出站队列有限，别把它撑满。"""
+
+_E = TypeVar("_E", bound=StrEnum)
+"""取参辅助用的枚举类型。"""
 
 
 @dataclass
@@ -61,6 +67,42 @@ class _Sub:
 def _text(op: Mapping[str, Any], key: str, default: str = "") -> str:
     value = op.get(key)
     return default if value is None else str(value)
+
+
+def _number(op: Mapping[str, Any], key: str) -> int:
+    """取一个整数参数；缺省为 0。
+
+    对端给的可能是任何 JSON 值，`int()` 对"字符串但不是数"抛 `ValueError`、对"列表/对象"
+    抛 `TypeError`——两者都是**对端送错东西**，属可预期结果，一律收成 `MessageError`
+    （与 `protocol` 解消息体字段同源）。裸 `TypeError` 逃出去会被上层当成守护进程内部故障。
+    """
+    value = op.get(key)
+    if value is None:
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise MessageError(f"{key} 不是整数: {value!r}") from exc
+
+
+def _real(op: Mapping[str, Any], key: str, default: float) -> float:
+    """取一个实数参数（同 `_number`，只是出浮点）。"""
+    value = op.get(key)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise MessageError(f"{key} 不是数: {value!r}") from exc
+
+
+def _enum(op: Mapping[str, Any], key: str, cls: type[_E], default: str = "") -> _E:
+    """取一个枚举参数；不认识的值是**对端送错了**，收成 `MessageError`。"""
+    raw = _text(op, key, default)
+    try:
+        return cls(raw)
+    except ValueError as exc:
+        raise MessageError(f"未知 {key}: {raw!r}") from exc
 
 
 def _members(session: Session) -> int | None:
@@ -104,10 +146,22 @@ class KernelHandler:
         self._stop = stop
 
     def handle(self, request: object) -> Reply | None:
+        """处理一条请求，**任何异常都收成失败答复**——不许穿透到守护进程。
+
+        分两档（这是接缝的契约：`handle` 不抛异常）：
+
+        - **可预期的失败**（`AgenticTtyError`：core 的领域错误、协议的对端错误、系统 IO）：
+          对端送了坏东西或环境不配合，转成失败答复即可，**不记堆栈**——它不是内部缺陷。
+        - **意外失败**（其余异常）：真出 bug 了，记 `logger.exception` 留堆栈，照样答复。
+          不能让消费者干等，也不能让 `daemon` 的循环把一次请求失败当成进程故障。
+        """
         wire = cast(WireRequest, request)
         try:
             answer = self._dispatch(wire)
-        except (CoreError, OSError, ValueError) as exc:
+        except AgenticTtyError as exc:
+            return Reply(request=wire, answer=_failed(wire.envelope, exc))
+        except Exception as exc:
+            _logger.exception("处理请求时出现意外错误 mid=%s", wire.envelope.mid)
             return Reply(request=wire, answer=_failed(wire.envelope, exc))
         return Reply(request=wire, answer=answer)
 
@@ -204,7 +258,7 @@ class KernelHandler:
         if command == Command.UNSUBSCRIBE:
             self._subs.pop(_text(op, "sub_id"), None)
             return ok_response(command, envelope.mid, {})
-        raise ValueError(f"未知命令: {command}")
+        raise MessageError(f"未知命令: {command}")
 
     # ════════════════════════════════════════════════════════════
     # 订阅
@@ -215,9 +269,9 @@ class KernelHandler:
         envelope = wire.envelope
         op = envelope.payload.op
         session = self._runtime.get(_text(op, "uid"))
-        stream = Stream(_text(op, "stream", Stream.STDOUT.value))
+        stream = _enum(op, "stream", Stream, Stream.STDOUT.value)
         cursor = op.get("cursor")
-        sub = Subscription(session, stream, None if cursor is None else int(cursor))
+        sub = Subscription(session, stream, None if cursor is None else _number(op, "cursor"))
         self._subs[envelope.mid] = _Sub(wire, session, stream, sub)
         return ok_response(
             envelope.type,
@@ -304,8 +358,8 @@ class KernelHandler:
         spec = SessionSpec(
             mode=_text(op, "mode"),
             argv=argv,
-            cols=int(op.get("cols") or 80),
-            rows=int(op.get("rows") or 24),
+            cols=_number(op, "cols") or 80,
+            rows=_number(op, "rows") or 24,
             # 请求里给了就在那儿跑；没给 = 继承守护进程的目录（守护进程自己的目录由入口的
             # `--cwd` 定，见 `daemon/__main__.py`）
             cwd=_text(op, "cwd") or None,
@@ -316,12 +370,12 @@ class KernelHandler:
 
     def _read(self, envelope: Envelope, op: Mapping[str, Any]) -> Envelope | ByteChunk:
         session = self._runtime.get(_text(op, "uid"))
-        mode = ReadMode(_text(op, "mode"))
-        stream = Stream(_text(op, "stream", Stream.STDOUT.value))
+        mode = _enum(op, "mode", ReadMode)
+        stream = _enum(op, "stream", Stream, Stream.STDOUT.value)
         if mode is ReadMode.BYTES:
             # 只取尾部——`read_all` 会把整个保留区复制一遍，客户端每轮都读它。
             journal = session.journal_for(stream)
-            tail = int(op.get("tail") or 0)
+            tail = _number(op, "tail")
             start = max(journal.start_offset, journal.end_offset - tail) if tail > 0 else 0
             data = session.read_range(start, journal.end_offset, stream)
             return ByteChunk(tag=stream_tag(stream.value), key=envelope.mid, data=data)
@@ -333,7 +387,7 @@ class KernelHandler:
         elif mode is ReadMode.SVG:
             text = terminal.render_svg()
         else:  # IMAGE：位图由守护进程渲染好，客户端只管显示
-            scale = float(op.get("scale") or 1.0)
+            scale = _real(op, "scale", 1.0)
             return ByteChunk(
                 tag=stream_tag(Stream.STDOUT.value),
                 key=envelope.mid,
@@ -347,10 +401,10 @@ class KernelHandler:
         )
 
     def _resize(self, envelope: Envelope, op: Mapping[str, Any]) -> Envelope:
-        cols = int(op.get("cols") or 0)
-        rows = int(op.get("rows") or 0)
+        cols = _number(op, "cols")
+        rows = _number(op, "rows")
         if cols <= 0 or rows <= 0:
-            raise ValueError(f"尺寸不合法: {cols}×{rows}")
+            raise MessageError(f"尺寸不合法: {cols}×{rows}")
         self._terminal(self._runtime.get(_text(op, "uid"))).resize(cols, rows)
         return ok_response(envelope.type, envelope.mid, {"cols": cols, "rows": rows})
 
