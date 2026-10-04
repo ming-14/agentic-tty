@@ -6,6 +6,7 @@ import ast
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "agentic_tty"
+VENDOR = Path(__file__).resolve().parents[1] / "vendor"
 
 # 允许的依赖：包 → 它可以依赖的顶层包
 _ALLOWED: dict[str, frozenset[str]] = {
@@ -291,3 +292,36 @@ def test_daemon_only_uses_the_local_pipe():
                 if target in forbidden:
                     violations.append(f"{path.relative_to(SRC)} → {target}")
     assert not violations, "daemon 用了 transport 的网络部分:\n" + "\n".join(violations)
+
+
+_VENDORED_MODULES = ("condrv", "openpty")
+"""`vendor/` 里**自研**的模块——它们与第三方依赖放在同一处，所以方向得自己守住。"""
+
+
+def _top_level_imports(path: Path) -> list[str]:
+    """只取绝对 import 的顶层名（`vendor/` 不在 `SRC` 下，解不了相对导入）。"""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    names: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names.append(node.module)
+    return names
+
+
+def test_vendored_modules_never_import_the_app():
+    """`vendor/` 里的自研模块是被依赖方，反向 import `agentic_tty` 就把层次倒过来了。
+
+    分层测试只扫 `src/agentic_tty`，够不到这里，所以单列一条。
+    """
+    violations: list[str] = []
+    for name in _VENDORED_MODULES:
+        package = VENDOR / name
+        if not package.is_dir():
+            continue
+        for path in sorted(package.rglob("*.py")):
+            for target in _top_level_imports(path):
+                if target.split(".")[0] == "agentic_tty":
+                    violations.append(f"vendor/{name}/{path.name} → {target}")
+    assert not violations, "vendor 模块反向依赖了 agentic_tty:\n" + "\n".join(violations)
