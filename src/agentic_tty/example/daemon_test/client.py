@@ -120,19 +120,28 @@ class Client:
         return self._connection
 
     def _read_loop(self) -> None:
-        """后台读：凑齐一帧交一帧。**只在这里读连接。**"""
+        """后台读：凑齐一帧交一帧。**只在这里读连接。**
+
+        连接一没（对端关了 / 帧流作废）就**置回未连接**并关掉句柄——上层靠 `connected`
+        决定要不要重连，不置回去它就一直以为还连着。
+        """
         connection = self._connection
         if connection is None:
             return
         reader = FrameReader(lambda: connection.recv(_BUFFER, timeout=_POLL))
-        while not self._closing.is_set():
-            try:
-                frames = reader.read()
-            except (ConnectionClosed, ProtocolError) as exc:
-                _logger.info("连接结束: %s", exc)
-                return
-            for frame in frames:
-                self._deliver(frame)
+        try:
+            while not self._closing.is_set():
+                try:
+                    frames = reader.read()
+                except (ConnectionClosed, ProtocolError) as exc:
+                    _logger.info("连接结束: %s", exc)
+                    break
+                for frame in frames:
+                    self._deliver(frame)
+        finally:
+            connection.close()
+            if self._connection is connection:  # 期间没被换成新连接才清
+                self._connection = None
 
     def _deliver(self, frame: ControlFrame | BytesFrame) -> None:
         if isinstance(frame, BytesFrame):

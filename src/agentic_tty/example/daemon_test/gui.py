@@ -49,6 +49,8 @@ _TICK_MS = 20
 _REFRESH_EVERY = 8
 _RAW_TAIL = 2000
 """原始字节页每轮只取尾部——整段会让每轮都在搬整份日志。"""
+_SUB_KEEP_LINES = 200
+"""「订阅流」页只留最后这么多行——它一直在长（TUI 满屏重绘时尤其快）。"""
 _CONNECT_TRY = 0.2
 """单次连接尝试的等待上限——连不上就再来一次。"""
 _CONNECT_RETRY = 0.3
@@ -102,7 +104,7 @@ class App:
     # ════════════════════════════════════════════════════════════
 
     def _connect_loop(self) -> None:
-        """后台连守护进程，**每轮把"看到什么状态"投进队列**，界面在 tick 里取。
+        """后台连守护进程，**掉了就回头重连**；每轮把"看到什么状态"投进队列，界面在 tick 里取。
 
         三态靠两个公共信号分——**锁在不在**（有个守护进程活着吗）＋ **连不连得上**
         （它服务得了吗）。锁在装配的**第一步**取、监听在**中后段**挂，所以：
@@ -110,11 +112,14 @@ class App:
         「锁空 + 连不上」= 没启动　「锁占 + 连不上」= 正在初始化　「连得上」= 已连接
         """
         while not self._closing.is_set():
-            if self._client.try_connect(timeout=_CONNECT_TRY):
-                self._states.put("connected")
-                return
-            self._states.put("starting" if is_held(self._lock) else "down")
-            time.sleep(_CONNECT_RETRY)
+            if not self._client.try_connect(timeout=_CONNECT_TRY):
+                self._states.put("starting" if is_held(self._lock) else "down")
+                time.sleep(_CONNECT_RETRY)
+                continue
+            self._states.put("connected")
+            # 守到掉线为止——守护进程被重启时，台子得如实退回"没连上"再重连
+            while not self._closing.is_set() and self._client.connected:
+                time.sleep(_CONNECT_RETRY)
 
     def _drain_states(self) -> None:
         while True:
@@ -127,8 +132,11 @@ class App:
     def _apply_state(self, state: str) -> None:
         if state == "connected":
             self._connected = True
+            self._sub_mid = None  # 新连接上不存在旧订阅，留着 mid 只会把推送认错
             self._daemon_state.set("已连接，取状态中…")  # pid / uptime 等第一条答复
-        elif state == "starting":
+            return
+        self._connected = False
+        if state == "starting":
             self._daemon_state.set("守护进程正在初始化…（锁已占，监听还没挂上）")
         else:
             self._daemon_state.set("守护进程未启动（重试连接中…）")
@@ -255,6 +263,8 @@ class App:
             self._apply_sessions(data.get("sessions") or [])
         elif purpose == "create":
             session = SessionRef.from_dict(data["session"])
+            if session.uid != self._selected:
+                self._unsubscribe()  # 订阅绑着会话，换了就退掉
             self._selected = session.uid
             self._sized_for = None
             self._status.set(f"已创建 {session.command}（{session.mode}）uid={session.uid[:8]}")
@@ -309,6 +319,11 @@ class App:
         envelope = answer.envelope
         if envelope is None:
             return
+        if not is_ok(envelope):  # 订阅本身失败（uid 不存在 / 流不对）
+            failure = error_of(envelope)
+            self._append_sub(f"── 订阅失败: {failure.message if failure else '未知错误'} ──\n")
+            self._sub_mid = None
+            return
         data = data_of(envelope)
         if envelope.type == Event.ENDED:
             self._append_sub(f"── 结束 exit={data.get('exit_code')} ──\n")
@@ -319,10 +334,15 @@ class App:
             self._append_sub(
                 f"── 尺寸 {data.get('cols')}×{data.get('rows')} @ {data.get('offset')} ──\n"
             )
+        else:  # ack：`type` 就是 subscribe 那条命令
+            self._append_sub(
+                f"── 已订阅 offset={data.get('offset')} lossy={data.get('lossy')} ──\n"
+            )
 
     def _append_sub(self, text: str) -> None:
         box = self._tabs.text(Page.SUB)
         box.insert(tk.END, text)
+        box.delete("1.0", f"end-{_SUB_KEEP_LINES}l")  # 内容不足时 Tk 夹到 1.0，等于不删
         box.see(tk.END)
 
     def _apply_svg(self, data: dict) -> None:
@@ -349,6 +369,9 @@ class App:
             ],
             selected=self._selected,
         )
+        # 会话刚出现在表里，pty 专属控件这时才认得出来——新建的会话不走 `_select_session`，
+        # 少了这一句屏幕页 / 尺寸框要等用户点一下才出来。
+        self._sync_pty_controls(self._selected)
 
     def _refresh_detail(self) -> None:
         uid = self._selected

@@ -129,6 +129,8 @@ class KernelHandler:
         if sub is None:
             return
         if delivery is Delivery.SENT:
+            # 交付的一定是队首那一帧（`poll` 只交 `out[0]`）。subscribe 的 ack 走 `handle`
+            # 直接返回、那时 `out` 还空着，所以这里不会把推送帧误划掉。
             if sub.out:
                 sub.out.popleft()
         elif delivery is Delivery.GONE:

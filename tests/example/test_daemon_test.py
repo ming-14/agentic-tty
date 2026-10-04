@@ -209,3 +209,24 @@ def test_gui_turns_answers_into_widget_state(running: tuple[str, DaemonConfig], 
         assert _pump(root, lambda: bool(app._sessions)), "树里没出现会话"
     finally:
         app.on_close()
+
+
+def test_gui_reports_a_failed_subscribe(running: tuple[str, DaemonConfig], root):
+    """订阅失败要在页里明说——它和推送共用同一个 `mid`，不能抛在驱动循环里被吞掉。"""
+    pytest.importorskip("resvg_py")
+    from agentic_tty.example.daemon_test.gui import App
+    from agentic_tty.example.ui import Page
+
+    app = App(root, running)
+    try:
+        assert _pump(root, lambda: app._connected), "界面没连上守护进程"
+
+        app._selected = "no-such-uid"  # 摆一个不存在的会话：订阅必失败
+        app._subscribe_selected()
+
+        def page_text() -> str:
+            return app._tabs.text(Page.SUB).get("1.0", "end")
+
+        assert _pump(root, lambda: "订阅失败" in page_text()), page_text()
+    finally:
+        app.on_close()
