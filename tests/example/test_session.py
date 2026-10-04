@@ -112,7 +112,7 @@ def test_close_without_start_is_allowed():
 
 
 def test_start_failure_records_error_and_leaves_no_residue():
-    """宿主建不起来：会话记下错误并关死，注册表也不留残骸。"""
+    """宿主建不起来：会话记下错误并关死，注册表也不留残骸，异常**原样透出**。"""
 
     def _boom(spec: SessionSpec) -> HostLifecycle:
         raise RuntimeError("no host")
@@ -120,13 +120,13 @@ def test_start_failure_records_error_and_leaves_no_residue():
     session = ProcessSession(
         "u1", SessionSpec(mode=SUBPROCESS, argv=("x",)), _boom, journal_budget_bytes=1 << 16
     )
-    with pytest.raises(CoreError):
+    with pytest.raises(RuntimeError):
         session.start()
     assert session.error is not None
     assert session.state is SessionState.CLOSED
 
     registry = SessionRegistry(_boom, journal_budget_bytes=1 << 16)
-    with pytest.raises(CoreError):
+    with pytest.raises(RuntimeError):
         registry.create(SessionSpec(mode=SUBPROCESS, argv=("x",)))
     assert registry.list() == []
 

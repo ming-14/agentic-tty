@@ -110,10 +110,12 @@ class Session:
         self._transition(SessionState.STARTING)
         try:
             self._host = self._host_factory(self.spec)
-        except Exception as exc:  # 宿主创建失败：会话直接关死，错误留痕
+        except Exception as exc:  # 宿主创建失败：会话关死、错误留痕
             self.error = str(exc)
             self._transition(SessionState.CLOSED)
-            raise CoreError(f"创建宿主失败: {exc}") from exc
+            # 原样透出：类型就是给上层的判据（缺依赖 / 命令不存在 / 内部缺陷），
+            # 重包成 CoreError 反而让它们不可区分。
+            raise
         self.start_time = time.monotonic()
         self._transition(SessionState.RUNNING)
         _logger.info("会话已启动 uid=%s mode=%s argv=%s", self.uid, self.mode, list(self.spec.argv))
