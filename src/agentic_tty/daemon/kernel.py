@@ -150,15 +150,19 @@ class KernelHandler:
 
         分两档（这是接缝的契约：`handle` 不抛异常）：
 
-        - **可预期的失败**（`AgenticTtyError`：core 的领域错误、协议的对端错误、系统 IO）：
-          对端送了坏东西或环境不配合，转成失败答复即可，**不记堆栈**——它不是内部缺陷。
+        - **可预期的失败**：对端送了坏东西，或环境不配合（命令不存在、目录没权限、
+          管道断了）——转成失败答复即可，**不记堆栈**。它不是内部缺陷，打堆栈只会
+          把真 bug 淹掉。含两类：`AgenticTtyError`（领域错误 / 对端错误），
+          以及 `OSError`——它是标准库的类型、纳不进本工程的错误体系，但语义同样是
+          "操作没做成"，**且宿主起会话失败必然走这里**（`create_session` 给一条不存在的
+          命令是最常见的正常情形）。
         - **意外失败**（其余异常）：真出 bug 了，记 `logger.exception` 留堆栈，照样答复。
           不能让消费者干等，也不能让 `daemon` 的循环把一次请求失败当成进程故障。
         """
         wire = cast(WireRequest, request)
         try:
             answer = self._dispatch(wire)
-        except AgenticTtyError as exc:
+        except (AgenticTtyError, OSError) as exc:
             return Reply(request=wire, answer=_failed(wire.envelope, exc))
         except Exception as exc:
             _logger.exception("处理请求时出现意外错误 mid=%s", wire.envelope.mid)

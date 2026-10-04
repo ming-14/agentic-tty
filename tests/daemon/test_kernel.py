@@ -216,3 +216,24 @@ def test_unexpected_error_still_reports_a_stack(caplog):
         assert any(record.exc_info for record in caplog.records), "意外错误没有记堆栈"
     finally:
         session.close()
+
+
+def test_host_spawn_failure_is_expected_not_a_stack(caplog):
+    """宿主起不来（命令不存在 / 没权限）是**常见正常情形**，不该在日志里留下堆栈。
+
+    `OSError` 是标准库类型、纳不进本工程的错误体系，但语义与 `AgenticTtyError` 同为
+    "操作没做成"，所以并进可预期那一档。
+    """
+    registry = SessionRegistry(lambda spec: FakeHost(spec, FakeProgram()))
+    handler = KernelHandler(registry)
+    handler._runtime.create = lambda _spec: (_ for _ in ()).throw(
+        FileNotFoundError(2, "找不到文件")
+    )
+    wire = WireRequest(
+        make_request(Command.CREATE_SESSION, op={"mode": PTY, "argv": ["nope"]}), _CONNECTION
+    )
+    with caplog.at_level(logging.ERROR, logger="agentic_tty.daemon.kernel"):
+        reply = handler.handle(wire)
+    assert reply is not None
+    assert reply.answer.payload.output["error"]["code"] == "FileNotFoundError"
+    assert not any(record.exc_info for record in caplog.records), "可预期的失败不该记堆栈"
