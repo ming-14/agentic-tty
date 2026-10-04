@@ -11,9 +11,9 @@ Tk 队列，主线程只在 `_tick` 里 drain 这个廉价队列。因为 **Tk �
 线程、不能阻塞**，"阻塞等"只能交给后台线程。`_tick` 仍留一个兜底周期——进程退出、
 进程树变化这类没有读线程事件，只能靠它扫到。
 
-模式三选一：`fake` 跑示例假程序（命令框下拉即假程序名）；`pty` / `subprocess`
-跑真命令（命令框直接输入，留空 = 平台默认 shell）。输入队列的**小水位**由
-`sessions.create_runtime` 注入，好让 `HOLD` / `REJECTED` 在台子上碰得到。
+模式四选一：`fake` 跑示例假程序（命令框下拉即假程序名）；`pty` / `localpty` /
+`subprocess` 跑真命令（命令框直接输入，留空 = 平台默认 shell）。输入队列的**小水位**
+由 `sessions.create_runtime` 注入，好让 `HOLD` / `REJECTED` 在台子上碰得到。
 
 本文件只做**编排**（会话、运行时驱动、唤醒线程、订阅、刷新节奏）：
 
@@ -534,7 +534,8 @@ class App:
 
 
 def main() -> int:
-    # 起真 pty 会话需要原生扩展；缺了 fake / subprocess 仍可用，所以只提示不阻断
+    # 起 pty 会话要 pywezterm 那个原生扩展；localpty / fake / subprocess 都不依赖它，
+    # 所以这里只提示不阻断
     try:
         check_dependencies()
     except Exception as exc:
