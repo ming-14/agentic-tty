@@ -94,7 +94,6 @@ class _Running:
                 **overrides,
             ),
             lambda _endpoint: self.handler,
-            check_dependencies=lambda: None,
         )
         self._thread: threading.Thread | None = None
 

@@ -1,7 +1,7 @@
 """守护进程本体：生命周期管理，承载核心层，转发。
 
-装配顺序即依赖顺序——取单实例锁 → 依赖检查（由装配层注入）→ 数据目录与日志 →
-构造请求处理层 → 挂接入点 → 装信号 → 进循环；每一步都能回滚，停止时逆序收尾。
+装配顺序即依赖顺序——取单实例锁 → 数据目录与日志 → 构造请求处理层 → 挂接入点 →
+装信号 → 进循环；每一步都能回滚，停止时逆序收尾。
 
 **两条请求通路**：接入点上的请求已经在所有者线程上，直接交给处理层；跨线程投递
 （进程内消费者）走有界入站队列，投递方在队列满时等待、背压传回消费者。两条路都汇到
@@ -77,13 +77,11 @@ class Daemon:
         config: DaemonConfig,
         handler_factory: Callable[[str], RequestHandler],
         *,
-        check_dependencies: Callable[[], None],
         on_reply: Callable[[Reply], None] | None = None,
     ) -> None:
         self._config = config
         self._handler_factory = handler_factory
         self._on_reply = on_reply
-        self._check_dependencies = check_dependencies
         self._dir = config.directory or runtime_dir(config.name)
         # 地址只在这里算一次：装配层与处理层都不再预测它（预测错了只会静默连不上）。
         self._address = (
@@ -171,7 +169,6 @@ class Daemon:
         self._inbound = queue.Queue(self._config.inbound_maxsize)
         try:
             self._acquire_lock()
-            self._check_dependencies()
             self._prepare_dirs()
             self._build_handler()
             self._mount_access_point()

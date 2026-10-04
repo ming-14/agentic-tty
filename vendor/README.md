@@ -50,6 +50,7 @@ Linux 的伪终端。纯标准库（`os.forkpty` / `fcntl` / `termios`），**�
 
 ## 缺失时的行为
 
-依赖缺失**不会**静默降级：`core.runtime.host_factory.check_dependencies()` 会抛
-`DependencyMissing`，调用方据此拒绝启动——不会出现"起来了却建不出会话"的进程。
-纯 `subprocess` 场景不碰这些扩展，因此没有它们也能跑。
+依赖缺失**不会**静默降级：宿主的惰性导入会抛 `DependencyMissing`，那一次
+`create_session` 明确失败并回报调用方。依赖是**按模式**算的（`pty` 要 pywezterm、
+`localpty` 要平台原语），所以缺一个不影响另一个——守护进程照常服务、别的模式照常可用；
+纯 `subprocess` 场景不碰这些扩展，没有它们也能跑。

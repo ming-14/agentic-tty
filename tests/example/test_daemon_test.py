@@ -41,7 +41,6 @@ def running(tmp_path, monkeypatch) -> Iterator[str]:
     daemon = Daemon(
         config,
         lambda endpoint: KernelHandler(endpoint=endpoint),
-        check_dependencies=lambda: None,  # 测子进程会话，不必碰原生扩展
     )
     daemon.start()
     thread = threading.Thread(target=daemon.run, name="daemon-run", daemon=True)

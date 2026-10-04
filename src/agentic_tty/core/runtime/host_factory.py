@@ -1,10 +1,15 @@
-"""宿主工厂与启动期依赖检查。"""
+"""宿主工厂：按模式标签选宿主。
+
+依赖是**各宿主自己的**（`pty` 要 pywezterm、`localpty` 要平台原语、`subprocess` 无），
+在宿主构造时惰性导入、缺了抛 `DependencyMissing`。所以这里不做进程级依赖检查——那等于
+把某一个模式的前置条件当成整个进程的前置条件。
+"""
 
 from __future__ import annotations
 
 from ..ports import LOCALPTY, PTY, SUBPROCESS, HostLifecycle, SessionSpec
-from .errors import DependencyMissing, HostSpawnError
-from .pywezterm_pty import PtyHost, require_pywezterm
+from .errors import HostSpawnError
+from .pywezterm_pty import PtyHost
 from .subprocess import SubprocessHost
 
 
@@ -22,16 +27,4 @@ def create_host(spec: SessionSpec) -> HostLifecycle:
     raise HostSpawnError(f"未知会话模式: {spec.mode!r}")
 
 
-def check_dependencies() -> None:
-    """启动期依赖检查。
-
-    不可用就**拒绝启动**（由调用方决定退出码），绝不静默降级成一个
-    "起来了却建不出会话"的进程。
-    """
-    try:
-        require_pywezterm()
-    except DependencyMissing as exc:
-        raise DependencyMissing(f"启动依赖检查失败: {exc}") from exc
-
-
-__all__ = ["check_dependencies", "create_host"]
+__all__ = ["create_host"]

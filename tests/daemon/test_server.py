@@ -94,8 +94,6 @@ class FakeHandler:
 def make_daemon(
     tmp_path,
     handler: FakeHandler | None = None,
-    *,
-    check: Callable[[], None] | None = None,
     **overrides: object,
 ) -> tuple[Daemon, FakeHandler, list[Reply]]:
     """装一个守护进程；答复收进列表，测试直接检查它。"""
@@ -112,7 +110,6 @@ def make_daemon(
         config,
         lambda _endpoint: handler,
         on_reply=replies.append,
-        check_dependencies=check or (lambda: None),
     )
     return daemon, handler, replies
 
@@ -169,10 +166,10 @@ def test_second_daemon_on_the_same_lock_is_rejected(tmp_path):
         directory=tmp_path / "run",
         write_log_file=False,
     )
-    first = Daemon(config, _fake, on_reply=lambda _r: None, check_dependencies=lambda: None)
+    first = Daemon(config, _fake, on_reply=lambda _r: None)
     first.start()
     try:
-        other = Daemon(config, _fake, on_reply=lambda _r: None, check_dependencies=lambda: None)
+        other = Daemon(config, _fake, on_reply=lambda _r: None)
         with pytest.raises(AlreadyRunning):
             other.start()
         assert not other.running
@@ -181,22 +178,22 @@ def test_second_daemon_on_the_same_lock_is_rejected(tmp_path):
 
 
 def test_start_failure_rolls_back_the_lock(tmp_path):
-    """依赖检查失败要能把已取的锁放掉，否则之后永远起不来。"""
+    """装配中途失败要能把已取的锁放掉，否则之后永远起不来。"""
     config = DaemonConfig(
         name=f"agentic-tty-test-{uuid4().hex[:8]}",
         directory=tmp_path / "run",
         write_log_file=False,
     )
 
-    def boom() -> None:
-        raise RuntimeError("缺原生扩展")
+    def boom(_endpoint: str) -> FakeHandler:
+        raise RuntimeError("处理层装配失败")
 
-    broken = Daemon(config, _fake, on_reply=lambda _r: None, check_dependencies=boom)
+    broken = Daemon(config, boom, on_reply=lambda _r: None)
     with pytest.raises(RuntimeError):
         broken.start()
     assert not broken.running
 
-    healthy = Daemon(config, _fake, on_reply=lambda _r: None, check_dependencies=lambda: None)
+    healthy = Daemon(config, _fake, on_reply=lambda _r: None)
     healthy.start()
     try:
         assert healthy.running

@@ -8,7 +8,7 @@ class RuntimeFailure(AgenticTtyError):
 
 
 class DependencyMissing(RuntimeFailure):
-    """长期依赖（原生扩展等）不可用——拒绝启动，不静默降级。"""
+    """长期依赖（原生扩展等）不可用——依赖它的那个模式建不出会话，不静默降级。"""
 
 
 class HostSpawnError(RuntimeFailure):

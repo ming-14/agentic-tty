@@ -11,7 +11,6 @@ import os
 from collections.abc import Callable
 
 from ..config import DaemonConfig
-from ..core.runtime.host_factory import check_dependencies
 from ..foundation.logs import configure, get_logger
 from .handler import RequestHandler
 from .kernel import KernelHandler
@@ -28,7 +27,7 @@ def build(
     不给 `handler_factory` 就用自带的 `KernelHandler`；地址由 `Daemon` 算好后交给它。
     """
     factory = handler_factory or (lambda endpoint: KernelHandler(endpoint=endpoint))
-    return Daemon(config, factory, check_dependencies=check_dependencies)
+    return Daemon(config, factory)
 
 
 def run(config: DaemonConfig) -> int:

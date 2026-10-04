@@ -33,7 +33,6 @@ from tkinter import messagebox, simpledialog, ttk
 from ...core.errors import CoreError
 from ...core.process.session import ProcessSession
 from ...core.runtime.bridge import Wakeup
-from ...core.runtime.host_factory import check_dependencies
 from ...core.runtime.input_queue import InputVerdict
 from ...core.runtime.runner import PumpEvent
 from ...core.runtime.shell import default_shell
@@ -534,12 +533,6 @@ class App:
 
 
 def main() -> int:
-    # 起 pty 会话要 pywezterm 那个原生扩展；localpty / fake / subprocess 都不依赖它，
-    # 所以这里只提示不阻断
-    try:
-        check_dependencies()
-    except Exception as exc:
-        _logger.warning("原生扩展不可用，pty 模式将建不出会话: %s", exc)
     root = tk.Tk()
     app = App(root)
     root.protocol("WM_DELETE_WINDOW", app.on_close)
