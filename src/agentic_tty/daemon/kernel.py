@@ -16,13 +16,12 @@ from enum import StrEnum
 from typing import Any, TypeVar, cast
 
 from ..core.errors import CoreError, OffsetTrimmed
-from ..core.ports import PTY, SUBPROCESS, SessionSpec, Stream
-from ..core.process.session import ProcessSession
+from ..core.ports import SessionSpec, Stream
 from ..core.runtime.bridge import Wakeup
 from ..core.runtime.runtime import Runtime
 from ..core.runtime.shell import default_shell
 from ..core.session.base import Session
-from ..core.session.registry import SessionKind, SessionRegistry
+from ..core.session.registry import SessionRegistry
 from ..core.session.state import SessionState
 from ..core.session.subscription import Subscription
 from ..core.terminal.session import TerminalSession
@@ -123,13 +122,9 @@ class KernelHandler:
     def __init__(self, registry: SessionRegistry | None = None, *, endpoint: str = "") -> None:
         # 读线程读到数据就投一个信号，所有者循环靠它阻塞等待，不必定时轮询所有会话。
         self._wakeup = Wakeup()
-        self._runtime = Runtime(
-            registry
-            or SessionRegistry(
-                kinds={PTY: SessionKind(TerminalSession), SUBPROCESS: SessionKind(ProcessSession)}
-            ),
-            wakeup=self._wakeup,
-        )
+        # 不传注册表就用 core 的默认形态表（pty / localpty / subprocess）——模式由 core 定义，
+        # 守护进程不再自己另列一份，否则 core 加了模式这里会静默漏掉。
+        self._runtime = Runtime(registry or SessionRegistry(), wakeup=self._wakeup)
         self._endpoint = endpoint
         self._started_at = now_timestamp()
         self._started_monotonic = time.monotonic()
