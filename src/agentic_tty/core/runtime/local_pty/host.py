@@ -20,7 +20,7 @@ from ..process_tree import ProcessTree, close_job, create_job
 from .screen import PyteScreen
 from .svg import render_image, render_svg
 
-_logger = get_logger("core.runtime.localpty.host")
+_logger = get_logger("core.runtime.local_pty.host")
 
 _IS_WINDOWS = sys.platform == "win32"
 

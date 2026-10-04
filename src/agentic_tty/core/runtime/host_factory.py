@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from ..ports import LOCALPTY, PTY, SUBPROCESS, HostLifecycle, SessionSpec
 from .errors import DependencyMissing, HostSpawnError
-from .pty_host import PtyHost, require_pywezterm
-from .subprocess_host import SubprocessHost
+from .pywezterm_pty import PtyHost, require_pywezterm
+from .subprocess import SubprocessHost
 
 
 def create_host(spec: SessionSpec) -> HostLifecycle:
@@ -14,7 +14,7 @@ def create_host(spec: SessionSpec) -> HostLifecycle:
         return PtyHost(spec)
     if spec.mode == LOCALPTY:
         # 惰性导入：纯 pty / subprocess 场景不该把 pyte 与位图渲染器拖进来
-        from .localpty import LocalPtyHost
+        from .local_pty import LocalPtyHost
 
         return LocalPtyHost(spec)
     if spec.mode == SUBPROCESS:

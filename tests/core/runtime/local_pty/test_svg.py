@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from agentic_tty.core.runtime.localpty.screen import PyteScreen
-from agentic_tty.core.runtime.localpty.svg import render_image, render_svg
+from agentic_tty.core.runtime.local_pty.screen import PyteScreen
+from agentic_tty.core.runtime.local_pty.svg import render_image, render_svg
 
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 

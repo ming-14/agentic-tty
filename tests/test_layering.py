@@ -31,8 +31,8 @@ _ALLOWED: dict[str, frozenset[str]] = {
 
 # 受限第三方 → 只允许出现在这些目录前缀下
 _ALLOWED_THIRD_PARTY: dict[str, frozenset[str]] = {
-    # 原生扩展只允许宿主实现碰——纯子进程场景因此不拖进 pywezterm
-    "pywezterm": frozenset({"core/runtime"}),
+    # 原生扩展只允许 pywezterm 宿主那个格子碰——纯子进程场景因此不拖进 pywezterm
+    "pywezterm": frozenset({"core/runtime/pywezterm_pty"}),
     # web 框架只允许出现在 web 层
     "fastapi": frozenset({"web"}),
     "starlette": frozenset({"web"}),

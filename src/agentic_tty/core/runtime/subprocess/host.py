@@ -10,10 +10,10 @@ import os
 import subprocess
 import sys
 
-from ...foundation.logs import get_logger
-from ..ports import SessionSpec, Stream
-from .errors import HostSpawnError
-from .process_tree import (
+from ....foundation.logs import get_logger
+from ...ports import SessionSpec, Stream
+from ..errors import HostSpawnError
+from ..process_tree import (
     CREATE_SUSPENDED,
     ProcessTree,
     assign_job,
@@ -22,7 +22,7 @@ from .process_tree import (
     resume_process,
 )
 
-_logger = get_logger("core.runtime.subprocess_host")
+_logger = get_logger("core.runtime.subprocess.host")
 
 _IS_WINDOWS = sys.platform == "win32"
 

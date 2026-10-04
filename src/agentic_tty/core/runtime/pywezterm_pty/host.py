@@ -11,12 +11,12 @@ import os
 import time
 from types import ModuleType
 
-from ...foundation.logs import get_logger
-from ..ports import HostMetadata, SessionSpec, Stream
-from .errors import DependencyMissing, HostSpawnError
-from .process_tree import ProcessTree, close_job, create_job
+from ....foundation.logs import get_logger
+from ...ports import HostMetadata, SessionSpec, Stream
+from ..errors import DependencyMissing, HostSpawnError
+from ..process_tree import ProcessTree, close_job, create_job
 
-_logger = get_logger("core.runtime.pty_host")
+_logger = get_logger("core.runtime.pywezterm_pty.host")
 
 _pywezterm: ModuleType | None = None
 
@@ -61,7 +61,7 @@ def require_pywezterm() -> ModuleType:
     """惰性导入 pywezterm；不可用则抛 `DependencyMissing`。"""
     global _pywezterm
     if _pywezterm is None:
-        from .vendor import ensure_vendor_on_path
+        from ..vendor import ensure_vendor_on_path
 
         ensure_vendor_on_path()
         try:
@@ -84,7 +84,7 @@ def _row_cells(row) -> tuple[str, ...]:
     """一行 snapshot → 字符格栅。
 
     `snapshot()` 只吐宽字符的首格——续格根本不出现，行尾的宽字符也一样，所以续格
-    要按格宽自己补。行尾空白截掉（续格的空串也算），对齐 `localpty`。
+    要按格宽自己补。行尾空白截掉（续格的空串也算），对齐 `local_pty`。
     """
     cells: list[str] = []
     for cell in row:

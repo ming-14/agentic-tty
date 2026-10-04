@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from agentic_tty.core.runtime.localpty.screen import PyteScreen
-from agentic_tty.core.runtime.localpty.svg import render_svg
+from agentic_tty.core.runtime.local_pty.screen import PyteScreen
+from agentic_tty.core.runtime.local_pty.svg import render_svg
 
 
 def test_feed_returns_application_responses():

@@ -202,7 +202,7 @@ def test_view_page_reads_its_range(root, fake_registry, monkeypatch):
 
 def _pty_available() -> bool:
     try:
-        from agentic_tty.core.runtime.pty_host import require_pywezterm
+        from agentic_tty.core.runtime.pywezterm_pty.host import require_pywezterm
 
         require_pywezterm()
         return True
