@@ -105,6 +105,20 @@ def test_pty_screen_views():
         host.close()
 
 
+def test_pty_screen_cells_fills_wide_char_continuation_cells():
+    """宽字符占两格：续格是空串。行尾宽字符的续格不补。"""
+    host = PtyHost(SessionSpec(mode=PTY, argv=_echo_argv(), cols=20, rows=6))
+    try:
+        host.ingest("你好ab".encode())
+        host.ingest(b"\r\n")
+        host.ingest("ab你好".encode())
+        assert host.screen_cells()[0] == ("你", "", "好", "", "a", "b")
+        assert host.screen_cells()[1] == ("a", "b", "你", "", "好")
+    finally:
+        host.kill()
+        host.close()
+
+
 def test_pty_render_svg_contains_screen_text():
     host = PtyHost(SessionSpec(mode=PTY, argv=_echo_argv()))
     try:

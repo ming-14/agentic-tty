@@ -26,6 +26,11 @@ _pywezterm: ModuleType | None = None
 # 静默多久"判定：静默不够长就会把尾巴永久丢在管道里。
 _DRAIN_QUIET = 0.3
 
+# snapshot() 的 cell = (col, ch, fg, bg, bold, italic, underline, reverse, ?, width)：
+# 它的 docstring 字段表漏了一项，按那张表数会数错格宽
+_CELL_TEXT = 1
+_CELL_WIDTH = 9
+
 _TITLE_NOT_IMPLEMENTED = "（标题未实现）"
 """`Terminal.get_title()` 是哑接口：文档说读 OSC 0/2，实测恒返回它自己的默认值
 （`'wezterm'`），流里发什么标题都不变。拿默认值冒充真标题会误导，所以显式标出来。"""
@@ -73,6 +78,22 @@ def _to_bytes(value) -> bytes:
     if not value:
         return b""
     return value.encode("utf-8") if isinstance(value, str) else bytes(value)
+
+
+def _row_cells(row) -> tuple[str, ...]:
+    """一行 snapshot → 字符格栅。
+
+    `snapshot()` 只吐宽字符的首格——续格根本不出现，行尾的宽字符也一样，所以续格
+    要按格宽自己补。行尾的续格照样截掉：另一后端（`localpty`）截的是行尾空白，
+    续格是空串，在那边也属于被截之列。
+    """
+    cells: list[str] = []
+    for cell in row:
+        cells.append(cell[_CELL_TEXT])
+        cells.extend("" for _ in range(max(0, cell[_CELL_WIDTH] - 1)))
+    while cells and not cells[-1]:
+        cells.pop()
+    return tuple(cells)
 
 
 class PtyHost:
@@ -173,7 +194,7 @@ class PtyHost:
 
     def screen_cells(self) -> tuple[tuple[str, ...], ...]:
         """可见屏幕字符格栅；宽字符的续格为空串。"""
-        return tuple(tuple(cell[1] for cell in row) for row in self._term.snapshot())
+        return tuple(_row_cells(row) for row in self._term.snapshot())
 
     def render_svg(self) -> str:
         """可见屏幕的 SVG。底层该参数必填，固定 0 = 不压缩。"""
