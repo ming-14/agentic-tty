@@ -60,6 +60,16 @@ def _data(envelope: Envelope) -> dict:
     return dict(envelope.payload.output["data"])
 
 
+class _Recorder:
+    """假的停机通道：记下被调用过。"""
+
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    def request_stop(self) -> None:
+        self._events.append("stop")
+
+
 def test_push_splits_the_chunk_where_the_resize_lands():
     """尺寸变更落在字节段**中间**：按它切开，订阅者不必自己对齐 offset。"""
     session = _session()
@@ -152,7 +162,7 @@ def test_shutdown_daemon_acknowledges_before_stopping():
     assert events == ["stop"]
 
 
-def test_shutdown_daemon_without_a_channel_answers_so_false():
+def test_shutdown_daemon_without_a_channel_reports_not_stopping():
     """进程内嵌入 / 单测直接构造本层时没绑通道：记一条日志、照常答复，不抛异常。"""
     handler = KernelHandler()
     wire = WireRequest(make_request(Command.SHUTDOWN_DAEMON), _CONNECTION)
@@ -160,16 +170,6 @@ def test_shutdown_daemon_without_a_channel_answers_so_false():
 
     assert reply is not None
     assert _data(reply.answer) == {"stopping": False}
-
-
-class _Recorder:
-    """假的停机通道：记下被调用过。"""
-
-    def __init__(self, events: list[str]) -> None:
-        self._events = events
-
-    def request_stop(self) -> None:
-        self._events.append("stop")
 
 
 @pytest.mark.parametrize(
@@ -204,18 +204,14 @@ def test_peer_side_bad_input_becomes_a_failure_answer(label, op, command):
 
 def test_unexpected_error_still_reports_a_stack(caplog):
     """反过来：真出 bug（非 `AgenticTtyError`）必须留下堆栈——那才是该查的东西。"""
-    session = _session()
     handler = KernelHandler()
     handler._dispatch = lambda _wire: (_ for _ in ()).throw(RuntimeError("模拟内部 bug"))
     wire = WireRequest(make_request(Command.DAEMON_STATUS), _CONNECTION)
-    try:
-        with caplog.at_level(logging.ERROR, logger="agentic_tty.daemon.kernel"):
-            reply = handler.handle(wire)
-        assert reply is not None
-        assert reply.answer.payload.output["error"]["code"] == "RuntimeError"
-        assert any(record.exc_info for record in caplog.records), "意外错误没有记堆栈"
-    finally:
-        session.close()
+    with caplog.at_level(logging.ERROR, logger="agentic_tty.daemon.kernel"):
+        reply = handler.handle(wire)
+    assert reply is not None
+    assert reply.answer.payload.output["error"]["code"] == "RuntimeError"
+    assert any(record.exc_info for record in caplog.records), "意外错误没有记堆栈"
 
 
 def test_host_spawn_failure_is_expected_not_a_stack(caplog):

@@ -46,7 +46,6 @@ class Delivery(StrEnum):
     """不是本接入点发出的请求（进程内消费者投的）。守护进程自己另找去处，不转给处理层。"""
 
 
-@runtime_checkable
 class StopSignal(Protocol):
     """要求守护进程停止的通道。
 

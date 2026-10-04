@@ -73,8 +73,8 @@ def _number(op: Mapping[str, Any], key: str) -> int:
     """取一个整数参数；缺省为 0。
 
     对端给的可能是任何 JSON 值，`int()` 对"字符串但不是数"抛 `ValueError`、对"列表/对象"
-    抛 `TypeError`——两者都是**对端送错东西**，属可预期结果，一律收成 `MessageError`
-    （与 `protocol` 解消息体字段同源）。裸 `TypeError` 逃出去会被上层当成守护进程内部故障。
+    抛 `TypeError`——两者都是**对端送错东西**，收成 `MessageError`（与 `protocol` 解消息体
+    字段同源），客户端据此能看出是请求本身的毛病，而不是一个看不出所以然的 `TypeError`。
     """
     value = op.get(key)
     if value is None:
@@ -165,7 +165,7 @@ class KernelHandler:
         except (AgenticTtyError, OSError) as exc:
             return Reply(request=wire, answer=_failed(wire.envelope, exc))
         except Exception as exc:
-            _logger.exception("处理请求时出现意外错误 mid=%s", wire.envelope.mid)
+            _logger.exception("处理请求时出现意外错误")
             return Reply(request=wire, answer=_failed(wire.envelope, exc))
         return Reply(request=wire, answer=answer)
 

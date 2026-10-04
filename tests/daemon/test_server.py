@@ -17,7 +17,7 @@ import pytest
 
 from agentic_tty.config import DaemonConfig
 from agentic_tty.daemon.errors import AlreadyRunning, DaemonError, NotStarted
-from agentic_tty.daemon.handler import Delivery, Reply, RequestHandler
+from agentic_tty.daemon.handler import Delivery, Reply, RequestHandler, StopSignal
 from agentic_tty.daemon.server import Daemon, SubmitOutcome
 from agentic_tty.transport.pipe import PipeTransport
 from agentic_tty.transport.stream import parse_address
@@ -30,7 +30,7 @@ class FakeHandler:
 
     def __init__(self) -> None:
         self.inputs: list[tuple[str, bytes]] = []
-        self.stop: object = None
+        self.stop: StopSignal | None = None
         self.pumps = 0
         self.waits = 0
         self.deliveries: list[tuple[object, Delivery]] = []
@@ -42,7 +42,7 @@ class FakeHandler:
         self.pump_boom = False
         self.poll_boom = False
 
-    def bind(self, stop: object) -> None:
+    def bind(self, stop: StopSignal) -> None:
         self.stop = stop
 
     def handle(self, request: object) -> Reply | None:

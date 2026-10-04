@@ -3,8 +3,8 @@
 守护进程不认识 `sid`——那是下游消费者的语义。因此这一侧所有的键一律是 `uid`；
 返回条件、会话标签这些属于消费者的东西，一概不在这里。
 
-原语直接对着 core 的能力：起会话、读、改尺寸、看状态、**订阅**。**写不占命令**——它走
-字节帧上行（`STREAM_STDIN`），一个字节都不用进 JSON。
+原语直接对着 core 的能力：起会话、读、改尺寸、看状态、**订阅**、**让守护进程退出**。
+**写不占命令**——它走字节帧上行（`STREAM_STDIN`），一个字节都不用进 JSON。
 
 **订阅**（`subscribe` / `unsubscribe`）：
 - `subscribe` 的 `op` 是 `{uid, stream?, cursor?}`，答复的 `data` 是 `{sub_id, offset, lossy}`。
@@ -27,8 +27,7 @@ class Command(StrEnum):
 
     DAEMON_STATUS = "daemon_status"
     SHUTDOWN_DAEMON = "shutdown_daemon"
-    """让守护进程收尾退出。**进程级动作**：连着它的所有消费者的会话都会一起结束。
-    答复先回，收尾随后开始（见 `daemon/kernel.py`）。"""
+    """让守护进程收尾退出（进程级：连着它的消费者的会话都会结束）。"""
     CREATE_SESSION = "create_session"
     CLOSE_SESSION = "close_session"
     LIST_SESSIONS = "list_sessions"
