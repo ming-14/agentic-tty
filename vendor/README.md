@@ -8,8 +8,8 @@
 
 - **第三方二进制产物**（`pywezterm/`、`condrv/OpenConsole.exe`）：不进版本控制，
   按下面各节的方式补齐；
-- **自研模块**（`condrv/` 里的 `.py`）：进版本控制。它们是被依赖方，**不得 import
-  `agentic_tty`**（`tests/test_layering.py` 强制）。
+- **自研模块**（`condrv/`、`openpty/` 里的 `.py`）：进版本控制。它们是被依赖方，
+  **不得 import `agentic_tty`**（`tests/test_layering.py` 强制）。
 
 ## pywezterm
 
@@ -38,6 +38,15 @@ Windows 的 ConDrv 直连伪终端。不走 `CreatePseudoConsole` API，而是�
 
 缺失时的行为：`condrv.find_conhost()` 抛 `FileNotFoundError`，**不退回系统
 `conhost.exe`**——走 ConDrv 直连的意义正在于换掉它。
+
+## openpty
+
+Linux 的伪终端。纯标准库（`os.forkpty` / `fcntl` / `termios`），**没有外部产物**，
+不需要补齐什么。
+
+`os.forkpty()` 一次把 fork、`setsid`、开 slave、`login_tty`（取控制终端）与 dup2 都
+做完，子进程只剩「设尺寸 → chdir → exec」。exec 成败经一条 CLOEXEC 管道同步回报，
+所以命令不存在时 `spawn` 直接抛错，而不是留下一个随即死掉的会话。
 
 ## 缺失时的行为
 
