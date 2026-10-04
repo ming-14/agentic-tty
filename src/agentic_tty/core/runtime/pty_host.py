@@ -84,14 +84,13 @@ def _row_cells(row) -> tuple[str, ...]:
     """一行 snapshot → 字符格栅。
 
     `snapshot()` 只吐宽字符的首格——续格根本不出现，行尾的宽字符也一样，所以续格
-    要按格宽自己补。行尾的续格照样截掉：另一后端（`localpty`）截的是行尾空白，
-    续格是空串，在那边也属于被截之列。
+    要按格宽自己补。行尾空白截掉（续格的空串也算），对齐 `localpty`。
     """
     cells: list[str] = []
     for cell in row:
         cells.append(cell[_CELL_TEXT])
         cells.extend("" for _ in range(max(0, cell[_CELL_WIDTH] - 1)))
-    while cells and not cells[-1]:
+    while cells and not cells[-1].strip():
         cells.pop()
     return tuple(cells)
 

@@ -106,14 +106,18 @@ def test_pty_screen_views():
 
 
 def test_pty_screen_cells_fills_wide_char_continuation_cells():
-    """宽字符占两格：续格是空串。行尾宽字符的续格不补。"""
+    """宽字符占两格：续格是空串。行尾空白（含行尾宽字符的续格）不进格栅。"""
     host = PtyHost(SessionSpec(mode=PTY, argv=_echo_argv(), cols=20, rows=6))
     try:
         host.ingest("你好ab".encode())
         host.ingest(b"\r\n")
         host.ingest("ab你好".encode())
-        assert host.screen_cells()[0] == ("你", "", "好", "", "a", "b")
-        assert host.screen_cells()[1] == ("a", "b", "你", "", "好")
+        host.ingest(b"\r\n")
+        host.ingest(b"ab  ")
+        rows = host.screen_cells()
+        assert rows[0] == ("你", "", "好", "", "a", "b")
+        assert rows[1] == ("a", "b", "你", "", "好")
+        assert rows[2] == ("a", "b")
     finally:
         host.kill()
         host.close()
