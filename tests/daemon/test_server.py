@@ -115,9 +115,9 @@ def make_daemon(
 
 
 @contextlib.contextmanager
-def running(tmp_path, handler: FakeHandler | None = None, **overrides: object) -> Iterator[
-    tuple[Daemon, FakeHandler, list[Reply]]
-]:
+def running(
+    tmp_path, handler: FakeHandler | None = None, **overrides: object
+) -> Iterator[tuple[Daemon, FakeHandler, list[Reply]]]:
     """跑起来（后台线程）再交出去。"""
     daemon, handler, replies = make_daemon(tmp_path, handler, **overrides)
     daemon.start()
@@ -372,6 +372,139 @@ def test_handler_is_bound_to_the_daemon_stop_signal(tmp_path):
         assert handler.stop is daemon
 
 
+# ════════════════════════════════════════════════════════════════
+# 答复必达：`CONGESTED` 由守护进程重投，不丢
+# ════════════════════════════════════════════════════════════════
+
+
+def test_congested_goes_into_the_backlog_and_leaves_on_success(tmp_path):
+    """单元：`_settle` 把 `CONGESTED` 攒下、`_retry_backlog` 成功后再撤掉。"""
+    daemon, handler, _replies = make_daemon(tmp_path, mount_endpoint=False)
+    daemon.start()
+    try:
+        reply = handler.handle("ping")
+        assert reply is not None
+
+        daemon._route = lambda _reply: Delivery.CONGESTED
+        daemon._deliver_one(reply)
+        assert daemon._backlog, "`CONGESTED` 的答复被丢了，没有攒进待重发表"
+
+        daemon._route = lambda _reply: Delivery.SENT
+        daemon._retry_backlog()
+        assert not daemon._backlog, "重投成功后还没清掉"
+        assert handler.deliveries[-1][1] is Delivery.SENT
+    finally:
+        daemon.stop(2)
+
+
+def test_the_delivery_result_comes_from_routing_not_from_the_handler(tmp_path):
+    """投递结果取的是**路由**的返回，不能取成 `on_reply` 的返回。
+
+    `RequestHandler.on_reply` 按契约无返回；若把它的返回值当投递结果，永远拿到 `None`，
+    于是"堵住要不要重发"这件事整个失效——答复会被静默丢掉而没有任何迹象。
+    """
+    daemon, handler, _replies = make_daemon(tmp_path, mount_endpoint=False)
+    daemon.start()
+    try:
+        reply = handler.handle("ping")
+        assert reply is not None
+
+        daemon._route = lambda _reply: Delivery.CONGESTED
+        daemon._deliver_one(reply)
+        assert handler.deliveries == [(reply.request, Delivery.CONGESTED)]
+        assert daemon._backlog, "投递结果没传到 `_settle`"
+    finally:
+        daemon.stop(2)
+
+
+def test_backlog_is_cleared_even_if_the_handler_raises_on_reply(tmp_path):
+    """回告抛异常不影响记账：答复**已经发出**，不能因为回告失败就留在待重发表里。
+
+    留在表里会下一轮重复投递——客户端收到两遍同一帧。
+    """
+    handler = FakeHandler()
+    daemon, _handler, _replies = make_daemon(tmp_path, handler, mount_endpoint=False)
+    daemon.start()
+    try:
+        # 先让答复进 backlog
+        daemon._route = lambda _reply: Delivery.CONGESTED
+        reply = handler.handle("ping")
+        assert reply is not None
+        daemon._deliver_one(reply)
+        assert daemon._backlog
+
+        # 重投成功（SENT），但回告炸了
+        daemon._route = lambda _reply: Delivery.SENT
+        handler.on_reply = lambda *_a: (_ for _ in ()).throw(RuntimeError("回告炸了"))
+        daemon._retry_backlog()
+        assert not daemon._backlog, "回告失败却把已发出的答复留在了待重发表里"
+    finally:
+        daemon.stop(2)
+
+
+def test_a_dropped_connection_frees_the_backlog_slot(tmp_path):
+    """连接没了（`GONE`）就该撤掉待重发，不该永远攥着一条死连接的答复。"""
+    daemon, handler, _replies = make_daemon(tmp_path, mount_endpoint=False)
+    daemon.start()
+    try:
+        reply = handler.handle("ping")
+        assert reply is not None
+
+        daemon._route = lambda _reply: Delivery.CONGESTED
+        daemon._deliver_one(reply)
+        assert daemon._backlog
+
+        daemon._route = lambda _reply: Delivery.GONE
+        daemon._retry_backlog()
+        assert not daemon._backlog
+    finally:
+        daemon.stop(2)
+
+
+def test_backlog_is_reset_on_restart(tmp_path):
+    """上一轮的待重发不能带进下一轮——那批答复属于已经关掉的连接。"""
+    daemon, handler, _replies = make_daemon(tmp_path, mount_endpoint=False)
+    daemon.start()
+    daemon._route = lambda _reply: Delivery.CONGESTED
+    reply = handler.handle("ping")
+    assert reply is not None
+    daemon._deliver_one(reply)
+    assert daemon._backlog
+    daemon.stop(2)
+
+    daemon.start()
+    try:
+        assert not daemon._backlog
+    finally:
+        daemon.stop(2)
+
+
+def test_the_running_loop_actually_retries_a_congested_answer(tmp_path):
+    """整条链路：答复被堵 → 攒下 → 循环下一轮补投 → 交到消费者手里。
+
+    上面那些用 `_deliver_one` / `_retry_backlog` 直接验语义；这一条验循环里**真的调了**
+    补投——否则答复照样丢，只是丢在了"没人调用重试"这一步。
+    """
+    handler = FakeHandler()
+    blocked = {"on": True}
+    real_route = Daemon._route
+
+    def route(reply: Reply) -> Delivery:
+        if blocked["on"]:
+            return Delivery.CONGESTED
+        return real_route(daemon, reply)
+
+    with running(tmp_path, handler) as (daemon, _handler, replies):
+        daemon._route = route
+        assert daemon.submit("ping") is SubmitOutcome.DELIVERED
+        assert wait_for(lambda: bool(daemon._backlog)), "被堵的答复没有攒下来"
+
+        blocked["on"] = False  # 连接腾出空位
+        assert wait_for(lambda: bool(replies)), "循环没有把攒下的答复补投出去"
+        assert replies[0].answer == "answer:ping"
+        assert not daemon._backlog
+
+
 def test_stop_signal_from_the_handler_ends_the_loop(tmp_path):
     """处理层调 `request_stop()` 就等于守护进程自己收尾：循环退出、shutdown 跑过。"""
     handler = FakeHandler()
@@ -380,4 +513,3 @@ def test_stop_signal_from_the_handler_ends_the_loop(tmp_path):
         handler.stop.request_stop()
         assert wait_for(lambda: not daemon.running)
     assert handler.shutdown_called
-

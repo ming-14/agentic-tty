@@ -7,6 +7,10 @@
 （进程内消费者）走有界入站队列，投递方在队列满时等待、背压传回消费者。两条路都汇到
 同一个 `_dispatch`。
 
+**答复必达**：交答复时若连接写缓冲满了（`CONGESTED`），守护进程把这条答复按请求攒进
+`_backlog`，下一轮（此时写线程可能已腾出空位）重投，直到收下或连接没了。这样处理层
+不必为响应型答复另备重试表——它只管自己那条推送流的节奏。
+
 **收尾也在所有者线程上做**：处理层只许被那一个线程碰（它的契约就是"不需要锁"），
 所以 `run()` 看到停止标志后自己 draining + 收尾；`stop()` 只负责"发信号 + 等它做完"。
 
@@ -93,6 +97,14 @@ class Daemon:
         self._signals: InstalledSignals | None = None
         self._access_point: AccessPoint | None = None
         self._inbound: queue.Queue[object] = queue.Queue(config.inbound_maxsize)
+        self._backlog: dict[int, Reply] = {}
+        """已被 `CONGESTED` 挡下的答复：下一轮重投，直到收下或连接没了。
+
+        键是 `id(request)`——**不是** `id()` 做身份那一套的反面：这里安全，因为
+        `Reply` 自己**强引用着** `request`（`Reply.request`），条目在表里一天，请求对象就
+        一天不会被回收，`id()` 也就不会被别处复用。反而不能用 `request` 本身当键：信封
+        里带着 dict，请求对象不一定可哈希。
+        """
 
         self._stop_requested = threading.Event()
         self._loop_ran = False
@@ -167,6 +179,7 @@ class Daemon:
         self._shutdown_done = False
         self._loop_ran = False
         self._inbound = queue.Queue(self._config.inbound_maxsize)
+        self._backlog.clear()
         try:
             self._acquire_lock()
             self._prepare_dirs()
@@ -277,6 +290,7 @@ class Daemon:
                 self._wait_for_work(handler)
                 self._drain_inbound(handler)
                 self._pump_handler(handler)
+                self._retry_backlog()
                 self._deliver(self._poll_handler(handler))
             self._shutdown(handler, self._config.stop_timeout)
         finally:
@@ -288,11 +302,17 @@ class Daemon:
         先等处理层的活（会话输出一到就立刻返回）；再**非阻塞**收一轮接入点（新连接 /
         连接上的请求），`tick_interval` 只剩"接入点最多隔多久被看一眼"。断掉的连接在这里
         报给处理层——写线程也会关连接，所以统一由所有者线程转达。
+
+        被堵下的答复（`_backlog`）也靠这一圈转动来补投，最坏间隔就是 `tick_interval`。
         """
         try:
             handler.wait(self._config.tick_interval)
         except Exception:
             _logger.exception("空闲等待失败（已隔离，循环继续）")
+        self._access_point_pump(handler)
+
+    def _access_point_pump(self, handler: RequestHandler) -> None:
+        """非阻塞收一轮接入点，并把它报的断连转达给处理层。"""
         if self._access_point is None:
             return
         self._access_point.pump(0.0)
@@ -375,12 +395,44 @@ class Daemon:
     def _deliver_one(self, reply: Reply) -> None:
         """把答复交回消费者：来自接入点的写回那条连接，其余走 `on_reply`。
 
-        整段都兜住异常——它在所有者线程上跑，一次交答复失败不能炸穿循环。
+        **先路由、再回告、最后记账**：路由结果决定要不要重投，所以无论回告是否抛异常都
+        得先记下来——否则"已发出"的答复留在待重发表里，下一轮会被**重复投递**。
+
+        每一段都各自兜住异常——它在所有者线程上跑，一次交答复失败不能炸穿循环。
         """
         try:
-            self._handler_ready().on_reply(reply.request, self._route(reply))
+            delivery = self._route(reply)
         except Exception:
-            _logger.exception("交回答复失败（已隔离，循环继续）")
+            _logger.exception("投递答复失败（已隔离，循环继续）")
+            return
+        try:
+            self._handler_ready().on_reply(reply.request, delivery)
+        except Exception:
+            _logger.exception("回告投递结果失败（已隔离，循环继续）")
+        self._settle(reply, delivery)
+
+    def _settle(self, reply: Reply, delivery: Delivery) -> None:
+        """按投递结果维护待重发表：堵住就攒着，收下 / 连接没了就撤掉。
+
+        **重发归守护进程**（见 `Delivery.CONGESTED`）：处理层回告的"没收下"只用来表示
+        订阅那侧的节奏，守护进程不能借它把答复丢掉——那会让客户端永久干等（同一连接上
+        既有订阅推送又有同步请求时就会发生）。
+        """
+        if delivery is Delivery.CONGESTED:
+            self._backlog.setdefault(id(reply.request), reply)
+        else:
+            self._backlog.pop(id(reply.request), None)
+
+    def _retry_backlog(self) -> None:
+        """重投被堵下的答复。**在下一轮开头跑**——上一轮交完的答复这时才有机会腾出空位。
+
+        调用顺序刻意与 `run()` 里各步一致（每轮都过一遍），所以同一连接上答复的相对顺序
+        稳定：先看空位的先发，没腾出来的下一轮再来。
+        """
+        if not self._backlog:
+            return
+        for reply in list(self._backlog.values()):
+            self._deliver_one(reply)
 
     def _route(self, reply: Reply) -> Delivery:
         """把答复交给消费者，返回投递结果：接入点在场就写回它来的那条连接，否则走 `on_reply`。"""
@@ -423,6 +475,7 @@ class Daemon:
         self._release_lock()
         self._handler = None
         self._started = False
+        self._backlog.clear()
         if finished:
             _logger.info("守护进程已停止")
         else:
@@ -448,12 +501,14 @@ class Daemon:
         """draining：不再接新命令，先把已进队的处理掉，再把手上的等待跑完。
 
         `submit()` 返回 `DELIVERED` 就是承诺"所有者线程会处理它"——队列里已进的必须
-        走一遍，不能随收尾一起丢掉。
+        走一遍，不能随收尾一起丢掉。被堵下的答复也在这里再给几次机会（写线程可能刚好
+        腾出空位），最后交不出去就算了——收尾不该为一条堵住的连接无限期挂着。
         """
         self._drain_inbound(handler, limit=None)
         limit = min(deadline, time.monotonic() + self._config.drain_timeout)
-        while self._pending(handler) and time.monotonic() < limit:
+        while (self._pending(handler) or self._backlog) and time.monotonic() < limit:
             self._pump_handler(handler)
+            self._retry_backlog()
             self._deliver(self._poll_handler(handler))
             time.sleep(self._config.tick_interval)
 
