@@ -18,7 +18,9 @@ Tk 队列，主线程只在 `_tick` 里 drain 这个廉价队列。因为 **Tk �
 本文件只做**编排**（会话、运行时驱动、唤醒线程、订阅、刷新节奏）：
 
 - 界面控件全在 `example/ui/`——纯 Tk，不认识 core；
-- 会话 → 文本的渲染在 `render.py`——认识 core，不碰 Tk。
+- 会话 → 文本的渲染在 `render.py`——认识 core，不碰 Tk；
+- 详情区**只刷当前可见的那一页**：切到哪页才取哪页的数据。整屏格栅、全量重建字节、
+  矢量栅格化都不便宜，替看不见的页算它们就是每帧白烧一遍主线程。
 """
 
 from __future__ import annotations
@@ -161,6 +163,8 @@ class App:
             on_save_png=self._save_png,
         )
         self._status = StatusBar(self._root)
+        # 页装齐了才接切页回调——`<<NotebookTabChanged>>` 在 add 时也会发
+        self._tabs.on_page_change(self._refresh_detail)
 
     # ════════════════════════════════════════════════════════════
     # 驱动循环（所有者线程 = Tk 主线程）
@@ -194,7 +198,10 @@ class App:
             # 有活就立刻处理；另外每 _REFRESH_EVERY 轮兜底一次（进程退出、进程树
             # 变化这类没有读线程事件，只能靠兜底扫到）
             if woken or self._ticks % _REFRESH_EVERY == 0:
-                self._refresh_events(self._runtime.pump_all())
+                events = self._runtime.pump_all()
+                # 「事件」页是流水账：不在看就不必往里记
+                if self._tabs.current is Page.EVENTS:
+                    self._refresh_events(events)
                 self._refresh_tree()
                 self._refresh_detail()
         except Exception:
@@ -396,22 +403,64 @@ class App:
         self._tree.refresh([(s.uid, render.row_values(s)) for s in self._runtime.list()])
 
     def _refresh_detail(self) -> None:
+        """**只刷当前可见的那一页**。
+
+        每一页的取数都有自己的代价（整屏格栅、全量重建字节、矢量栅格化……），替看不见
+        的页算它们，就是每帧白烧一遍主线程。
+        """
         session = self._selected_session()
         if session is None:
-            for key in (Page.VIEW, Page.CELLS, Page.RAW, Page.PROCS, Page.SUB, Page.EVENTS):
-                self._tabs.set_text(key, "")
-            self._subscription = None
-            self._sub_uid = None
-            self._screen.reset("未选中会话")
+            self._clear_detail()
             return
-        full = self._tabs.view_mode.get() == ViewRange.FULL
-        self._tabs.set_text(Page.VIEW, render.view_text(session, full=full))
-        self._tabs.set_text(Page.CELLS, render.cells_text(session))
-        self._tabs.set_text(Page.RAW, render.raw_text(session))
-        self._tabs.set_text(Page.PROCS, render.processes_text(session))
-        self._refresh_subscription(session)
-        self._refresh_screen_views(session)
+        page = self._tabs.current
+        if page is Page.VIEW:
+            full = self._tabs.view_mode.get() == ViewRange.FULL
+            self._tabs.set_text(Page.VIEW, render.view_text(session, full=full))
+        elif page is Page.CELLS:
+            self._tabs.set_text(Page.CELLS, render.cells_text(session))
+        elif page is Page.RAW:
+            self._tabs.set_text(Page.RAW, render.raw_text(session))
+        elif page is Page.PROCS:
+            self._tabs.set_text(Page.PROCS, render.processes_text(session))
+        elif page is Page.SCREEN:
+            self._show_screen(session)
+        elif page is Page.SVG:
+            self._show_svg_source(session)
+        elif page is Page.SUB:
+            self._refresh_subscription(session)
+        # 「事件」页由 `_refresh_events` 追加，这里不管
         self._status.set(render.status_text(session) + self._input_state(session))
+
+    def _clear_detail(self) -> None:
+        """没有选中会话：清空详情区（内容没变的页 `set_text` 自己不会再动）。"""
+        for key in (Page.VIEW, Page.CELLS, Page.RAW, Page.PROCS, Page.SUB, Page.EVENTS):
+            self._tabs.set_text(key, "")
+        self._subscription = None
+        self._sub_uid = None
+        self._screen.reset("未选中会话")
+
+    def _show_screen(self, session: Session) -> None:
+        """「屏幕」页取数：矢量 + 本地栅格化（去重在 `ScreenView` 里）。"""
+        svg = self._terminal_svg(session)
+        if svg is not None:
+            self._screen.show_screen(svg)
+
+    def _show_svg_source(self, session: Session) -> None:
+        """「SVG 源码」页取数：只要矢量，不栅格化。"""
+        svg = self._terminal_svg(session)
+        if svg is not None:
+            self._screen.show_source(svg)
+
+    def _terminal_svg(self, session: Session) -> str | None:
+        """终端会话的矢量；取不到（非终端 / 宿主已关闭）就在屏幕页留一句提示。"""
+        if not isinstance(session, TerminalSession):
+            self._screen.reset("该会话没有屏幕（只有终端会话才有）")
+            return None
+        try:
+            return session.render_svg()
+        except Exception as exc:  # 宿主已关闭等
+            self._screen.reset(f"<无屏幕视图: {exc}>")
+            return None
 
     def _input_state(self, session: Session) -> str:
         """状态栏上的输入队列那一段：积压字节数与是否已回落。"""
@@ -462,17 +511,6 @@ class App:
         if keep_lines is not None:
             page.delete("1.0", f"end-{keep_lines}l")  # 内容不足时 Tk 夹到 1.0，等于不删
         page.see(tk.END)
-
-    def _refresh_screen_views(self, session: Session) -> None:
-        """屏幕页 / SVG 源码页（pty 专属）：取数据，渲染与缓存都在 `ScreenView` 里。"""
-        if not isinstance(session, TerminalSession):
-            return
-        try:
-            svg = session.render_svg()
-        except Exception as exc:  # 宿主已关闭等
-            self._screen.reset(f"<无屏幕视图: {exc}>")
-            return
-        self._screen.refresh(key=(session.uid, session.journal.end_offset), svg=svg)
 
     def _save_svg(self) -> None:
         path = self._screen.save_svg()

@@ -7,7 +7,7 @@
 里取出后更新。所以界面**只同步一个廉价队列**，从不阻塞。
 
 控件复用 `example/ui/` 那一套（纯 Tk，不认识任何一层），本文件只负责**把答复翻译成界面
-状态**。
+状态**。详情区**只问当前可见的那一页**——切到哪页才发哪页的请求。
 """
 
 from __future__ import annotations
@@ -78,8 +78,8 @@ class App:
         self._address = address(instance)
         self._lock = lock(instance)
         self._answers: Queue[Answer] = Queue()
-        # 请求 → 用途：答复回来时靠 mid 认出它属于哪一次询问
-        self._want: dict[str, str] = {}
+        # 请求 → (用途, 目标会话)：答复靠 mid 认领；带会话是为了丢掉"已经切走的那一个"
+        self._want: dict[str, tuple[str, str | None]] = {}
         self._sessions: dict[str, SessionRef] = {}
         self._selected: str | None = None
         self._sized_for: str | None = None
@@ -208,6 +208,8 @@ class App:
             on_save_png=self._save_png,
         )
         self._status = StatusBar(self._root)
+        # 页装齐了才接切页回调——`<<NotebookTabChanged>>` 在 add 时也会发
+        self._tabs.on_page_change(self._refresh_detail)
 
     # ════════════════════════════════════════════════════════════
     # 驱动循环
@@ -247,7 +249,7 @@ class App:
         except Exception as exc:  # 连接断了
             self._status.set(f"发送失败: {exc}")
             return
-        self._want[mid] = purpose
+        self._want[mid] = (purpose, op.get("uid") if op else None)
 
     def _dispatch(self, answer: Answer) -> None:
         envelope = answer.envelope
@@ -257,9 +259,12 @@ class App:
         if answer.mid == self._sub_mid:
             self._apply_push(answer)
             return
-        purpose = self._want.pop(answer.mid, None)
-        if purpose is None:
+        entry = self._want.pop(answer.mid, None)
+        if entry is None:
             return
+        purpose, uid = entry
+        if uid is not None and uid != self._selected:
+            return  # 答复属于已经切走的会话：画上去就是错配
         if answer.chunk is not None:
             self._apply_chunk(purpose, answer.chunk)
             return
@@ -288,16 +293,18 @@ class App:
             self._sized_for = None
             self._status.set(f"已创建 {session.command}（{session.mode}）uid={session.uid[:8]}")
         elif purpose == "view":
-            self._tabs.set_text(Page.VIEW, str(data.get("text") or ""))
-        elif purpose == "svg":
-            self._apply_svg(data)
+            # 答复回来时那一页可能已经被切走——那就别替它重排文本
+            if self._tabs.current is Page.VIEW:
+                self._tabs.set_text(Page.VIEW, str(data.get("text") or ""))
+        elif purpose in ("svg_screen", "svg_source"):
+            self._apply_svg(purpose, data)
         elif purpose == "resize":
             self._status.set(f"尺寸已改为 {data.get('cols')}×{data.get('rows')}")
         elif purpose == "close":
             self._select_session(None)
 
     def _apply_chunk(self, purpose: str, chunk: BytesFrame) -> None:
-        if purpose == "raw":
+        if purpose == "raw" and self._tabs.current is Page.RAW:
             self._tabs.set_text(Page.RAW, repr(chunk.data))
 
     # ════════════════════════════════════════════════════════════
@@ -336,26 +343,39 @@ class App:
             return
         if not is_ok(envelope):  # 订阅本身失败（uid 不存在 / 流不对）
             failure = error_of(envelope)
-            self._append_sub(f"── 订阅失败: {failure.message if failure else '未知错误'} ──\n")
+            self._append_sub(
+                f"── 订阅失败: {failure.message if failure else '未知错误'} ──\n", always=True
+            )
             self._sub_mid = None
             return
         data = data_of(envelope)
         if envelope.type == Event.ENDED:
-            self._append_sub(f"── 结束 exit={data.get('exit_code')} ──\n")
+            self._append_sub(f"── 结束 exit={data.get('exit_code')} ──\n", always=True)
             self._sub_mid = None
         elif envelope.type == Event.RESYNC:
-            self._append_sub(f"── 重同步 lossy={data.get('lossy')}{_size_suffix(data)} ──\n")
+            self._append_sub(
+                f"── 重同步 lossy={data.get('lossy')}{_size_suffix(data)} ──\n", always=True
+            )
         elif envelope.type == Event.RESIZE:
             self._append_sub(
-                f"── 尺寸 {data.get('cols')}×{data.get('rows')} @ {data.get('offset')} ──\n"
+                f"── 尺寸 {data.get('cols')}×{data.get('rows')} @ {data.get('offset')} ──\n",
+                always=True,
             )
         else:  # ack：`type` 就是 subscribe 那条命令
             self._append_sub(
                 f"── 已订阅 offset={data.get('offset')} lossy={data.get('lossy')}"
-                f"{_size_suffix(data)} ──\n"
+                f"{_size_suffix(data)} ──\n",
+                always=True,
             )
 
-    def _append_sub(self, text: str) -> None:
+    def _append_sub(self, text: str, *, always: bool = False) -> None:
+        """往「订阅流」页追加。
+
+        字节推送很密（满屏重绘时尤甚），**只在那一页看得见时才写**；控制帧（订阅失败 /
+        结束 / 重同步）是订阅本身的状态，人在哪一页都得留下。
+        """
+        if not always and self._tabs.current is not Page.SUB:
+            return
         box = self._tabs.text(Page.SUB)
         box.insert(tk.END, text)
         box.delete("1.0", f"end-{_SUB_KEEP_LINES}l")  # 内容不足时 Tk 夹到 1.0，等于不删
@@ -374,13 +394,18 @@ class App:
             self._held.discard(uid)
             self._status.set(f"输入已排空：{uid[:8]} 可继续发")
 
-    def _apply_svg(self, data: dict) -> None:
-        """屏幕页：SVG 变了才重渲染——栅格化在这里做，守护进程只出矢量。"""
-        uid = self._selected
+    def _apply_svg(self, purpose: str, data: dict) -> None:
+        """矢量来自守护进程，位图在客户端出；栅格化那步由 `ScreenView` 按内容去重。"""
         svg = data.get("text")
-        if uid is None or not isinstance(svg, str):
+        if not isinstance(svg, str):
             return
-        self._screen.refresh(key=(uid, int(data.get("offset") or 0)), svg=svg)
+        page = Page.SVG if purpose == "svg_source" else Page.SCREEN
+        if self._tabs.current is not page:
+            return  # 那一页已经切走了；栅格化 170 ms，替看不见的页付不值
+        if purpose == "svg_source":
+            self._screen.show_source(svg)
+        else:
+            self._screen.show_screen(svg)
 
     def _apply_sessions(self, rows: list[dict]) -> None:
         """增量刷新会话表：行 iid 就是 uid，选中一并对齐（细节在 `SessionTree.refresh`）。"""
@@ -397,25 +422,43 @@ class App:
         self._sync_pty_controls(self._selected)
 
     def _refresh_detail(self) -> None:
+        """**只问当前可见的那一页**要数据。
+
+        每取一次都是一次往返（请求 + 答复），替看不见的页问就是白跑一趟网络加一趟
+        渲染；屏幕页那条尤其贵——答复回来还要栅格化（满屏 170 ms 上下）。
+        """
         uid = self._selected
         if uid is None:
-            self._tabs.set_text(Page.VIEW, "")
-            self._tabs.set_text(Page.RAW, "")
-            self._screen.reset("未选中会话")
+            self._clear_detail()
             return
-        if self._is_terminal(uid):
-            full = self._tabs.view_mode.get() == ViewRange.FULL
-            mode = ReadMode.TEXT.value if full else ReadMode.SCREEN.value
-            self._ask(Command.READ_SESSION, "view", {"uid": uid, "mode": mode})
-            self._ask(Command.READ_SESSION, "svg", {"uid": uid, "mode": ReadMode.SVG.value})
-        else:
-            self._tabs.set_text(Page.VIEW, "（只有终端会话有屏幕；字节流见「原始字节」页）")
-            self._screen.reset("该会话没有屏幕（只有子进程会话才有字节流）")
-        self._ask(
-            Command.READ_SESSION,
-            "raw",
-            {"uid": uid, "mode": ReadMode.BYTES.value, "tail": _RAW_TAIL},
-        )
+        page = self._tabs.current
+        terminal = self._is_terminal(uid)
+        if page is Page.VIEW:
+            if terminal:
+                full = self._tabs.view_mode.get() == ViewRange.FULL
+                mode = ReadMode.TEXT.value if full else ReadMode.SCREEN.value
+                self._ask(Command.READ_SESSION, "view", {"uid": uid, "mode": mode})
+            else:
+                self._tabs.set_text(Page.VIEW, "（只有终端会话有屏幕；字节流见「原始字节」页）")
+        elif page is Page.SCREEN or page is Page.SVG:
+            if terminal:
+                # 两页要的是同一份矢量，只是拿回来画的地方不同
+                purpose = "svg_screen" if page is Page.SCREEN else "svg_source"
+                self._ask(Command.READ_SESSION, purpose, {"uid": uid, "mode": ReadMode.SVG.value})
+            else:
+                self._screen.reset("该会话没有屏幕（只有子进程会话才有字节流）")
+        elif page is Page.RAW:
+            self._ask(
+                Command.READ_SESSION,
+                "raw",
+                {"uid": uid, "mode": ReadMode.BYTES.value, "tail": _RAW_TAIL},
+            )
+
+    def _clear_detail(self) -> None:
+        """没有选中会话：清空详情区（内容没变的页 `set_text` 自己不会再动）。"""
+        self._tabs.set_text(Page.VIEW, "")
+        self._tabs.set_text(Page.RAW, "")
+        self._screen.reset("未选中会话")
 
     # ════════════════════════════════════════════════════════════
     # 操作（都经接缝）

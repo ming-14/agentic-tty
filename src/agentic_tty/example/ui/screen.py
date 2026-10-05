@@ -27,8 +27,10 @@ class ScreenView:
     """屏幕页（画布）与 SVG 源码页，外加重渲染缓存。"""
 
     def __init__(self, tabs: DetailNotebook) -> None:
-        # 屏幕 / 输出偏移 / 画布尺寸没变就不重渲染——栅格化不便宜
-        self._key: tuple[object, ...] | None = None
+        # 矢量 / 画布尺寸没变就不重渲染——栅格化不便宜
+        self._key: tuple[int, float] | None = None
+        # 画布上画的是什么；没变就不重建画布项（`reset` 那条路每帧都会走到）
+        self._painted: object = None
         self._photo: tk.PhotoImage | None = None
         self._svg_source: str | None = None  # None = 该会话没有屏幕视图
         self._note = ""  # 没有屏幕视图时的提示文字
@@ -55,36 +57,45 @@ class ScreenView:
         return self._note
 
     def reset(self, note: str) -> None:
-        """没有屏幕视图时：清掉缓存与源码，两页都只留一句提示。"""
+        """没有屏幕视图时：清掉缓存与源码，两页都只留一句提示。
+
+        未选中会话 / 非终端会话每帧都会走到这里，去重由 `set_text` 与 `set_image` 各自挡住。
+        """
         self._key = None
         self._svg_source = None
         self._note = note
         set_text(self.page, note)
         self.set_image(None, note)
 
-    def refresh(self, *, key: tuple[object, ...], svg: str) -> None:
-        """按 `key`（会话 + 输出偏移）决定要不要重画——栅格化那一步由缓存挡着。
+    def show_screen(self, svg: str) -> None:
+        """「屏幕」页：栅格化后铺满画布。**矢量没变就不重画**。
 
-        先出 SVG，再从**渲染结果自己**读 1.0 倍的像素尺寸——渲染器把尺寸写在输出里，
-        不必去别处问"字符格基准是多少"。
+        栅格化是这条链上最贵的一步（120×40 满屏实测 170 ms 上下），所以拿矢量本身当
+        指纹——它变了画面才可能变。先出 SVG，再从**渲染结果自己**读 1.0 倍的像素尺寸：
+        渲染器把尺寸写在输出里，不必去别处问"字符格基准是多少"。
+
+        本方法**不碰「SVG 源码」页**：那一页归 `show_source`。
         """
+        self._svg_source = svg
         size = svg_size(svg)
         if size is None:
             self._key = None
-            self._svg_source = svg
             self._note = "<渲染结果里没有尺寸，无法铺满画布>"
-            set_text(self.page, svg)
             self.set_image(None, self._note)
             return
         scale = self.fit_scale(size)
-        cache = (*key, round(scale, 4))
+        cache = (hash(svg), round(scale, 4))
         if cache == self._key:
             return
         self._key = cache
+        self._note = ""
+        self.set_image(*self.rasterize(svg, scale))
+
+    def show_source(self, svg: str) -> None:
+        """「SVG 源码」页：只写文本，**不栅格化**。"""
         self._svg_source = svg
         self._note = ""
         set_text(self.page, svg)
-        self.set_image(*self.rasterize(svg, scale))
 
     def fit_scale(self, size: tuple[int, int]) -> float:
         """让屏幕正好铺满画布（不出现滚动条）。画布还没量出尺寸时按 1× 画。"""
@@ -105,6 +116,11 @@ class ScreenView:
             return None, f"<无屏幕位图: {exc}>"
 
     def set_image(self, data: bytes | None, note: str) -> None:
+        """把位图铺到画布上；没有位图就写提示。**画布内容没变就不重建**。"""
+        painted = note if data is None else hash(data)
+        if painted == self._painted:
+            return
+        self._painted = painted
         self.canvas.delete("all")
         self._photo = None  # 必须留引用，否则 Tk 会把图回收掉
         if data is None:

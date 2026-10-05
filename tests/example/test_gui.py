@@ -13,6 +13,7 @@ pytest.importorskip("resvg_py")  # GUI 的 SVG 渲染依赖
 from agentic_tty.core.ports import Stream  # noqa: E402
 from agentic_tty.core.runtime.input_queue import InputVerdict  # noqa: E402
 from agentic_tty.core.runtime.runtime import Runtime  # noqa: E402
+from agentic_tty.core.terminal.session import TerminalSession  # noqa: E402
 from agentic_tty.example.core_test import render  # noqa: E402
 from agentic_tty.example.core_test.gui import App  # noqa: E402
 from agentic_tty.example.core_test.sessions import (  # noqa: E402
@@ -21,6 +22,8 @@ from agentic_tty.example.core_test.sessions import (  # noqa: E402
     session_spec,
 )
 from agentic_tty.example.ui import Page, ViewRange  # noqa: E402
+
+_SVG = '<svg width="640" height="408" viewBox="0 0 640 408"></svg>'
 
 
 def _pump_until(root: tk.Tk, app: App, uid: str, predicate, timeout: float = 5.0) -> bool:
@@ -162,6 +165,7 @@ def test_process_tab_shows_tree_members(root):
     assert host is not None
     host.descendants_pids = (101, 202)
     app._refresh_tree()
+    app._tabs.show_page(Page.PROCS)  # 详情区只刷看得见的那一页
     app._refresh_detail()
 
     assert app._tabs.page_state(Page.PROCS) == "normal"  # 不是 pty 专属
@@ -188,6 +192,7 @@ def test_view_page_reads_its_range(root, fake_registry, monkeypatch):
     session = fake_registry.create(session_spec(ExampleMode.SUBPROCESS, ("repl",)))
     app._selected = session.uid
 
+    app._tabs.show_page(Page.VIEW)
     app._tabs.view_mode.set(ViewRange.FULL)
     app._refresh_detail()
     app._tabs.view_mode.set(ViewRange.SCREEN)
@@ -196,6 +201,43 @@ def test_view_page_reads_its_range(root, fake_registry, monkeypatch):
     assert seen == [True, False]
     page = app._tabs.text(Page.VIEW)
     assert page.get("1.0", "end-1c").startswith("── stdout ──")
+    fake_registry.close(session.uid)
+    app.on_close()
+
+
+def test_only_the_visible_page_is_rendered(root, fake_registry, monkeypatch):
+    """看哪页取哪页：屏幕页不可见时，一次栅格化都不该发生。"""
+    painted: list[float] = []
+    monkeypatch.setattr(TerminalSession, "render_svg", lambda self: _SVG)
+
+    app = App(root)
+    app._runtime = Runtime(fake_registry)
+
+    def fake_rasterize(svg: str, scale: float) -> tuple[bytes | None, str]:
+        painted.append(scale)
+        return None, ""
+
+    app._screen.rasterize = fake_rasterize  # type: ignore[method-assign]
+    session = fake_registry.create(session_spec(ExampleMode.PTY, ("x",)))
+    app._selected = session.uid
+    app._sync_pty_controls()
+
+    app._tabs.show_page(Page.VIEW)
+    app._refresh_detail()
+    assert painted == []  # 看「视图」页 → 屏幕一次都没碰
+
+    app._tabs.show_page(Page.SCREEN)
+    app._refresh_detail()
+    assert painted == [1.0]  # 切到「屏幕」页才栅格化
+
+    app._refresh_detail()
+    assert painted == [1.0]  # 同一份矢量 → 不重复栅格化
+
+    app._tabs.show_page(Page.SVG)
+    app._refresh_detail()
+    assert painted == [1.0]  # 「SVG 源码」页只要文本，不栅格化
+    assert app._screen.svg_source == _SVG
+
     fake_registry.close(session.uid)
     app.on_close()
 
@@ -295,6 +337,7 @@ def test_subscription_page_collects_new_output(root, fake_registry):
     app._runtime = Runtime(fake_registry)
     session = fake_registry.create(session_spec(ExampleMode.SUBPROCESS, ("x",)))
     app._selected = session.uid
+    app._tabs.show_page(Page.SUB)
     app._refresh_detail()  # 建订阅：游标从当前末尾起
     page = app._tabs.text(Page.SUB)
     assert page.get("1.0", "end-1c").startswith("── 订阅自 offset")

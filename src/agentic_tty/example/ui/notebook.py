@@ -85,6 +85,26 @@ class DetailNotebook(ttk.Notebook):
     def set_text(self, key: Page, text: str) -> None:
         set_text(self._texts[key], text)
 
+    @property
+    def current(self) -> Page | None:
+        """当前可见页的键；还没装页时返回 None。
+
+        验证台据此**只取看得见的那一页的数据**——没显示的那几页算了也没人看。
+        """
+        selected = self.select()
+        if not selected:
+            return None
+        widget = self.nametowidget(selected)
+        return next((key for key, value in self._widgets.items() if value is widget), None)
+
+    def on_page_change(self, callback: Callable[[], None]) -> None:
+        """页签切换时回调——切到哪页才去取哪页的数据。
+
+        **装页期间不要接**：`<<NotebookTabChanged>>` 在 `add` 时也会发，那时页面还没
+        装齐，回调里按页取数会取到不存在的页。
+        """
+        self.bind("<<NotebookTabChanged>>", lambda _event: callback())
+
     def page_state(self, key: Page) -> str:
         """页签状态（`normal` / `hidden`）。"""
         return str(self.tab(self._widgets[key], "state"))

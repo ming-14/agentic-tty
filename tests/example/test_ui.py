@@ -18,6 +18,7 @@ from agentic_tty.example.ui import (  # noqa: E402
 )
 
 _SVG = '<svg width="640" height="408" viewBox="0 0 640 408"></svg>'
+_SVG_OTHER = '<svg width="320" height="204" viewBox="0 0 320 204"></svg>'
 
 
 def test_svg_size_reads_the_rendered_root():
@@ -48,7 +49,8 @@ def test_detail_notebook_holds_pages_and_their_states(root):
     assert tabs.text(Page.RAW).get("1.0", "end-1c") == "hello"
 
 
-def test_screen_view_repaints_only_when_the_key_changes(root):
+def test_screen_view_repaints_only_when_the_svg_changes(root):
+    """栅格化最贵，所以拿矢量本身当指纹：同一份矢量不重画。"""
     tabs = DetailNotebook(root)
     screen = ScreenView(tabs)
     painted: list[float] = []
@@ -59,20 +61,38 @@ def test_screen_view_repaints_only_when_the_key_changes(root):
 
     screen.rasterize = fake_rasterize  # type: ignore[method-assign]
 
-    screen.refresh(key=("u", 7), svg=_SVG)
+    screen.show_screen(_SVG)
     assert painted == [1.0]  # 画布还没量出尺寸 → 1×
-    screen.refresh(key=("u", 7), svg=_SVG)
-    assert painted == [1.0]  # 屏幕 / 偏移 / 缩放都没变 → 不重画
-    screen.refresh(key=("u", 8), svg=_SVG)
-    assert painted == [1.0, 1.0]  # 输出偏移变了 → 重画
+    screen.show_screen(_SVG)
+    assert painted == [1.0]  # 矢量没变 → 不重画
+    screen.show_screen(_SVG_OTHER)
+    assert painted == [1.0, 1.0]  # 内容变了 → 重画
+    assert screen.svg_source == _SVG_OTHER
+
+
+def test_screen_source_page_never_rasterizes(root):
+    """「SVG 源码」页只要文本——一次栅格化都不该发生。"""
+    tabs = DetailNotebook(root)
+    screen = ScreenView(tabs)
+    painted: list[float] = []
+
+    def fake_rasterize(svg: str, scale: float) -> tuple[bytes | None, str]:
+        painted.append(scale)
+        return None, ""
+
+    screen.rasterize = fake_rasterize  # type: ignore[method-assign]
+
+    screen.show_source(_SVG)
+    assert painted == []
     assert screen.svg_source == _SVG
+    assert screen.page.get("1.0", "end-1c") == _SVG  # 源码写进了「SVG 源码」页
 
 
 def test_screen_view_reports_when_the_svg_has_no_size(root):
     """矢量里读不出尺寸就没法铺满画布——留一句提示，别硬画。"""
     tabs = DetailNotebook(root)
     screen = ScreenView(tabs)
-    screen.refresh(key=("u", 7), svg="<svg/>")
+    screen.show_screen("<svg/>")
     assert screen.svg_source == "<svg/>"
     assert screen.note  # 有提示
 
@@ -80,10 +100,34 @@ def test_screen_view_reports_when_the_svg_has_no_size(root):
 def test_screen_view_reset_clears_the_source(root):
     tabs = DetailNotebook(root)
     screen = ScreenView(tabs)
-    screen.refresh(key=("u", 7), svg=_SVG)
+    screen.show_screen(_SVG)
     screen.reset("未选中会话")
     assert screen.svg_source is None
     assert screen.note == "未选中会话"
+
+
+def test_detail_notebook_reports_the_visible_page(root):
+    tabs = DetailNotebook(root)
+    tabs.add_view_page(lambda: None)
+    tabs.add_text(Page.RAW, "原始字节", small=True)
+    assert tabs.current is Page.VIEW  # 先装的页默认选中
+    tabs.show_page(Page.RAW)
+    assert tabs.current is Page.RAW
+
+
+def test_page_change_callback_fires(root):
+    """切页要能通知出去——验证台靠它"切到哪页才取哪页的数据"。"""
+    tabs = DetailNotebook(root)
+    tabs.add_view_page(lambda: None)
+    tabs.add_text(Page.RAW, "原始字节", small=True)
+    seen: list[int] = []
+    tabs.on_page_change(lambda: seen.append(1))
+
+    root.update()  # 装页期间也会排下这个事件，先消化掉
+    seen.clear()
+    tabs.show_page(Page.RAW)
+    root.update()  # <<NotebookTabChanged>> 是异步派发的
+    assert seen == [1]
 
 
 def test_session_tree_refreshes_incrementally(root):
