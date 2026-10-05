@@ -144,7 +144,11 @@ class App:
         body.add(right, weight=3)
         self._tabs = DetailNotebook(right)
         self._tabs.pack(fill=tk.BOTH, expand=True)
-        self._screen = ScreenView(self._tabs)
+        self._screen = ScreenView(
+            self._tabs,
+            on_format_change=self._refresh_detail,
+            produce=self._bitmap,
+        )
         self._tabs.add_view_page(self._refresh_detail)
         self._tabs.add_text(Page.CELLS, "格栅")
         self._tabs.add_text(Page.RAW, "原始字节", small=True)
@@ -450,6 +454,16 @@ class App:
         svg = self._terminal_svg(session)
         if svg is not None:
             self._screen.show_source(svg)
+
+    def _bitmap(self, scale: float) -> tuple[bytes | None, str]:
+        """`image` 格式的位图：终端模型直接出，出不来就转成一行提示交给画布。"""
+        session = self._selected_session()
+        if session is None:
+            return None, "<未选中会话>"
+        try:
+            return render.screen_png(session, scale), ""
+        except Exception as exc:  # 假宿主不渲染位图 / 宿主已关闭
+            return None, f"<无屏幕位图: {exc}>"
 
     def _terminal_svg(self, session: Session) -> str | None:
         """终端会话的矢量；取不到（非终端 / 宿主已关闭）就在屏幕页留一句提示。"""

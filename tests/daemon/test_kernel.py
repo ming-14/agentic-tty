@@ -355,7 +355,6 @@ def test_shutdown_daemon_without_a_channel_reports_not_stopping():
     ("label", "op", "command"),
     [
         ("未知 mode", {"mode": "bogus"}, Command.READ_SESSION),
-        ("位图不再是模式", {"mode": "image"}, Command.READ_SESSION),
         ("未知 stream", {"mode": "bytes", "stream": "bogus"}, Command.READ_SESSION),
         ("tail 不可转数字", {"mode": "bytes", "tail": [1]}, Command.READ_SESSION),
         ("cols 不可转数字", {"cols": [1], "rows": 24}, Command.RESIZE_SESSION),
@@ -470,10 +469,13 @@ def test_input_drained_reports_the_queue_state():
 
 
 class _RenderingHost(FakeHost):
-    """会出矢量的假宿主——`FakeHost` 刻意不做屏幕渲染，这里只为把读视图那条路走通。"""
+    """会出矢量与位图的假宿主——`FakeHost` 刻意不做屏幕渲染，这里只为把读视图那条路走通。"""
 
     def render_svg(self) -> str:
         return f'<svg width="80" height="24">{self.screen_text()}</svg>'
+
+    def render_image(self, *, scale: float = 1.0, fmt: str = "png") -> bytes:
+        return f"{fmt}:{scale}:{self.screen_text()}".encode()
 
 
 @pytest.mark.parametrize("mode", [ReadMode.SCREEN, ReadMode.TEXT, ReadMode.SVG])
@@ -497,3 +499,26 @@ def test_read_views_come_back_as_text_plus_the_offset(mode):
     payload = _data(reply.answer)
     assert "hello" in payload["text"]
     assert payload["offset"] == session.journal.end_offset
+
+
+def test_read_image_comes_back_as_a_byte_frame():
+    """`image` 走字节帧：位图由宿主直接出，缩放从请求里来。"""
+    registry = SessionRegistry(lambda spec: _RenderingHost(spec, FakeProgram()))
+    session = registry.create(SessionSpec(mode=PTY, argv=("x",)))
+    session.ingest_stream(Stream.STDOUT, b"hello")
+    handler = KernelHandler()
+    handler._runtime.get = lambda _uid: session  # type: ignore[method-assign]
+    wire = WireRequest(
+        make_request(
+            Command.READ_SESSION,
+            op={"uid": session.uid, "mode": ReadMode.IMAGE.value, "scale": 0.5},
+        ),
+        _CONNECTION,
+    )
+    try:
+        reply = handler.handle(wire)
+    finally:
+        session.close()
+
+    assert reply is not None
+    assert reply.answer.data == b"png:0.5:hello"  # type: ignore[attr-defined]

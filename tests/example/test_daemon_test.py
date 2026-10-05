@@ -67,9 +67,9 @@ class _Session:
     def __exit__(self, *_exc: object) -> None:
         self.client.close()
 
-    def ask(self, command: str, op: dict | None = None) -> Answer:
+    def ask(self, command: str, op: dict | None = None, timeout: float = _DEADLINE) -> Answer:
         mid = self.client.request(command, op)
-        deadline = time.monotonic() + _DEADLINE
+        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
                 answer = self.answers.get(timeout=0.05)
@@ -230,5 +230,47 @@ def test_gui_reports_a_failed_subscribe(running: tuple[str, DaemonConfig], root)
             return app._tabs.text(Page.SUB).get("1.0", "end")
 
         assert _pump(root, lambda: "订阅失败" in page_text()), page_text()
+    finally:
+        app.on_close()
+
+
+def test_read_image_over_the_wire(running):
+    """跨进程取位图：宿主直接出，客户端拿到字节帧（PNG 头）。
+
+    第一次要初始化渲染器（实测 7–10 s），所以这条的等待窗口比别处宽。
+    """
+    with _Session(address(running)) as session:
+        created = session.data(Command.CREATE_SESSION, {"mode": "pty", "argv": []})
+        ref = SessionRef.from_dict(created["session"])
+        answer = session.ask(
+            Command.READ_SESSION,
+            {"uid": ref.uid, "mode": "image", "scale": 1.0},
+            timeout=40.0,
+        )
+
+    assert answer.chunk is not None
+    assert answer.chunk.data[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_gui_requests_a_bitmap_in_image_format(running, root):
+    """「屏幕」页切到 `image`：位图经一次请求往返拿回来，铺到画布上。"""
+    pytest.importorskip("resvg_py")
+    from agentic_tty.example.daemon_test.gui import App
+    from agentic_tty.example.ui import FORMAT_IMAGE, Page
+
+    app = App(root, running)
+    try:
+        assert _pump(root, lambda: app._connected), "界面没连上守护进程"
+        app._bar.mode.set("pty")
+        app._create_session()
+        assert _pump(root, lambda: bool(app._sessions)), "树里没出现会话"
+
+        app._tabs.show_page(Page.SCREEN)
+        app._screen.format = FORMAT_IMAGE
+
+        def painted() -> bool:
+            return any(app._screen.canvas.type(i) == "image" for i in app._screen.canvas.find_all())
+
+        assert _pump(root, painted, timeout=40.0), "画布上没出现位图"
     finally:
         app.on_close()

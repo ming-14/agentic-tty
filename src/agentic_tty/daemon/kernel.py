@@ -63,7 +63,7 @@ _VIEWS: dict[ReadMode, Callable[[TerminalSession], str]] = {
     ReadMode.TEXT: TerminalSession.full_text,
     ReadMode.SVG: TerminalSession.render_svg,
 }
-"""出文本的读视图模式 → 对应的方法。**`BYTES` 不在表里**——它出字节帧，在 `_read` 里提前返回。"""
+"""出文本的读视图模式 → 对应的方法。`BYTES` / `IMAGE` 出字节帧，在 `_read` 里提前返回。"""
 
 _EXIT_SWEEP_INTERVAL = 1.0
 """全表问一次退出（兜底）的最短间隔，秒。
@@ -111,6 +111,17 @@ def _number(op: Mapping[str, Any], key: str) -> int:
         return int(value)
     except (TypeError, ValueError) as exc:
         raise MessageError(f"{key} 不是整数: {value!r}") from exc
+
+
+def _real(op: Mapping[str, Any], key: str) -> float:
+    """取一个浮点参数；缺省为 0。收错东西的规矩与 `_number` 一样。"""
+    value = op.get(key)
+    if value is None:
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise MessageError(f"{key} 不是数: {value!r}") from exc
 
 
 def _enum(op: Mapping[str, Any], key: str, cls: type[_E], default: str = "") -> _E:
@@ -485,6 +496,15 @@ class KernelHandler:
             data = session.read_range(start, journal.end_offset, stream)
             return ByteChunk(tag=stream_tag(stream.value), key=envelope.mid, data=data)
         terminal = self._terminal(session)
+        if mode is ReadMode.IMAGE:
+            # 位图由宿主直接出：客户端拿不到终端模型，只能请这边代劳。第一次要初始化
+            # 渲染器（7–10 s），那一次会把所有者线程按住——之后就是十几毫秒。
+            scale = _real(op, "scale") or 1.0
+            return ByteChunk(
+                tag=stream_tag(Stream.STDOUT.value),
+                key=envelope.mid,
+                data=terminal.render_image(scale=scale, fmt="png"),
+            )
         text = _VIEWS[mode](terminal)
         # 顺带带上日志末尾的 offset：客户端靠它判断屏幕变了没有，变了才重渲染。
         return ok_response(

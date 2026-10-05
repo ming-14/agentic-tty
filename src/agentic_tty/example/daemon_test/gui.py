@@ -193,7 +193,12 @@ class App:
         body.add(right, weight=3)
         self._tabs = DetailNotebook(right)
         self._tabs.pack(fill=tk.BOTH, expand=True)
-        self._screen = ScreenView(self._tabs)
+        # 位图在守护进程手里出：这一侧发请求，答复回来自己铺画布
+        self._screen = ScreenView(
+            self._tabs,
+            on_format_change=self._refresh_detail,
+            produce=self._request_bitmap,
+        )
         self._tabs.add_view_page(self._refresh_detail)
         self._tabs.add_text(Page.RAW, "原始字节", small=True)
         self._tabs.add_text(Page.SUB, "订阅流", small=True)
@@ -306,6 +311,22 @@ class App:
     def _apply_chunk(self, purpose: str, chunk: BytesFrame) -> None:
         if purpose == "raw" and self._tabs.current is Page.RAW:
             self._tabs.set_text(Page.RAW, repr(chunk.data))
+        elif purpose == "image" and self._tabs.current is Page.SCREEN:
+            self._screen.set_image(chunk.data, "")
+
+    def _request_bitmap(self, scale: float) -> None:
+        """`image` 格式的位图在守护进程手里出——发请求，到了再由 `_apply_chunk` 铺上。
+
+        返回 `None` 表示"还在路上"：画布先留着上一张，别清成空白。
+        """
+        uid = self._selected
+        if uid is not None:
+            self._ask(
+                Command.READ_SESSION,
+                "image",
+                {"uid": uid, "mode": ReadMode.IMAGE.value, "scale": scale},
+            )
+        return None
 
     # ════════════════════════════════════════════════════════════
     # 订阅

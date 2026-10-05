@@ -7,7 +7,11 @@ import pytest
 tk = pytest.importorskip("tkinter")
 pytest.importorskip("resvg_py")  # 屏幕页的 SVG 栅格化依赖
 
+from tkinter import ttk  # noqa: E402
+
 from agentic_tty.example.ui import (  # noqa: E402
+    FORMAT_IMAGE,
+    FORMAT_SVG,
     DetailNotebook,
     Page,
     ScreenView,
@@ -86,6 +90,45 @@ def test_screen_source_page_never_rasterizes(root):
     assert painted == []
     assert screen.svg_source == _SVG
     assert screen.page.get("1.0", "end-1c") == _SVG  # 源码写进了「SVG 源码」页
+
+
+def test_screen_view_image_format_uses_the_producer(root):
+    """`image` 格式的位图由调用方出——只有把终端模型拿在手里的那一侧给得出。"""
+    tabs = DetailNotebook(root)
+    produced: list[float] = []
+    rasterized: list[float] = []
+
+    def fake_produce(scale: float) -> tuple[bytes | None, str]:
+        produced.append(scale)
+        return None, ""
+
+    screen = ScreenView(tabs, produce=fake_produce)
+    screen.rasterize = lambda svg, scale: (rasterized.append(scale), (None, ""))[1]  # type: ignore[method-assign]
+
+    screen.format = FORMAT_IMAGE
+    screen.show_screen(_SVG)
+    assert produced == [1.0]
+    assert rasterized == []  # image 格式不碰 resvg
+
+
+def test_screen_view_without_a_producer_disables_image(root):
+    """跨进程的台子拿不到终端模型：`image` 置灰，位图一律本地栅格化。"""
+    tabs = DetailNotebook(root)
+    rasterized: list[float] = []
+    screen = ScreenView(tabs)
+    screen.rasterize = lambda svg, scale: (rasterized.append(scale), (None, ""))[1]  # type: ignore[method-assign]
+
+    assert screen.format == FORMAT_SVG
+    states = {
+        child.cget("text"): child.state()
+        for child in screen.tab.grid_slaves(row=0)[0].winfo_children()
+        if isinstance(child, ttk.Radiobutton)
+    }
+    assert "disabled" in states["image"]
+    assert "disabled" not in states["svg"]
+
+    screen.show_screen(_SVG)
+    assert rasterized == [1.0]
 
 
 def test_screen_view_reports_when_the_svg_has_no_size(root):

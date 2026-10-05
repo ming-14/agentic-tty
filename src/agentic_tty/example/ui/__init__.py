@@ -7,11 +7,13 @@
 from .bars import InputBar, SessionBar, SizeBar, StatusBar
 from .common import HINT_COLOR, ask_save, set_text, svg_size
 from .notebook import DetailNotebook, Page, ViewRange
-from .screen import EXPORT_SCALE, ScreenView
+from .screen import EXPORT_SCALE, FORMAT_IMAGE, FORMAT_SVG, ScreenView
 from .tree import SessionTree
 
 __all__ = [
     "EXPORT_SCALE",
+    "FORMAT_IMAGE",
+    "FORMAT_SVG",
     "HINT_COLOR",
     "DetailNotebook",
     "InputBar",

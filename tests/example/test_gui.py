@@ -21,7 +21,7 @@ from agentic_tty.example.core_test.sessions import (  # noqa: E402
     make_runner_factory,
     session_spec,
 )
-from agentic_tty.example.ui import Page, ViewRange  # noqa: E402
+from agentic_tty.example.ui import FORMAT_IMAGE, FORMAT_SVG, Page, ViewRange  # noqa: E402
 
 _SVG = '<svg width="640" height="408" viewBox="0 0 640 408"></svg>'
 
@@ -127,7 +127,8 @@ def test_screen_image_fits_canvas(root):
 
     # 1.0 倍的尺寸由渲染结果自带：80×24 字符 → 640×408。按较小的一维贴合画布。
     assert app._screen.fit_scale((640, 408)) == pytest.approx(min(600 / 640, 300 / 408))
-    assert app._screen.tab.grid_slaves(row=0) == [app._screen.canvas]
+    # 格式单选占第 0 行，画布独占第 1 行（没有滚动条）
+    assert app._screen.tab.grid_slaves(row=1) == [app._screen.canvas]
     app.on_close()
 
 
@@ -223,6 +224,7 @@ def test_only_the_visible_page_is_rendered(root, fake_registry, monkeypatch):
     app._sync_pty_controls()
 
     app._tabs.show_page(Page.VIEW)
+    app._screen.format = FORMAT_SVG  # 用本地栅格化计数（image 格式走 produce）
     app._refresh_detail()
     assert painted == []  # 看「视图」页 → 屏幕一次都没碰
 
@@ -237,6 +239,40 @@ def test_only_the_visible_page_is_rendered(root, fake_registry, monkeypatch):
     app._refresh_detail()
     assert painted == [1.0]  # 「SVG 源码」页只要文本，不栅格化
     assert app._screen.svg_source == _SVG
+
+    fake_registry.close(session.uid)
+    app.on_close()
+
+
+def test_screen_format_switch_picks_the_bitmap_source(root, fake_registry, monkeypatch):
+    """「屏幕」页的格式单选：`image` 走模型直接出位图，`svg` 走本地栅格化。"""
+    painted: list[float] = []
+    monkeypatch.setattr(TerminalSession, "render_svg", lambda self: _SVG)
+
+    app = App(root)
+    app._runtime = Runtime(fake_registry)
+
+    def fake_rasterize(svg: str, scale: float) -> tuple[bytes | None, str]:
+        painted.append(scale)
+        return None, ""
+
+    app._screen.rasterize = fake_rasterize  # type: ignore[method-assign]
+    session = fake_registry.create(session_spec(ExampleMode.PTY, ("x",)))
+    app._selected = session.uid
+    app._sync_pty_controls()
+    app._tabs.show_page(Page.SCREEN)
+
+    app._screen.format = FORMAT_SVG
+    app._refresh_detail()
+    assert painted == [1.0]  # svg → 本地 resvg
+
+    app._screen.format = FORMAT_IMAGE
+    app._refresh_detail()
+    assert painted == [1.0]  # image → 走 produce，不碰 resvg
+    # 假宿主出不了位图 → 画布上留一行提示（`set_image` 画的是画布，不是 `note`）
+    assert any(
+        app._screen.canvas.type(i) == "text" for i in app._screen.canvas.find_all()
+    )
 
     fake_registry.close(session.uid)
     app.on_close()
