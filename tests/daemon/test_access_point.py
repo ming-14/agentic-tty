@@ -15,8 +15,8 @@ import pytest
 
 from agentic_tty.daemon.access_point import AccessPoint, ByteChunk, WireRequest, _Connection
 from agentic_tty.daemon.handler import Delivery, Reply
-from agentic_tty.protocol.contracts.daemon_ipc import STREAM_STDIN, STREAM_STDOUT
-from agentic_tty.protocol.envelope import Envelope, from_json, make_request, to_json
+from agentic_tty.protocol.contracts.daemon_ipc import STREAM_STDIN, STREAM_STDOUT, Notice
+from agentic_tty.protocol.envelope import Envelope, from_json, make_request, make_response, to_json
 from agentic_tty.protocol.frame import (
     BytesFrame,
     ControlFrame,
@@ -38,12 +38,14 @@ class _Seam:
     def __init__(self) -> None:
         self.requests: list[WireRequest] = []
         self.inputs: list[tuple[str, bytes]] = []
+        self.input_connections: list[object] = []
 
     def on_request(self, request: WireRequest) -> None:
         self.requests.append(request)
 
-    def on_input(self, key: str, data: bytes) -> None:
+    def on_input(self, key: str, data: bytes, connection: object) -> None:
         self.inputs.append((key, data))
+        self.input_connections.append(connection)
 
     @property
     def envelopes(self) -> list[Envelope]:
@@ -274,3 +276,46 @@ def test_room_for_a_foreign_request_is_unknown(point: tuple[AccessPoint, _Seam])
     """不是本接入点发出的请求问不出额度——返回 None，调用方按"不限额"处理。"""
     access_point, _seam = point
     assert access_point.room_for(object()) is None
+
+
+def test_notify_sends_a_control_frame_to_that_connection(point: tuple[AccessPoint, _Seam]):
+    """`notify` 往指定连接发一条控制帧——输入流控靠它回到发送方去。"""
+    access_point, seam = point
+    connection = _connect(access_point)
+    try:
+        connection.send(encode_bytes(STREAM_STDIN, "uid-1", b"hi"))
+        assert _pump_until(access_point, lambda: bool(seam.input_connections))
+        target = seam.input_connections[0]
+
+        assert access_point.notify(target, make_response(Notice.INPUT_HOLD.value, "uid-1"))
+        frames = _read_frames(connection)
+        assert isinstance(frames[0], ControlFrame)
+        notice = from_json(frames[0].data)
+        assert (notice.type, notice.mid) == (Notice.INPUT_HOLD.value, "uid-1")
+    finally:
+        connection.close()
+
+
+def test_drop_closes_that_connection(point: tuple[AccessPoint, _Seam]):
+    """`drop` 断掉指定连接（违约处理）——对端读到的就是连接结束。"""
+    access_point, seam = point
+    connection = _connect(access_point)
+    try:
+        connection.send(encode_bytes(STREAM_STDIN, "uid-1", b"hi"))
+        assert _pump_until(access_point, lambda: bool(seam.input_connections))
+        target = seam.input_connections[0]
+
+        access_point.drop(target)
+        assert not access_point.is_open(target)
+        with pytest.raises(ConnectionClosed):
+            _read_frames(connection)
+    finally:
+        connection.close()
+
+
+def test_a_foreign_connection_is_neither_notified_nor_dropped(point: tuple[AccessPoint, _Seam]):
+    """不是本接入点的连接：通知发不出去、也断不掉——别把别人的连接当自己的动。"""
+    access_point, _seam = point
+    assert access_point.notify(object(), make_response(Notice.INPUT_HOLD.value, "uid-1")) is False
+    assert not access_point.is_open(object())
+    access_point.drop(object())  # 不该抛

@@ -51,6 +51,21 @@ class Delivery(StrEnum):
     """不是本接入点发出的请求（进程内消费者投的）。守护进程自己另找去处，不转给处理层。"""
 
 
+class InputAction(StrEnum):
+    """一段上行字节的判定——**处理层消化后给守护进程的动作**。
+
+    上游（core 的输入队列）出的是三态判定，但它不认识"连接"；把它变成对连接做什么，
+    是处理层的事（见架构设计 §12）。守护进程只照动作动手，不认识判定本身。
+    """
+
+    NONE = "none"
+    """收下了，无需动作。"""
+    HOLD = "hold"
+    """越软水位：字节已收下，但发送方应**本端排队**——下发 `INPUT_HOLD`，排空后放行。"""
+    DROP = "drop"
+    """超硬上限：**整块没收下**，违约——断掉那条连接。"""
+
+
 class StopSignal(Protocol):
     """要求守护进程停止的通道。
 
@@ -113,8 +128,24 @@ class RequestHandler(Protocol):
         """
         ...
 
-    def on_input(self, key: str, data: bytes) -> None:
-        """接下一段上行字节；`key` 的语义由消费者定（如会话 uid）。"""
+    def on_input(self, key: str, data: bytes, connection: object) -> InputAction:
+        """接下一段上行字节，返回**守护进程该对那条连接做什么**。
+
+        `key` 的语义由消费者定（如会话 uid）。`connection` 是这段字节来的那条连接，
+        处理层**只拿它当凭据**（回给守护进程去下发通知 / 断连），不认识它是什么。
+
+        判定的来源是 core 的输入队列（收下 / 越软水位 / 超上限），映射成什么动作由本层定
+        ——**这就是"策略在消费者"那句话的落点**（见架构设计 §12）。进程内消费者投进来的
+        字节没有连接（`None`），动作落不了地；那种消费者直接调 core 拿判定更省事。
+        """
+        ...
+
+    def input_drained(self, key: str) -> bool:
+        """某个 key 的输入队列是否已回落到低水位（该放行那条被 `HOLD` 的连接了）。
+
+        守护进程每轮拿它对已 hold 的连接问一次；`True` 就下发 `INPUT_RESUME`。
+        key 上没有会话（已关掉）时返回 `True`——没什么可等的，别把发送方永远卡在 HOLD。
+        """
         ...
 
     def pump(self) -> None:

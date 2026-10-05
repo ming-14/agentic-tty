@@ -22,7 +22,8 @@ from tkinter import messagebox, ttk
 
 from ...foundation.instance import is_held
 from ...foundation.logs import get_logger
-from ...protocol.contracts.daemon_ipc import Command, Event, ReadMode, SessionRef
+from ...protocol.contracts.daemon_ipc import Command, Event, Notice, ReadMode, SessionRef
+from ...protocol.envelope import Envelope
 from ...protocol.frame import BytesFrame
 from ...protocol.response import data_of, error_of, is_ok
 from ..ui import (
@@ -55,6 +56,11 @@ _CONNECT_TRY = 0.2
 """单次连接尝试的等待上限——连不上就再来一次。"""
 _CONNECT_RETRY = 0.3
 """两次尝试之间的间隔。"""
+_FLOOD_BYTES = 1 << 21
+"""灌输入队列用的字节数——**故意超过守护进程默认的 1 MiB 输入硬上限**，好演示 `REJECTED`。"""
+
+_NOTICES = frozenset({Notice.INPUT_HOLD.value, Notice.INPUT_RESUME.value})
+"""输入流控通知的 `type` 取值——它们不属于任何请求，按类型分派，不查 `mid` 表。"""
 
 
 def _size_suffix(data: dict) -> str:
@@ -83,6 +89,8 @@ class App:
         self._export_path: str | None = None
         self._sub_mid: str | None = None
         """当前订阅的 id（= 那条 `subscribe` 请求的 mid）；推送与它同 mid。"""
+        self._held: set[str] = set()
+        """被守护进程 `INPUT_HOLD` 住的会话 uid——本端排队，别再往里发。"""
 
         self._client = Client(self._address, on_reply=self.on_reply)
         # 连接在**后台线程**里做：连不上要重试，而主线程得跑 mainloop 不能阻塞
@@ -139,6 +147,7 @@ class App:
         if state == "connected":
             self._connected = True
             self._sub_mid = None  # 新连接上不存在旧订阅，留着 mid 只会把推送认错
+            self._held.clear()  # 同理：新连接上不存在旧的 hold
             self._daemon_state.set("已连接，取状态中…")  # pid / uptime 等第一条答复
             return
         self._connected = False
@@ -192,6 +201,7 @@ class App:
 
         self._input = InputBar(right, on_send=self._send_input, on_interrupt=self._send_interrupt)
         self._input.add_button("订阅选中", self._subscribe_selected)
+        self._input.add_button("灌输入队列", self._flood_input)
         self._size = SizeBar(
             right,
             on_apply=self._resize,
@@ -241,6 +251,10 @@ class App:
         self._want[mid] = purpose
 
     def _dispatch(self, answer: Answer) -> None:
+        envelope = answer.envelope
+        if envelope is not None and envelope.type in _NOTICES:
+            self._apply_notice(envelope)
+            return
         if answer.mid == self._sub_mid:
             self._apply_push(answer)
             return
@@ -352,6 +366,19 @@ class App:
         box.delete("1.0", f"end-{_SUB_KEEP_LINES}l")  # 内容不足时 Tk 夹到 1.0，等于不删
         box.see(tk.END)
 
+    def _apply_notice(self, envelope: Envelope) -> None:
+        """输入流控：`INPUT_HOLD` 就本端排队（不再往里发），`INPUT_RESUME` 就放行。
+
+        `mid` 是会话 uid——通知不挂在任何请求上，所以不查 `_want` 表。
+        """
+        uid = envelope.mid
+        if envelope.type == Notice.INPUT_HOLD.value:
+            self._held.add(uid)
+            self._status.set(f"输入越软水位：{uid[:8]} 本端排队（等排空）")
+        else:
+            self._held.discard(uid)
+            self._status.set(f"输入已排空：{uid[:8]} 可继续发")
+
     def _apply_svg(self, data: dict) -> None:
         """屏幕页：SVG 变了才重渲染；变了就要再取一次位图（那是另一次请求往返）。"""
         uid = self._selected
@@ -420,10 +447,16 @@ class App:
             self._ask(Command.CLOSE_SESSION, "close", {"uid": self._selected})
 
     def _send_input(self, newline: bool = False) -> None:
-        """输入走字节帧：它本身就是一次操作，不需要配对的控制请求。"""
+        """输入走字节帧：它本身就是一次操作，不需要配对的控制请求。
+
+        被守护进程 hold 住的会话**本端排队**：不再往里发，等 `INPUT_RESUME` 回来。
+        """
         uid = self._selected
         if uid is None:
             self._status.set("先选一个会话")
+            return
+        if uid in self._held:
+            self._status.set("该会话输入越了软水位，本端排队中（等排空再发）")
             return
         tail = b""
         if newline:
@@ -438,6 +471,20 @@ class App:
             self._status.set(f"发送失败: {exc}")
             return
         self._status.set(f"已发出 {len(data)} 字节（由守护进程的写线程写出）")
+
+    def _flood_input(self) -> None:
+        """一次灌过硬上限：演示守护进程**整块拒收并断连**，而不是静默丢字节。"""
+        uid = self._selected
+        if uid is None:
+            self._status.set("先选一个会话")
+            return
+        blob = b"x" * _FLOOD_BYTES
+        try:
+            self._client.write(uid, blob)
+        except Exception as exc:
+            self._status.set(f"发送失败: {exc}")
+            return
+        self._status.set(f"已灌入 {len(blob)} 字节——超硬上限时守护进程会断掉这条连接")
 
     def _send_interrupt(self) -> None:
         uid = self._selected

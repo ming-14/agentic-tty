@@ -11,6 +11,10 @@
 - **订阅 id 就是那条 `subscribe` 请求的 `mid`**（连接内唯一），客户端按它分派推送。
 - 推送全是**下行帧**：字节走字节帧（`key` = 订阅 id），说不清的走控制帧（`mid` = 订阅 id，
   `type` 取 `Event`）。
+
+**输入流控**（`Notice`）：上行字节不占命令，但它的判定得回得去——越过软水位就下发
+`INPUT_HOLD`（发送方本端排队），回落后再下发 `INPUT_RESUME`。这类通知**不属于任何请求**，
+`mid` 装的是**会话 uid**（说清是哪个会话的输入）。
 """
 
 from __future__ import annotations
@@ -53,6 +57,19 @@ class Event(StrEnum):
     """
     ENDED = "ended"
     """会话已排空，不会再有字节；订阅到此为止。"""
+
+
+class Notice(StrEnum):
+    """守护进程主动下发的**非字节**通知（以控制帧发，`mid` = 会话 uid）。
+
+    与 `Event` 的区别是**归属**：`Event` 属于某条订阅（`mid` = 订阅 id），这里属于
+    **连接本身**——输入流控不挂在任何订阅上。客户端收到就按 `mid` 找到那个会话照做。
+    """
+
+    INPUT_HOLD = "input_hold"
+    """输入队列越过软水位：**本端排队**，别再往这个会话灌字节（收到 `INPUT_RESUME` 再继续）。"""
+    INPUT_RESUME = "input_resume"
+    """输入队列已回落到低水位：可以继续发。"""
 
 
 # 流标签：线上的 1 字节取值 ↔ 流名。流名必须与 core 的 `Stream` 取值一致

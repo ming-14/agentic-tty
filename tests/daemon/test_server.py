@@ -17,7 +17,7 @@ import pytest
 
 from agentic_tty.config import DaemonConfig
 from agentic_tty.daemon.errors import AlreadyRunning, DaemonError, NotStarted
-from agentic_tty.daemon.handler import Delivery, Reply, RequestHandler, StopSignal
+from agentic_tty.daemon.handler import Delivery, InputAction, Reply, RequestHandler, StopSignal
 from agentic_tty.daemon.server import Daemon, SubmitOutcome
 from agentic_tty.transport.pipe import PipeTransport
 from agentic_tty.transport.stream import parse_address
@@ -30,6 +30,9 @@ class FakeHandler:
 
     def __init__(self) -> None:
         self.inputs: list[tuple[str, bytes]] = []
+        self.input_connections: list[object | None] = []
+        self.input_action = InputAction.NONE
+        self.drained = True
         self.stop: StopSignal | None = None
         self.pumps = 0
         self.waits = 0
@@ -67,8 +70,13 @@ class FakeHandler:
         self.failures.append(error)
         return Reply(request=request, answer=f"failed:{request}")
 
-    def on_input(self, key: str, data: bytes) -> None:
+    def on_input(self, key: str, data: bytes, connection: object) -> InputAction:
         self.inputs.append((key, data))
+        self.input_connections.append(connection)
+        return self.input_action
+
+    def input_drained(self, key: str) -> bool:
+        return self.drained
 
     def pump(self) -> None:
         self.pumps += 1

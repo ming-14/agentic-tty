@@ -33,10 +33,12 @@ from enum import StrEnum
 from ..config import DaemonConfig, endpoint_name, lock_name, runtime_dir
 from ..foundation.instance import InstanceLock
 from ..foundation.logs import add_rotating_file, get_logger
+from ..protocol.contracts.daemon_ipc import Notice
+from ..protocol.envelope import make_response
 from ..transport.pipe import pipe_address
 from .access_point import AccessPoint
 from .errors import AlreadyRunning, DaemonError, NotStarted
-from .handler import Delivery, Reply, RequestHandler
+from .handler import Delivery, InputAction, Reply, RequestHandler
 from .platform.signals import InstalledSignals, install_shutdown_handler
 
 _logger = get_logger("daemon.server")
@@ -62,10 +64,15 @@ class SubmitOutcome(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class _Input:
-    """一段上行字节（消费者投递，所有者线程消费）。"""
+    """一段上行字节（消费者投递，所有者线程消费）。
+
+    `connection` 是它来的那条连接——**判定要回到发送方去**（越水位下发通知 / 违约断连），
+    所以得一路带着。进程内消费者投进来的字节没有连接，为 `None`。
+    """
 
     key: str
     data: bytes
+    connection: object | None = None
 
 
 def _safe_shutdown(handler: RequestHandler) -> None:
@@ -106,6 +113,14 @@ class Daemon:
         `Reply` 自己**强引用着** `request`（`Reply.request`），条目在表里一天，请求对象就
         一天不会被回收，`id()` 也就不会被别处复用。反而不能用 `request` 本身当键：信封
         里带着 dict，请求对象不一定可哈希。
+        """
+
+        self._held: dict[object, set[str]] = {}
+        """已下发 `INPUT_HOLD` 的连接 → 它被 hold 的那些 key。
+
+        每轮拿它去问处理层"排空了没"，排空就下发 `INPUT_RESUME` 并撤掉那一条。**按连接
+        分组、值是一组 key**：同一条连接可以送多个会话的输入，各自的水位互不相干，漏记
+        一个就会让那个会话的发送方永远卡在 hold 里。连接对象按身份作键（它本来就是连接）。
         """
 
         self._stop_requested = threading.Event()
@@ -182,6 +197,7 @@ class Daemon:
         self._loop_ran = False
         self._inbound = queue.Queue(self._config.inbound_maxsize)
         self._backlog.clear()
+        self._held.clear()
         try:
             self._acquire_lock()
             self._prepare_dirs()
@@ -235,9 +251,13 @@ class Daemon:
         """
         self._dispatch(self._handler_ready(), request)
 
-    def _serve_input(self, key: str, data: bytes) -> None:
-        """接入点来源的上行字节——同样在所有者线程上，直接交给处理层。"""
-        self._dispatch(self._handler_ready(), _Input(key, data))
+    def _serve_input(self, key: str, data: bytes, connection: object) -> None:
+        """接入点来源的上行字节——同样在所有者线程上，直接交给处理层。
+
+        带上连接：判定要回到发送方去（下发 `INPUT_HOLD` 或断连），而这里正是唯一知道
+        "字节从哪条连接来"的地方。
+        """
+        self._dispatch(self._handler_ready(), _Input(key, data, connection))
 
     def _handler_ready(self) -> RequestHandler:
         handler = self._handler
@@ -294,6 +314,7 @@ class Daemon:
                 self._pump_handler(handler)
                 self._retry_backlog()
                 self._deliver(self._poll_handler(handler))
+                self._resume_held(handler)
             self._shutdown(handler, self._config.stop_timeout)
         finally:
             self._stopped.set()
@@ -348,11 +369,60 @@ class Daemon:
             self._deliver_one(reply)
 
     def _on_input(self, handler: RequestHandler, item: _Input) -> None:
+        """把一段上行字节交给处理层，并照它给的动作动手。
+
+        处理层消化 core 的判定、回一个动作；**这里只执行，不认识判定本身**（越软水位 /
+        超上限都是 core 的事）。执行的是连接上的动作，所以只有接入点来源的字节才有得做。
+        """
         try:
-            handler.on_input(item.key, item.data)
+            action = handler.on_input(item.key, item.data, item.connection)
         except Exception as exc:
             # 会话可能刚被关掉；一个坏 key 不值得停下整条循环。
             _logger.warning("上行字节无人接收 key=%s: %s", item.key, exc)
+            return
+        self._apply_input_action(item, action)
+
+    def _apply_input_action(self, item: _Input, action: InputAction) -> None:
+        if item.connection is None or self._access_point is None:
+            return  # 进程内消费者：没有连接可动
+        if action is InputAction.DROP:
+            _logger.warning("输入超过硬上限，断开连接 key=%s", item.key)
+            self._held.pop(item.connection, None)
+            self._access_point.drop(item.connection)
+        elif action is InputAction.HOLD:
+            self._held.setdefault(item.connection, set()).add(item.key)
+            self._notice(item.connection, Notice.INPUT_HOLD, item.key)
+
+    def _notice(self, connection: object, notice: Notice, key: str) -> None:
+        """下发一条输入流控通知；发不出去就记一笔（它不像答复那样必达）。"""
+        if self._access_point is None:
+            return
+        if not self._access_point.notify(connection, make_response(notice.value, key)):
+            _logger.info("输入流控通知没发出去 key=%s notice=%s", key, notice.value)
+
+    def _resume_held(self, handler: RequestHandler) -> None:
+        """把已经排空的连接放行：撤销 `INPUT_HOLD`。
+
+        每轮问一次处理层"这个 key 排空了没"——**不问就不放行**，被 hold 的发送方会一直
+        本端排队。连接没了就顺势撤掉（没什么可放行的）。
+        """
+        if not self._held or self._access_point is None:
+            return
+        for connection, keys in list(self._held.items()):
+            if not self._access_point.is_open(connection):
+                del self._held[connection]
+                continue
+            for key in list(keys):
+                try:
+                    drained = handler.input_drained(key)
+                except Exception:
+                    _logger.exception("查询输入队列水位失败（已隔离，循环继续）")
+                    continue
+                if drained:
+                    keys.discard(key)
+                    self._notice(connection, Notice.INPUT_RESUME, key)
+            if not keys:
+                del self._held[connection]
 
     def _handle(self, handler: RequestHandler, request: object) -> Reply | None:
         """处理一条请求；返回 `None` 表示处理层已登记等待。

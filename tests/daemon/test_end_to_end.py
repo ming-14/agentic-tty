@@ -12,14 +12,17 @@ from collections.abc import Callable
 from typing import cast
 from uuid import uuid4
 
+import pytest
+
 from agentic_tty.config import DaemonConfig, endpoint_name
 from agentic_tty.daemon.access_point import WireRequest
-from agentic_tty.daemon.handler import Delivery, Reply, StopSignal
+from agentic_tty.daemon.handler import Delivery, InputAction, Reply, StopSignal
 from agentic_tty.daemon.server import Daemon
-from agentic_tty.protocol.contracts.daemon_ipc import STREAM_STDIN
+from agentic_tty.protocol.contracts.daemon_ipc import STREAM_STDIN, Notice
 from agentic_tty.protocol.envelope import from_json, make_request, to_json
 from agentic_tty.protocol.frame import ControlFrame, FrameReader, encode_bytes, encode_control
 from agentic_tty.protocol.response import data_of, error_of, failed_response, ok_response
+from agentic_tty.transport.errors import ConnectionClosed
 from agentic_tty.transport.pipe import PipeTransport, pipe_address
 from agentic_tty.transport.stream import Connection, parse_address
 
@@ -34,6 +37,8 @@ class _EchoHandler:
 
     def __init__(self) -> None:
         self.inputs: list[tuple[str, bytes]] = []
+        self.input_action = InputAction.NONE
+        self.drained = True
 
     def bind(self, stop: StopSignal) -> None:
         pass
@@ -60,8 +65,12 @@ class _EchoHandler:
             answer=failed_response("x", wire.envelope.mid, type(error).__name__, str(error)),
         )
 
-    def on_input(self, key: str, data: bytes) -> None:
+    def on_input(self, key: str, data: bytes, connection: object) -> InputAction:
         self.inputs.append((key, data))
+        return self.input_action
+
+    def input_drained(self, key: str) -> bool:
+        return self.drained
 
     def pump(self) -> None:
         pass
@@ -193,5 +202,69 @@ def test_access_point_answers_even_when_many_requests_arrive_at_once(tmp_path):
             assert {from_json(frame.data).mid for frame in control} == {
                 request.mid for request in requests
             }
+        finally:
+            connection.close()
+
+
+def test_input_over_the_soft_watermark_holds_then_resumes(tmp_path):
+    """越软水位下发 `INPUT_HOLD`；队列排空后补一条 `INPUT_RESUME`——回路两端都接上。
+
+    没有它，客户端只会一路灌到硬上限被断连——判定算出来了，却回不到发送方。
+    """
+    with _Running(tmp_path) as running:
+        running.handler.input_action = InputAction.HOLD
+        running.handler.drained = False
+        connection = running.connect()
+        try:
+            connection.send(encode_bytes(STREAM_STDIN, "uid-1", b"typed\n"))
+            assert running.wait_inputs() == [("uid-1", b"typed\n")]
+
+            held = _read_frames(connection)
+            assert isinstance(held[0], ControlFrame)
+            notice = from_json(held[0].data)
+            assert (notice.type, notice.mid) == (Notice.INPUT_HOLD.value, "uid-1")
+
+            running.handler.drained = True  # 队列排空
+            resumed = _read_frames(connection)
+            assert isinstance(resumed[0], ControlFrame)
+            assert from_json(resumed[0].data).type == Notice.INPUT_RESUME.value
+        finally:
+            connection.close()
+
+
+def test_input_over_the_hard_cap_drops_the_connection(tmp_path):
+    """超硬上限：守护进程断掉那条连接——**不是静默丢字节**。"""
+    with _Running(tmp_path) as running:
+        running.handler.input_action = InputAction.DROP
+        connection = running.connect()
+        try:
+            connection.send(encode_bytes(STREAM_STDIN, "uid-1", b"x"))
+            assert running.wait_inputs() == [("uid-1", b"x")]
+            with pytest.raises(ConnectionClosed):
+                _read_frames(connection)
+        finally:
+            connection.close()
+
+
+def test_one_connection_holding_two_sessions_resumes_both(tmp_path):
+    """一条连接送两个会话的输入：两条 hold 各自记账，别互相顶掉（顶掉的那个永远卡住）。"""
+    with _Running(tmp_path) as running:
+        running.handler.input_action = InputAction.HOLD
+        running.handler.drained = False
+        connection = running.connect()
+        try:
+            connection.send(encode_bytes(STREAM_STDIN, "uid-a", b"a"))
+            connection.send(encode_bytes(STREAM_STDIN, "uid-b", b"b"))
+            deadline = time.monotonic() + _DEADLINE
+            while len(running.handler.inputs) < 2 and time.monotonic() < deadline:
+                time.sleep(0.005)
+            assert len(running.handler.inputs) == 2
+
+            held = _read_frames(connection, count=2)
+            assert {from_json(frame.data).mid for frame in held} == {"uid-a", "uid-b"}
+
+            running.handler.drained = True
+            resumed = _read_frames(connection, count=2)
+            assert {from_json(frame.data).mid for frame in resumed} == {"uid-a", "uid-b"}
         finally:
             connection.close()

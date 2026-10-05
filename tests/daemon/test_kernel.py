@@ -10,12 +10,14 @@ import logging
 
 import pytest
 
+from agentic_tty.core.errors import CoreError
 from agentic_tty.core.ports import PTY, SUBPROCESS, SessionSpec, Stream
+from agentic_tty.core.runtime.input_queue import InputVerdict
 from agentic_tty.core.session.base import Session
 from agentic_tty.core.session.registry import SessionRegistry
 from agentic_tty.core.session.subscription import Subscription
 from agentic_tty.daemon.access_point import ByteChunk, WireRequest
-from agentic_tty.daemon.handler import Delivery, Reply
+from agentic_tty.daemon.handler import Delivery, InputAction, Reply
 from agentic_tty.daemon.kernel import KernelHandler, _frame_bytes, _Sub
 from agentic_tty.example.core_test.runtime_fakehost import FakeHost, FakeProgram
 from agentic_tty.protocol.contracts.daemon_ipc import Command, Event
@@ -410,3 +412,57 @@ def test_host_spawn_failure_is_expected_not_a_stack(caplog):
     assert reply is not None
     assert reply.answer.payload.output["error"]["code"] == "FileNotFoundError"
     assert not any(record.exc_info for record in caplog.records), "可预期的失败不该记堆栈"
+
+
+class _FakeRunner:
+    """只回答"排空了没"——测映射不需要真的起写线程。"""
+
+    def __init__(self, drained: bool) -> None:
+        self.input_drained = drained
+
+
+class _FakeRuntime:
+    """把 core 的输入判定换成脚本化的：`verdict=None` 表示会话已不在（抛 `CoreError`）。"""
+
+    def __init__(self, verdict: InputVerdict | None, drained: bool = True) -> None:
+        self._verdict = verdict
+        self._drained = drained
+
+    def send_input(self, uid: str, data: bytes) -> InputVerdict:
+        if self._verdict is None:
+            raise CoreError(f"会话没有驱动: {uid}")
+        return self._verdict
+
+    def runner(self, uid: str) -> _FakeRunner | None:
+        return None if self._drained is None else _FakeRunner(self._drained)
+
+
+@pytest.mark.parametrize(
+    ("verdict", "action"),
+    [
+        (InputVerdict.QUEUED, InputAction.NONE),
+        (InputVerdict.HOLD, InputAction.HOLD),
+        (InputVerdict.REJECTED, InputAction.DROP),
+    ],
+)
+def test_on_input_turns_the_core_verdict_into_a_connection_action(verdict, action):
+    """core 出判定、处理层翻成对连接的动作——守护进程只照动作动手。"""
+    handler = KernelHandler()
+    handler._runtime = _FakeRuntime(verdict)  # type: ignore[assignment]
+    assert handler.on_input("uid-1", b"x", None) is action
+
+
+def test_on_input_to_a_dead_session_is_not_a_fault():
+    """会话刚被关掉：无处可写不是对端的错，别断它的连接。"""
+    handler = KernelHandler()
+    handler._runtime = _FakeRuntime(None)  # type: ignore[assignment]
+    assert handler.on_input("gone", b"x", None) is InputAction.NONE
+
+
+def test_input_drained_reports_the_queue_state():
+    handler = KernelHandler()
+    handler._runtime = _FakeRuntime(InputVerdict.QUEUED, drained=False)  # type: ignore[assignment]
+    assert handler.input_drained("uid-1") is False
+
+    handler._runtime = _FakeRuntime(InputVerdict.QUEUED, drained=None)  # type: ignore[assignment]
+    assert handler.input_drained("uid-1") is True, "会话已不在 = 没什么可等"

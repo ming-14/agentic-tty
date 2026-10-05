@@ -4,7 +4,7 @@
 双向字节流。挂监听、accept、按连接解帧、把答复按请求身份写回。
 
 - 控制帧 → 解成 `Envelope`，包进 `WireRequest` 投 `on_request`。
-- 字节帧 → `on_input(key, data)`。
+- 字节帧 → `on_input(key, data, connection)`（连接一并给出：判定要回到发送方去）。
 - 答复 → `Envelope` 编回控制帧，`ByteChunk` 编回字节帧，**放进该连接的出站队列**。
 
 **答复不在这里直接写**：写会在缓冲写满时阻塞，压在所有者线程上会冻住整个守护进程
@@ -196,7 +196,7 @@ class AccessPoint:
         address: str,
         *,
         on_request: Callable[[object], object],
-        on_input: Callable[[str, bytes], object],
+        on_input: Callable[[str, bytes, object], object],
         outbox_bytes: int = _OUTBOX_BYTES,
     ) -> None:
         self._address = address
@@ -259,6 +259,26 @@ class AccessPoint:
             return Delivery.CONGESTED
         return Delivery.SENT
 
+    def notify(self, connection: object, envelope: Envelope) -> bool:
+        """往指定连接下发一条控制帧（**只入队**）。
+
+        `connection` 就是随上行字节交给处理层的那个凭据（原样拿回来）。不是本接入点的
+        连接、或连接已经没了，返回 `False`——通知是尽力而为，**它不像答复那样必达**：
+        连接都没了，没什么可通知的。
+        """
+        if not isinstance(connection, _Connection) or connection.closed:
+            return False
+        return connection.enqueue(encode_control(to_json(envelope)))
+
+    def drop(self, connection: object) -> None:
+        """断掉指定连接（违约处理）。不是本接入点的连接则什么都不做。"""
+        if isinstance(connection, _Connection):
+            connection.close()
+
+    def is_open(self, connection: object) -> bool:
+        """这条连接还在不在（凭据不认识 / 已断 → `False`）。"""
+        return isinstance(connection, _Connection) and not connection.closed
+
     def take_closed(self) -> list[object]:
         """取走"这一轮新关掉的连接"——**只在所有者线程上调**。
 
@@ -319,7 +339,7 @@ class AccessPoint:
                 _logger.warning("上行字节标签不合法 peer=%s: %#x", connection.peer, frame.tag)
                 connection.close()
                 return
-            self._on_input(frame.key, frame.data)
+            self._on_input(frame.key, frame.data, connection)
             return
         try:
             envelope = from_json(frame.data)

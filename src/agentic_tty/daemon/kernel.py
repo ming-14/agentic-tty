@@ -18,6 +18,7 @@ from typing import Any, TypeVar, cast
 from ..core.errors import CoreError, OffsetTrimmed
 from ..core.ports import SessionSpec, Stream
 from ..core.runtime.bridge import Wakeup
+from ..core.runtime.input_queue import InputVerdict
 from ..core.runtime.runtime import Runtime
 from ..core.runtime.shell import default_shell
 from ..core.session.base import Session
@@ -34,7 +35,7 @@ from ..protocol.errors import MessageError
 from ..protocol.frame import encode_bytes, encode_control
 from ..protocol.response import failed_response, ok_response
 from .access_point import ByteChunk, WireRequest
-from .handler import Delivery, Reply, StopSignal
+from .handler import Delivery, InputAction, Reply, StopSignal
 
 _logger = get_logger("daemon.kernel")
 
@@ -49,6 +50,13 @@ _PUSH_INFLIGHT = 8
 
 _E = TypeVar("_E", bound=StrEnum)
 """取参辅助用的枚举类型。"""
+
+_INPUT_ACTIONS: dict[InputVerdict, InputAction] = {
+    InputVerdict.QUEUED: InputAction.NONE,
+    InputVerdict.HOLD: InputAction.HOLD,
+    InputVerdict.REJECTED: InputAction.DROP,
+}
+"""core 的输入判定 → 让守护进程对那条连接做什么（见架构设计 §12）。"""
 
 
 @dataclass
@@ -277,12 +285,23 @@ class KernelHandler:
         wire = cast(WireRequest, request)
         return Reply(request=wire, answer=_failed(wire.envelope, error))
 
-    def on_input(self, key: str, data: bytes) -> None:
-        """字节帧上行 = 往那个会话写字节——**键就是 uid**。"""
+    def on_input(self, key: str, data: bytes, connection: object) -> InputAction:
+        """字节帧上行 = 往那个会话写字节——**键就是 uid**；把 core 的判定翻成动作。
+
+        队列越软水位就 `HOLD`（让发送方本端排队）、超硬上限就 `DROP`（整块没收下，违约）。
+        会话刚被关掉时无处可写，记一笔即可——那不是对端的错，不该断它的连接。
+        """
         try:
-            self._runtime.send_input(key, data)
-        except CoreError as exc:  # 会话刚被关掉
+            verdict = self._runtime.send_input(key, data)
+        except CoreError as exc:
             _logger.warning("上行字节无人接收 uid=%s: %s", key, exc)
+            return InputAction.NONE
+        return _INPUT_ACTIONS[verdict]
+
+    def input_drained(self, key: str) -> bool:
+        """那个会话的输入队列排空了没；会话已不在就是排空了（没什么可等）。"""
+        runner = self._runtime.runner(key)
+        return True if runner is None else runner.input_drained
 
     def pump(self) -> None:
         self._runtime.pump_all()
