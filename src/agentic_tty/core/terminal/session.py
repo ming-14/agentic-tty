@@ -61,7 +61,7 @@ class TerminalSession(Session):
     def resize_events(self, since: int = 0) -> tuple[ResizeEvent, ...]:
         """尺寸变更事件（按 offset 升序，只给 `offset >= since` 的）。
 
-        已裁剪出保留区的不再返回——那时的尺寸由 `size_at` 答（见架构设计 §4.4）。
+        已裁剪出保留区的不再返回——那时的尺寸由 `size_at` 答（见架构设计 §4.5）。
         """
         index = bisect_left(self._resizes, since, key=_event_offset)
         return tuple(self._resizes[index:])

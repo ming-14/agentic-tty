@@ -57,6 +57,12 @@ _CONNECT_RETRY = 0.3
 """两次尝试之间的间隔。"""
 
 
+def _size_suffix(data: dict) -> str:
+    """尺寸后缀；没有屏幕的会话没有尺寸，留空而不是写 `None×None`。"""
+    cols, rows = data.get("cols"), data.get("rows")
+    return f" 尺寸={cols}×{rows}" if cols is not None else ""
+
+
 class App:
     """验证台：把守护进程的答复翻译成界面状态。"""
 
@@ -329,18 +335,15 @@ class App:
             self._append_sub(f"── 结束 exit={data.get('exit_code')} ──\n")
             self._sub_mid = None
         elif envelope.type == Event.RESYNC:
-            self._append_sub(
-                f"── 重同步 lossy={data.get('lossy')} "
-                f"尺寸={data.get('cols')}×{data.get('rows')} ──\n"
-            )
+            self._append_sub(f"── 重同步 lossy={data.get('lossy')}{_size_suffix(data)} ──\n")
         elif envelope.type == Event.RESIZE:
             self._append_sub(
                 f"── 尺寸 {data.get('cols')}×{data.get('rows')} @ {data.get('offset')} ──\n"
             )
         else:  # ack：`type` 就是 subscribe 那条命令
             self._append_sub(
-                f"── 已订阅 offset={data.get('offset')} lossy={data.get('lossy')} "
-                f"尺寸={data.get('cols')}×{data.get('rows')} ──\n"
+                f"── 已订阅 offset={data.get('offset')} lossy={data.get('lossy')}"
+                f"{_size_suffix(data)} ──\n"
             )
 
     def _append_sub(self, text: str) -> None:

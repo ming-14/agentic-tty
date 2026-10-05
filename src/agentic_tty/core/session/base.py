@@ -344,7 +344,7 @@ class Session:
     def _journal_trimmed(self, stream: Stream) -> None:
         """某一路日志刚裁过：派生数据（如尺寸变更史）跟着收敛，别独自无限增长。
 
-        只在**确实裁掉字节**时调——没裁就没东西要收敛，别为此白跑一趟。
+        只在**确实裁掉字节**时调——没裁就没有要收敛的东西。
         """
 
     def _read_secondary(self, stream: Stream, timeout: float | None, max_bytes: int) -> bytes:

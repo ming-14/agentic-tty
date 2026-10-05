@@ -266,6 +266,20 @@ def test_resize_history_does_not_outlive_the_journal():
     session.close()
 
 
+def test_resize_after_a_trim_is_still_delivered():
+    """裁过之后新发生的尺寸变更照常交出——基线是另一回事，不混进 `resize_events`。"""
+    registry = _registry()
+    session = _create(registry, PTY)
+    session.resize(100, 30)  # offset 0
+    session.ingest_stream(Stream.STDOUT, b"x" * (1 << 20))  # 裁掉 resize@0
+    assert session.resize_events() == ()
+
+    session.resize(120, 40)  # 保留区内新变更
+    assert [(e.cols, e.rows) for e in session.resize_events()] == [(120, 40)]
+    assert session.size_at(session.journal.start_offset) == (100, 30)  # 基线仍是旧尺寸
+    session.close()
+
+
 def test_size_at_answers_the_effective_size_for_any_offset():
     """`size_at` 给的是"这个 offset 起生效"的那次变更，没有就是基线。"""
     registry = _registry()
