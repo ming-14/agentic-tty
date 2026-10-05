@@ -17,12 +17,16 @@ from pathlib import Path
 
 import pytest
 
+from agentic_tty.transport import pipe as pipe_transport
 from agentic_tty.transport import registry as transports
 from agentic_tty.transport.errors import ConnectionClosed, TransportError
 from agentic_tty.transport.pipe import pipe_address, pipe_path
 from agentic_tty.transport.stream import parse_address
 
 _DEADLINE = 10.0
+_ROUNDS = 25
+"""「连上就关」那条用例要跑这么多轮：单轮大多走在"accept 先看到连接"那一支，多跑几轮
+才碰得到 Windows 上"客户端先关"（`ERROR_NO_DATA`）那一支——两条路都得交出连接。"""
 _SRC = str(Path(__file__).resolve().parents[2] / "src")
 """子进程要能 import 本包：给它源码目录，别指望测试是从哪儿启动的。"""
 
@@ -135,21 +139,66 @@ def test_accept_returns_none_on_timeout(name):
 
 
 def test_peer_closing_raises_connection_closed(name):
+    """对端关掉 → `recv` 报 `ConnectionClosed`；而且**连接一定先被交出来**。
+
+    客户端"连上就关"与 `accept` 谁先谁后是不定的：Windows 上若客户端先关，
+    `ConnectNamedPipe` 报 `ERROR_NO_DATA`，那也算"有人连过"——照交，关没关由 recv 回答。
+    """
+    for index in range(_ROUNDS):
+        uri = _uri(f"{name}-{index}")
+        listener = transports.listen(uri)
+        try:
+            threading.Thread(
+                target=lambda uri=uri: transports.connect(uri, timeout=_DEADLINE).close(),
+                daemon=True,
+            ).start()
+            conn = listener.accept(timeout=_DEADLINE)
+            assert conn is not None
+            try:
+                with pytest.raises(ConnectionClosed):
+                    deadline = time.monotonic() + _DEADLINE
+                    while time.monotonic() < deadline:
+                        conn.recv(1024, timeout=0.05)
+            finally:
+                conn.close()
+        finally:
+            listener.close()
+
+
+def test_a_timeout_does_not_swallow_the_next_connection(name):
+    """空等一轮不改动等待本身：之后连上来的客户端照样接得到。"""
     listener = transports.listen(_uri(name))
     try:
-        threading.Thread(
-            target=lambda: transports.connect(_uri(name), timeout=_DEADLINE).close(),
-            daemon=True,
-        ).start()
+        assert listener.accept(timeout=0.05) is None
+        client = transports.connect(_uri(name), timeout=_DEADLINE)
         conn = listener.accept(timeout=_DEADLINE)
         assert conn is not None
-        try:
-            with pytest.raises(ConnectionClosed):
-                for _ in range(40):
-                    time.sleep(0.05)
-                    conn.recv(1024, timeout=0.05)
-        finally:
-            conn.close()
+        conn.close()
+        client.close()
+    finally:
+        listener.close()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="管道实例是 Windows 的概念")
+def test_a_timed_out_accept_keeps_the_pending_instance(name, monkeypatch):
+    """超时只是"这轮没等到"，待用实例不跟着换。
+
+    每换一次实例就多一个窗口：恰好在那窗口里连上的客户端会跟着旧实例一起被丢掉，
+    而它本来是可以被交出去的。
+    """
+    created: list[int] = []
+    original = pipe_transport._WinPipeListener._create_instance
+
+    def counting(self: pipe_transport._WinPipeListener) -> None:
+        created.append(1)
+        original(self)
+
+    monkeypatch.setattr(pipe_transport._WinPipeListener, "_create_instance", counting)
+    listener = transports.listen(_uri(name))
+    try:
+        assert listener.accept(timeout=0.05) is None
+        assert listener.accept(timeout=0.05) is None
+        assert len(created) == 1  # 只有开局那一个
     finally:
         listener.close()
 

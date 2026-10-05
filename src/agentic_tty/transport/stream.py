@@ -89,7 +89,11 @@ class Listener(Protocol):
         ...
 
     def accept(self, timeout: float | None = None) -> Connection | None:
-        """接受一个连接；超时返回 None。"""
+        """接受一个连接；超时返回 None。
+
+        交出的那条连接**可能已经被对端关掉**（连上就关的客户端）——那由 `recv` 报，
+        不算 accept 失败。
+        """
         ...
 
     def close(self) -> None:

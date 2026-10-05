@@ -319,3 +319,13 @@ def test_a_foreign_connection_is_neither_notified_nor_dropped(point: tuple[Acces
     assert access_point.notify(object(), make_response(Notice.INPUT_HOLD.value, "uid-1")) is False
     assert not access_point.is_open(object())
     access_point.drop(object())  # 不该抛
+
+
+def test_a_client_that_leaves_at_once_is_reaped(point: tuple[AccessPoint, _Seam]):
+    """连上就关的客户端：接入点照收，读一轮就摘掉——不卡住，也不留在连接表里。"""
+    access_point, seam = point
+    for _ in range(5):
+        _connect(access_point).close()
+        assert _pump_until(access_point, lambda: bool(access_point.take_closed()))
+    assert access_point.connection_count == 0
+    assert seam.requests == []

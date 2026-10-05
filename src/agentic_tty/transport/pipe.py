@@ -141,6 +141,8 @@ _PIPE_READMODE_BYTE = 0x00000000
 _PIPE_WAIT = 0x00000000
 _PIPE_UNLIMITED_INSTANCES = 255
 _ERROR_PIPE_CONNECTED = 535
+_ERROR_NO_DATA = 232
+"""客户端连上又关了：服务端这时调 `ConnectNamedPipe` 会拿到它（不是"没人连"）。"""
 _ERROR_PIPE_BUSY = 231
 _ERROR_IO_PENDING = 997
 _GENERIC_READ = 0x80000000
@@ -215,6 +217,8 @@ def _declare_winapi(k32: ctypes.WinDLL) -> None:
     k32.WaitForSingleObject.restype = dword
     k32.CreateEventW.argtypes = (ctypes.c_void_p, bool_, bool_, wintypes.LPCWSTR)
     k32.CreateEventW.restype = handle
+    k32.SetEvent.argtypes = (handle,)
+    k32.SetEvent.restype = bool_
     k32.CancelIoEx.argtypes = (handle, ptr(_OVERLAPPED))
     k32.CloseHandle.argtypes = (handle,)
     k32.CreateFileW.argtypes = (
@@ -250,6 +254,10 @@ class _OverlappedOp:
     def wait(self, timeout: float | None) -> bool:
         ms = _WAIT_INFINITE if timeout is None else max(0, int(timeout * 1000))
         return self.k32.WaitForSingleObject(self.event, ms) == _WAIT_OBJECT_0
+
+    def mark_done(self) -> None:
+        """标成已完成：没有挂起的调用没人来置位事件，后续 `wait` 得立刻为真。"""
+        self.k32.SetEvent(self.event)
 
     def close(self) -> None:
         self.k32.CloseHandle(self.event)
@@ -339,12 +347,18 @@ class _WinPipeIO:
 
 
 class _WinPipeListener:
-    """Windows 命名管道监听点：一个名字，多条连接。"""
+    """Windows 命名管道监听点：一个名字，多条连接。
+
+    **等待是持久的**：`ConnectNamedPipe` 只在待用实例上是新的时发起一次，之后一直挂着，
+    `accept` 只是去取结果。超时因此不等于"这条等待作废"——取消一次挂起的等待会连
+    刚好在那一刻连上的客户端一起丢掉，而它本来是可以被交出去的。
+    """
 
     def __init__(self, address: Address) -> None:
         self._path = pipe_path(address)
         self._address = address
         self._pending: int | None = None
+        self._wait: _OverlappedOp | None = None
         self._closed = False
         self._create_instance()
 
@@ -353,10 +367,9 @@ class _WinPipeListener:
         return self._address
 
     def _create_instance(self) -> None:
-        """建一个新实例并在其上等客户端。
+        """建一个待用实例：名字上没有可用实例时，下一个客户端会拿到 `ERROR_PIPE_BUSY`。
 
-        **交出一条就立刻建下一条**：名字上没有可用实例时，下一个客户端会拿到
-        `ERROR_PIPE_BUSY` 而连不上。
+        **交出一条就立刻建下一条**。新实例只是备着，等下一次 `accept` 才在它上面发起等待。
         """
         handle = _k32().CreateNamedPipeW(
             self._path,
@@ -371,35 +384,53 @@ class _WinPipeListener:
         if handle == _INVALID_HANDLE:
             raise TransportError(f"建命名管道实例失败 {self._path}: {ctypes.get_last_error()}")
         self._pending = handle
+        self._wait = None
 
     def accept(self, timeout: float | None = None) -> PipeConnection | None:
         if self._closed:
             raise ConnectionClosed("监听点已关闭")
+        if self._wait is None:
+            self._begin_wait()
+        op = self._wait
+        if op is None:
+            return None  # 实例刚被丢弃重建，下一轮重新发起等待
+        if not op.wait(timeout):
+            return None  # 这轮没等到；等待留在原处，连接不会丢
+        self._wait = None
+        try:
+            return self._hand_off()
+        finally:
+            op.close()
+
+    def _begin_wait(self) -> None:
+        """在待用实例上发起等待，结果留在 `self._wait`（实例坏了就留空）。"""
         handle = self._pending
         if handle is None:
             raise TransportError("监听点没有待用实例")
         op = _OverlappedOp()
-        try:
-            if not _k32().ConnectNamedPipe(handle, ctypes.byref(op.overlapped)):
-                error = ctypes.get_last_error()
-                if error == _ERROR_PIPE_CONNECTED:  # 客户端在调用之前就等在那儿了
-                    return self._hand_off(handle)
-                if error != _ERROR_IO_PENDING:  # 实例坏了：丢掉重建，这轮算没有
-                    self._drop(handle)
-                    return None
-                if not op.wait(timeout):
-                    _k32().CancelIoEx(handle, ctypes.byref(op.overlapped))
-                    self._drop(handle)
-                    return None
-        finally:
+        # 同步返回成功与 CONNECTED 同义（客户端已经连着），再加上 NO_DATA（它连上又关了）：
+        # 三者都是"有人连过"——照交，对端关没关由 recv 回答（`AF_UNIX` 上同样是先交出、
+        # recv 才报关闭）。真要等下去的只有 IO_PENDING。
+        error = (
+            _ERROR_PIPE_CONNECTED
+            if _k32().ConnectNamedPipe(handle, ctypes.byref(op.overlapped))
+            else ctypes.get_last_error()
+        )
+        if error in (_ERROR_PIPE_CONNECTED, _ERROR_NO_DATA):
+            op.mark_done()
+            self._wait = op
+            return
+        if error != _ERROR_IO_PENDING:  # 实例坏了：丢掉重建，这轮算没有
             op.close()
-        return self._hand_off(handle)
+            self._drop(handle)
+            return
+        self._wait = op
 
-    def _hand_off(self, handle: int) -> PipeConnection:
+    def _hand_off(self) -> PipeConnection:
         """交出这条连接，并立刻把下一个实例备好。"""
-        self._pending = None
+        handle = self._pending
         self._create_instance()
-        return PipeConnection(_WinPipeIO(handle, _peer_of(handle)))
+        return PipeConnection(_WinPipeIO(handle, _peer_of(handle)))  # type: ignore[arg-type]
 
     def _drop(self, handle: int) -> None:
         self._pending = None
@@ -410,9 +441,14 @@ class _WinPipeListener:
         if self._closed:
             return
         self._closed = True
-        if self._pending is not None:
-            _close(self._pending)
-            self._pending = None
+        handle, self._pending = self._pending, None
+        op, self._wait = self._wait, None
+        if handle is None:
+            return
+        if op is not None:
+            _k32().CancelIoEx(handle, ctypes.byref(op.overlapped))
+            op.close()
+        _close(handle)
 
 
 def _peer_of(handle: int) -> str:
