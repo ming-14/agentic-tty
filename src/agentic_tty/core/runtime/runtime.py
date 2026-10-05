@@ -104,8 +104,8 @@ class Runtime:
     def pump_all(self) -> dict[str, list[PumpEvent]]:
         """推进**所有**会话的驱动，返回本轮有事件的那些（uid → 事件清单）。
 
-        **按轮推进的场合才用它**（没有"谁有活"这回事，比如验证台自己转圈）。有了唤醒
-        通道的驱动方应当走 `pump(uid)`：这里一轮的代价随会话数线性涨。
+        **没有唤醒通道时只能靠它**（轮询模式）；要"一次拿全事件清单"的驱动方也用它。
+        有唤醒通道、又不看事件的驱动方走 `pump(uid)`——这里一轮的代价随会话数线性涨。
         """
         events: dict[str, list[PumpEvent]] = {}
         for uid, runner in list(self._runners.items()):
