@@ -124,7 +124,7 @@ def test_screen_image_fits_canvas(root):
 
     # 1.0 倍的尺寸由渲染结果自带：80×24 字符 → 640×408。按较小的一维贴合画布。
     assert app._screen.fit_scale((640, 408)) == pytest.approx(min(600 / 640, 300 / 408))
-    assert app._screen.tab.grid_slaves(row=1) == [app._screen.canvas]
+    assert app._screen.tab.grid_slaves(row=0) == [app._screen.canvas]
     app.on_close()
 
 

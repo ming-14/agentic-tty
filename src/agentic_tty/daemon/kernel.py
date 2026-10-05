@@ -99,17 +99,6 @@ def _number(op: Mapping[str, Any], key: str) -> int:
         raise MessageError(f"{key} 不是整数: {value!r}") from exc
 
 
-def _real(op: Mapping[str, Any], key: str, default: float) -> float:
-    """取一个实数参数（同 `_number`，只是出浮点）。"""
-    value = op.get(key)
-    if value is None:
-        return default
-    try:
-        return float(value)
-    except (TypeError, ValueError) as exc:
-        raise MessageError(f"{key} 不是数: {value!r}") from exc
-
-
 def _enum(op: Mapping[str, Any], key: str, cls: type[_E], default: str = "") -> _E:
     """取一个枚举参数；不认识的值是**对端送错了**，收成 `MessageError`。"""
     raw = _text(op, key, default)
@@ -472,15 +461,8 @@ class KernelHandler:
             text = terminal.screen_text()
         elif mode is ReadMode.TEXT:
             text = terminal.full_text()
-        elif mode is ReadMode.SVG:
+        else:  # SVG：出矢量，栅格化归客户端（守护进程不做呈现，见架构设计 §11）
             text = terminal.render_svg()
-        else:  # IMAGE：位图由守护进程渲染好，客户端只管显示
-            scale = _real(op, "scale", 1.0)
-            return ByteChunk(
-                tag=stream_tag(Stream.STDOUT.value),
-                key=envelope.mid,
-                data=terminal.render_image(scale=scale, fmt="png"),
-            )
         # 顺带带上日志末尾的 offset：客户端靠它判断屏幕变了没有，变了才重渲染。
         return ok_response(
             envelope.type,

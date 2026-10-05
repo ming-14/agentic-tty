@@ -50,55 +50,37 @@ def test_detail_notebook_holds_pages_and_their_states(root):
 
 def test_screen_view_repaints_only_when_the_key_changes(root):
     tabs = DetailNotebook(root)
-    screen = ScreenView(tabs, on_format_change=lambda: None)
+    screen = ScreenView(tabs)
     painted: list[float] = []
 
-    def produce(scale: float) -> tuple[bytes | None, str]:
+    def fake_rasterize(svg: str, scale: float) -> tuple[bytes | None, str]:
         painted.append(scale)
         return None, ""
 
-    assert screen.refresh(key=("u", 7), svg=_SVG, produce=produce) is None
+    screen.rasterize = fake_rasterize  # type: ignore[method-assign]
+
+    screen.refresh(key=("u", 7), svg=_SVG)
     assert painted == [1.0]  # 画布还没量出尺寸 → 1×
-    screen.refresh(key=("u", 7), svg=_SVG, produce=produce)
-    assert painted == [1.0]  # 屏幕 / 偏移 / 格式都没变 → 不重画
-    screen.refresh(key=("u", 8), svg=_SVG, produce=produce)
+    screen.refresh(key=("u", 7), svg=_SVG)
+    assert painted == [1.0]  # 屏幕 / 偏移 / 缩放都没变 → 不重画
+    screen.refresh(key=("u", 8), svg=_SVG)
     assert painted == [1.0, 1.0]  # 输出偏移变了 → 重画
     assert screen.svg_source == _SVG
 
 
-def test_screen_view_asks_the_caller_to_fetch_the_bitmap(root):
-    """`image` 格式位图要走请求往返时，返回该取位图的缩放。"""
+def test_screen_view_reports_when_the_svg_has_no_size(root):
+    """矢量里读不出尺寸就没法铺满画布——留一句提示，别硬画。"""
     tabs = DetailNotebook(root)
-    screen = ScreenView(tabs, on_format_change=lambda: None)
-    assert screen.refresh(key=("u", 7), svg=_SVG) == pytest.approx(1.0)
-    assert screen.refresh(key=("u", 7), svg=_SVG) is None  # 要过一次就不再要
-
-
-def test_changing_the_format_invalidates_the_cache(root):
-    tabs = DetailNotebook(root)
-    notified: list[bool] = []
-    screen = ScreenView(tabs, on_format_change=lambda: notified.append(True))
-    painted: list[float] = []
-
-    def produce(scale: float) -> tuple[bytes | None, str]:
-        painted.append(scale)
-        return None, ""
-
-    screen.refresh(key=("u", 7), svg=_SVG, produce=produce)
-    screen.refresh(key=("u", 7), svg=_SVG, produce=produce)
-    assert painted == [1.0]
-
-    screen.format = "svg"
-    screen.format = "image"
-    assert notified == [True, True]
-    screen.refresh(key=("u", 7), svg=_SVG, produce=produce)
-    assert painted == [1.0, 1.0]  # 换过格式 → 缓存作废，重画一次
+    screen = ScreenView(tabs)
+    screen.refresh(key=("u", 7), svg="<svg/>")
+    assert screen.svg_source == "<svg/>"
+    assert screen.note  # 有提示
 
 
 def test_screen_view_reset_clears_the_source(root):
     tabs = DetailNotebook(root)
-    screen = ScreenView(tabs, on_format_change=lambda: None)
-    screen.refresh(key=("u", 7), svg=_SVG, produce=lambda scale: (None, ""))
+    screen = ScreenView(tabs)
+    screen.refresh(key=("u", 7), svg=_SVG)
     screen.reset("未选中会话")
     assert screen.svg_source is None
     assert screen.note == "未选中会话"

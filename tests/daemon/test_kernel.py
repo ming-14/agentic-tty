@@ -355,6 +355,7 @@ def test_shutdown_daemon_without_a_channel_reports_not_stopping():
     ("label", "op", "command"),
     [
         ("未知 mode", {"mode": "bogus"}, Command.READ_SESSION),
+        ("位图不再是模式", {"mode": "image"}, Command.READ_SESSION),
         ("未知 stream", {"mode": "bytes", "stream": "bogus"}, Command.READ_SESSION),
         ("tail 不可转数字", {"mode": "bytes", "tail": [1]}, Command.READ_SESSION),
         ("cols 不可转数字", {"cols": [1], "rows": 24}, Command.RESIZE_SESSION),

@@ -142,7 +142,7 @@ class App:
         body.add(right, weight=3)
         self._tabs = DetailNotebook(right)
         self._tabs.pack(fill=tk.BOTH, expand=True)
-        self._screen = ScreenView(self._tabs, on_format_change=self._on_format_change)
+        self._screen = ScreenView(self._tabs)
         self._tabs.add_view_page(self._refresh_detail)
         self._tabs.add_text(Page.CELLS, "格栅")
         self._tabs.add_text(Page.RAW, "原始字节", small=True)
@@ -472,22 +472,7 @@ class App:
         except Exception as exc:  # 宿主已关闭等
             self._screen.reset(f"<无屏幕视图: {exc}>")
             return
-        self._screen.refresh(
-            key=(session.uid, session.journal.end_offset),
-            svg=svg,
-            produce=lambda scale: self._bitmap(session, scale),
-        )
-
-    @staticmethod
-    def _bitmap(session: Session, scale: float) -> tuple[bytes | None, str]:
-        """`image` 格式的位图：模型直接出，出不来就转成一行提示交给画布。"""
-        try:
-            return render.screen_png(session, scale), ""
-        except Exception as exc:  # SVG 为空 / 宿主已关闭
-            return None, f"<无屏幕位图: {exc}>"
-
-    def _on_format_change(self) -> None:
-        self._refresh_detail()
+        self._screen.refresh(key=(session.uid, session.journal.end_offset), svg=svg)
 
     def _save_svg(self) -> None:
         path = self._screen.save_svg()

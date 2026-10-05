@@ -33,15 +33,29 @@ _FONT = (
 )
 
 
+_NAMED_HEX: dict[tuple[str, bool], str] = {}
+"""色名 → 十六进制取值。**只放定值的小集合**（`default` ＋ 16 个色名 × 前/背景）。
+
+真彩色是 6 位十六进制、取值无界，直接拼不走这张表——否则缓存会随会话一路涨。
+"""
+
+
 def _fill(color: str, *, background: bool) -> str:
     """pyte 的颜色表示 → 十六进制取值。"""
-    if color == "default":
-        return _BACKGROUND if background else _FOREGROUND
-    if len(color) == 6:
+    if len(color) == 6:  # 真彩色，拼一下就好
         return f"#{color}"
-    bright = color.startswith("bright")
-    index = _ANSI_ORDER.index(color[len("bright") :] if bright else color)
-    return _PALETTE[index + (8 if bright else 0)]
+    key = (color, background)
+    cached = _NAMED_HEX.get(key)
+    if cached is not None:
+        return cached
+    if color == "default":
+        hex_ = _BACKGROUND if background else _FOREGROUND
+    else:
+        bright = color.startswith("bright")
+        index = _ANSI_ORDER.index(color[len("bright") :] if bright else color)
+        hex_ = _PALETTE[index + (8 if bright else 0)]
+    _NAMED_HEX[key] = hex_
+    return hex_
 
 
 def _style(char) -> tuple[str, str, bool]:

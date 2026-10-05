@@ -86,7 +86,6 @@ class App:
         """尺寸框已经为哪个会话填过一次——只在换会话时填，别把用户正在输入的宽高擦掉。"""
         self._ticks = 0
         self._tick_job: str | None = None
-        self._export_path: str | None = None
         self._sub_mid: str | None = None
         """当前订阅的 id（= 那条 `subscribe` 请求的 mid）；推送与它同 mid。"""
         self._held: set[str] = set()
@@ -194,7 +193,7 @@ class App:
         body.add(right, weight=3)
         self._tabs = DetailNotebook(right)
         self._tabs.pack(fill=tk.BOTH, expand=True)
-        self._screen = ScreenView(self._tabs, on_format_change=self._on_format_change)
+        self._screen = ScreenView(self._tabs)
         self._tabs.add_view_page(self._refresh_detail)
         self._tabs.add_text(Page.RAW, "原始字节", small=True)
         self._tabs.add_text(Page.SUB, "订阅流", small=True)
@@ -300,10 +299,6 @@ class App:
     def _apply_chunk(self, purpose: str, chunk: BytesFrame) -> None:
         if purpose == "raw":
             self._tabs.set_text(Page.RAW, repr(chunk.data))
-        elif purpose == "image":
-            self._screen.set_image(chunk.data, "<位图不可用>")
-        elif purpose == "export":
-            self._write_export(chunk.data)
 
     # ════════════════════════════════════════════════════════════
     # 订阅
@@ -380,18 +375,12 @@ class App:
             self._status.set(f"输入已排空：{uid[:8]} 可继续发")
 
     def _apply_svg(self, data: dict) -> None:
-        """屏幕页：SVG 变了才重渲染；变了就要再取一次位图（那是另一次请求往返）。"""
+        """屏幕页：SVG 变了才重渲染——栅格化在这里做，守护进程只出矢量。"""
         uid = self._selected
         svg = data.get("text")
         if uid is None or not isinstance(svg, str):
             return
-        scale = self._screen.refresh(key=(uid, int(data.get("offset") or 0)), svg=svg)
-        if scale is not None:
-            self._ask(
-                Command.READ_SESSION,
-                "image",
-                {"uid": uid, "mode": ReadMode.IMAGE.value, "scale": scale},
-            )
+        self._screen.refresh(key=(uid, int(data.get("offset") or 0)), svg=svg)
 
     def _apply_sessions(self, rows: list[dict]) -> None:
         """增量刷新会话表：行 iid 就是 uid，选中一并对齐（细节在 `SessionTree.refresh`）。"""
@@ -549,9 +538,6 @@ class App:
         ref = self._sessions.get(uid)
         return ref is not None and ref.cols is not None
 
-    def _on_format_change(self) -> None:
-        self._refresh_detail()
-
     # ════════════════════════════════════════════════════════════
     # 导出
     # ════════════════════════════════════════════════════════════
@@ -562,8 +548,10 @@ class App:
             self._status.set(f"已保存 SVG → {path}")
 
     def _save_png(self) -> None:
-        uid = self._selected
-        if uid is None:
+        """把当前屏幕的矢量栅格化后存盘——位图在客户端出，守护进程只给矢量。"""
+        svg = self._screen.svg_source
+        if svg is None:
+            messagebox.showinfo("保存 PNG", self._screen.note or "没有屏幕可保存")
             return
         path = ask_save(
             title="保存屏幕 PNG",
@@ -573,18 +561,11 @@ class App:
         )
         if not path:
             return
-        self._export_path = path
-        self._ask(
-            Command.READ_SESSION,
-            "export",
-            {"uid": uid, "mode": ReadMode.IMAGE.value, "scale": EXPORT_SCALE},
-        )
-
-    def _write_export(self, blob: bytes) -> None:
-        path, self._export_path = self._export_path, None
-        if path is None:
+        data, note = ScreenView.rasterize(svg, EXPORT_SCALE)
+        if data is None:
+            messagebox.showinfo("保存 PNG", note)
             return
-        Path(path).write_bytes(blob)
+        Path(path).write_bytes(data)
         self._status.set(f"已保存 PNG → {path}")
 
     # ════════════════════════════════════════════════════════════
