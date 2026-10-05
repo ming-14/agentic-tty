@@ -248,6 +248,44 @@ def test_terminal_resize_updates_both_sides():
     session.close()
 
 
+def test_resize_history_does_not_outlive_the_journal():
+    """尺寸变更史与日志同进退：裁剪出保留区的被丢掉，不随会话时长无限增长。
+
+    丢掉的那条压成基线（保留区起点那一刻的尺寸），`size_at` 仍答得出。
+    """
+    registry = _registry()
+    session = _create(registry, PTY)
+    session.resize(100, 30)  # offset 0
+    assert session.size_at(0) == (100, 30)
+    session.ingest_stream(Stream.STDOUT, b"x" * (1 << 20))  # 撑爆预算，反复裁剪
+
+    # 保留区起点已远远越过 resize@0 → 事件被丢掉，只剩基线
+    assert session.journal.start_offset > 0
+    assert session.resize_events() == ()
+    assert session.size_at(session.journal.start_offset) == (100, 30)  # 基线作答
+    session.close()
+
+
+def test_size_at_answers_the_effective_size_for_any_offset():
+    """`size_at` 给的是"这个 offset 起生效"的那次变更，没有就是基线。"""
+    registry = _registry()
+    session = _create(registry, PTY)
+    assert session.size_at(0) == (80, 24)  # 未变更过 → 初始尺寸
+    session.ingest_stream(Stream.STDOUT, b"aaa")
+    session.resize(100, 30)  # 生效于 offset 3
+    assert session.size_at(2) == (80, 24)
+    assert session.size_at(3) == (100, 30)
+    assert session.size_at(99) == (100, 30)
+    session.close()
+
+
+def test_process_session_has_no_size():
+    """没有屏幕的会话答不出尺寸——`None`，而不是硬凑一个。"""
+    session = _create(_registry(), SUBPROCESS)
+    assert session.size_at(0) is None
+    session.close()
+
+
 def test_process_session_rejects_screen_api():
     registry = _registry()
     session = _create(registry, SUBPROCESS)

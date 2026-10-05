@@ -10,7 +10,7 @@ import logging
 
 import pytest
 
-from agentic_tty.core.ports import PTY, SessionSpec, Stream
+from agentic_tty.core.ports import PTY, SUBPROCESS, SessionSpec, Stream
 from agentic_tty.core.session.base import Session
 from agentic_tty.core.session.registry import SessionRegistry
 from agentic_tty.core.session.subscription import Subscription
@@ -91,6 +91,68 @@ def test_push_splits_the_chunk_where_the_resize_lands():
     assert frames[1].type == Event.RESIZE
     assert _data(frames[1]) == {"offset": 4, "cols": 100, "rows": 30}
     assert frames[2].data == b"bbbb"
+
+
+def test_subscribe_ack_carries_the_baseline_size():
+    """订阅 ack 带上起点处生效的尺寸——客户端解释第一段字节靠它。
+
+    尺寸变更史可能已被日志裁剪裁短，随后的 resize 帧推不出基线。
+    """
+    session = _session()
+    session.resize(100, 30)  # offset 0
+    handler = KernelHandler()
+    handler._runtime.get = lambda _uid: session  # type: ignore[method-assign]
+    wire = WireRequest(
+        make_request(Command.SUBSCRIBE, op={"uid": session.uid, "stream": Stream.STDOUT.value}),
+        _CONNECTION,
+    )
+    try:
+        reply = handler.handle(wire)
+    finally:
+        session.close()
+
+    assert reply is not None
+    payload = _data(reply.answer)
+    assert (payload["cols"], payload["rows"]) == (100, 30)
+    assert payload["offset"] == session.journal.end_offset
+
+
+def test_resync_frame_carries_the_baseline_size():
+    """游标被裁到保留区外：重同步帧带上基线尺寸，客户端才知道快照按多大解释。"""
+    registry = SessionRegistry(lambda spec: FakeHost(spec, FakeProgram()), journal_budget_bytes=8)
+    session = registry.create(SessionSpec(mode=PTY, argv=("x",)))
+    session.ingest_stream(Stream.STDOUT, b"abcd")
+    session.resize(100, 30)
+    handler = _watch(session)  # 游标 0，此刻仍在保留区内
+    try:
+        session.ingest_stream(Stream.STDOUT, b"x" * 64)  # 撑爆预算，游标被裁掉
+        frames = _frames(handler)
+    finally:
+        session.close()
+
+    resync = next(frame for frame in frames if frame.type == Event.RESYNC)
+    assert resync.payload.output["data"]["cols"] == 100
+    assert resync.payload.output["data"]["rows"] == 30
+
+
+def test_subscribe_ack_has_no_size_for_a_stream_session():
+    """没有屏幕的会话：尺寸缺省为 `None`，不硬凑一个。"""
+    registry = SessionRegistry(lambda spec: FakeHost(spec, FakeProgram()))
+    session = registry.create(SessionSpec(mode=SUBPROCESS, argv=("x",)))
+    handler = KernelHandler()
+    handler._runtime.get = lambda _uid: session  # type: ignore[method-assign]
+    wire = WireRequest(
+        make_request(Command.SUBSCRIBE, op={"uid": session.uid, "stream": Stream.STDOUT.value}),
+        _CONNECTION,
+    )
+    try:
+        reply = handler.handle(wire)
+    finally:
+        session.close()
+
+    assert reply is not None
+    payload = _data(reply.answer)
+    assert payload["cols"] is None and payload["rows"] is None
 
 
 def test_resize_at_the_chunk_start_comes_before_the_bytes():

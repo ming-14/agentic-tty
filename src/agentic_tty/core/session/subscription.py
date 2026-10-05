@@ -33,6 +33,9 @@ class Pull:
     `start` 是这段字节在日志里的起点（走重建时是快照对齐到的那个 offset）。
     `resizes[i].offset` 落在 `[start, start + len(data))` 内：该 offset 起（含）的字节
     按新尺寸解释。
+
+    `start` **之前**就已生效的尺寸基线不在这里——它由会话的 `size_at(start)` 作答，
+    订阅的 ack / 重同步帧随起点一并带上（见架构设计 §4.5）。
     """
 
     start: int

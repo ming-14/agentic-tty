@@ -226,7 +226,8 @@ class Session:
         # 顺序是强制的：先喂模型，紧接着追加日志，中间不得有任何 IO
         response = self._feed_model(data, stream)
         journal.append(data)
-        journal.trim_to_budget()
+        if journal.trim_to_budget():
+            self._journal_trimmed(stream)
         return IngestResult(
             stream=stream,
             start_offset=start,
@@ -297,6 +298,14 @@ class Session:
         """
         return ()
 
+    def size_at(self, offset: int) -> tuple[int, int] | None:
+        """`offset` 处的字节按多大解释；没有屏幕的会话返回 `None`。
+
+        尺寸变更史会被日志裁剪裁短，所以**得由会话自己作答**——它记得基线（保留区
+        起点那一刻的尺寸），而不是让订阅者去猜（见架构设计 §4.5）。
+        """
+        return None
+
     def rebuild_bytes(self) -> bytes:
         """重建字节（喂进空终端模型即可还原当前状态）；只有终端会话支持。"""
         raise CoreError(f"{self.mode} 会话没有屏幕")
@@ -331,6 +340,12 @@ class Session:
     def _feed_model(self, data: bytes, stream: Stream) -> bytes:
         """把字节喂进终端模型并返回应答；无模型的会话返回空。"""
         return b""
+
+    def _journal_trimmed(self, stream: Stream) -> None:
+        """某一路日志刚裁过：派生数据（如尺寸变更史）跟着收敛，别独自无限增长。
+
+        只在**确实裁掉字节**时调——没裁就没东西要收敛，别为此白跑一趟。
+        """
 
     def _read_secondary(self, stream: Stream, timeout: float | None, max_bytes: int) -> bytes:
         raise CoreError(f"{self.mode} 会话没有 {stream} 流")

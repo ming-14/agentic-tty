@@ -329,14 +329,18 @@ class App:
             self._append_sub(f"── 结束 exit={data.get('exit_code')} ──\n")
             self._sub_mid = None
         elif envelope.type == Event.RESYNC:
-            self._append_sub(f"── 重同步 lossy={data.get('lossy')} ──\n")
+            self._append_sub(
+                f"── 重同步 lossy={data.get('lossy')} "
+                f"尺寸={data.get('cols')}×{data.get('rows')} ──\n"
+            )
         elif envelope.type == Event.RESIZE:
             self._append_sub(
                 f"── 尺寸 {data.get('cols')}×{data.get('rows')} @ {data.get('offset')} ──\n"
             )
         else:  # ack：`type` 就是 subscribe 那条命令
             self._append_sub(
-                f"── 已订阅 offset={data.get('offset')} lossy={data.get('lossy')} ──\n"
+                f"── 已订阅 offset={data.get('offset')} lossy={data.get('lossy')} "
+                f"尺寸={data.get('cols')}×{data.get('rows')} ──\n"
             )
 
     def _append_sub(self, text: str) -> None:

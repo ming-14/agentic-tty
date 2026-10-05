@@ -134,6 +134,16 @@ def _frame_bytes(frame: Envelope | ByteChunk) -> int:
     return len(encode_control(to_json(frame)))
 
 
+def _size_fields(session: Session, offset: int) -> dict[str, int | None]:
+    """答复里带上的尺寸字段：`offset` 处生效的基线（无屏幕会话为 `None`）。
+
+    尺寸变更史可能已被日志裁剪裁短，只靠随后的 `resize` 帧推不出基线——订阅 ack 与
+    重同步帧都得带上它，客户端才知道第一段字节按多大解释。
+    """
+    size = session.size_at(offset)
+    return {"cols": size[0] if size else None, "rows": size[1] if size else None}
+
+
 class KernelHandler:
     """默认的 `RequestHandler`：uid 级请求 → core 操作。"""
 
@@ -338,7 +348,12 @@ class KernelHandler:
         return ok_response(
             envelope.type,
             envelope.mid,
-            {"sub_id": envelope.mid, "offset": sub.next_offset, "lossy": sub.lossy},
+            {
+                "sub_id": envelope.mid,
+                "offset": sub.next_offset,
+                "lossy": sub.lossy,
+                **_size_fields(session, sub.next_offset),
+            },
         )
 
     def _fill(self, sub_id: str, sub: _Sub) -> bool:
@@ -348,7 +363,9 @@ class KernelHandler:
         except OffsetTrimmed:
             # 客户端太慢，游标被日志裁掉了：换个新游标重同步，它自带一份快照
             sub.cursor = Subscription(sub.session, sub.stream)
-            sub.out.append(ok_response(Event.RESYNC, sub_id, {"lossy": sub.cursor.lossy}))
+            payload = {"lossy": sub.cursor.lossy}
+            payload.update(_size_fields(sub.session, sub.cursor.next_offset))
+            sub.out.append(ok_response(Event.RESYNC, sub_id, payload))
             return True
         added = False
         tag = stream_tag(sub.stream.value)
