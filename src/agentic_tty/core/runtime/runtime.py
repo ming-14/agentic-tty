@@ -108,8 +108,8 @@ class Runtime:
         有唤醒通道、又不看事件的驱动方走 `pump(uid)`——这里一轮的代价随会话数线性涨。
         """
         events: dict[str, list[PumpEvent]] = {}
-        for uid, runner in list(self._runners.items()):
-            got = runner.pump()
+        for uid in list(self._runners):
+            got = self.pump(uid)
             if got:
                 events[uid] = got
         return events
