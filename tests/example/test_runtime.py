@@ -121,3 +121,39 @@ def test_runner_factory_takes_over_the_driver():
         assert runtime.send_input(session.uid, b"a" * 101) is InputVerdict.REJECTED
     finally:
         runtime.close_all()
+
+
+def test_pump_advances_only_the_named_session():
+    """`pump(uid)` 只推那一个——别的会话就算桥里有数据也原地不动。"""
+    runtime = _runtime(FakeProgram(chunks=((0.0, b"hi"),), exit_after=None))
+    first = runtime.create(SessionSpec(mode=SUBPROCESS, argv=("x",)))
+    second = runtime.create(SessionSpec(mode=SUBPROCESS, argv=("y",)))
+    try:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not first.read_all(Stream.STDOUT):
+            runtime.pump(first.uid)
+            time.sleep(0.01)
+        assert first.read_all(Stream.STDOUT) == b"hi"
+        assert second.read_all(Stream.STDOUT) == b""  # 从没被推过
+    finally:
+        runtime.close_all()
+
+
+def test_pump_of_an_unknown_uid_is_not_an_error():
+    """唤醒信号可能晚到一步（会话刚被摘掉）——那不是错。"""
+    runtime = _runtime()
+    assert runtime.pump("no-such-uid") == []
+
+
+def test_refresh_all_picks_up_an_exit_without_draining():
+    """兜底那遍**只问退出**：把退出码收进来，不碰桥。"""
+    runtime = _runtime(FakeProgram(exit_after=0.05))
+    session = runtime.create(SessionSpec(mode=SUBPROCESS, argv=("x",)))
+    try:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and session.exit_code is None:
+            runtime.refresh_all()
+            time.sleep(0.005)
+        assert session.exit_code is not None
+    finally:
+        runtime.close_all()

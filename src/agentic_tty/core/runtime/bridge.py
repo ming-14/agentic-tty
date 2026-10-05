@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import queue
+import threading
 from dataclasses import dataclass
 
 from ..ports import Stream
@@ -62,23 +63,30 @@ class Wakeup:
 
     只传"哪个会话有活"，不传数据——数据在各自的桥里，因此**背压仍按会话算**。
     信号是**提示**不是账本：漏掉或重复都不影响正确性（驱动方醒来后照样按游标补齐）。
-    有了它，驱动方就不必定时轮询所有会话。
+
+    **一个 uid 只留一份**（重复投只算一次），所以积压的上界是**会话数**，而不是
+    "读线程每读到一个块就投一个"的无界日志。因此驱动方可以放心把 uid 取出来**照它
+    去推进那一个会话**——不必为了防涨把信号清空扔掉（那正是"取出来就扔"的由来）。
     """
 
     def __init__(self) -> None:
-        self._queue: queue.Queue[str] = queue.Queue()
+        # 有序：先投的先被取走。用 dict 当集合是为了**既去重又保序**——裸 set 保不了序。
+        self._awake: dict[str, None] = {}
+        self._cv = threading.Condition()
 
     def signal(self, uid: str) -> None:
-        """读线程调用：通知"这个会话有新数据"。"""
-        self._queue.put(uid)
+        """读线程调用：通知"这个会话有新数据"。已经在里面的 uid 不重复入。"""
+        with self._cv:
+            self._awake[uid] = None
+            self._cv.notify()
 
     def wait(self, timeout: float | None = None) -> str | None:
         """驱动方调用：阻塞等到有活（返回会话 uid）；超时返回 None。"""
-        try:
-            return self._queue.get(timeout=timeout)
-        except queue.Empty:
-            return None
-
-    @property
-    def pending(self) -> int:
-        return self._queue.qsize()
+        with self._cv:
+            if not self._awake:
+                self._cv.wait(timeout)
+            if not self._awake:
+                return None
+            uid = next(iter(self._awake))  # 先投的先取
+            del self._awake[uid]
+            return uid

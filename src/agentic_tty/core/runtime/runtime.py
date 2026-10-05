@@ -92,14 +92,37 @@ class Runtime:
             raise CoreError(f"会话没有驱动: {uid}")
         return runner.submit_input(data)
 
+    def pump(self, uid: str) -> list[PumpEvent]:
+        """推进**一个**会话的驱动，返回它本轮的事件。
+
+        驱动方平时走这条：唤醒通道点名说哪个会话有活，就只推进那一个——**一轮的代价
+        与会话数无关**。uid 不在表里（刚被摘掉）返回空，不算错。
+        """
+        runner = self._runners.get(uid)
+        return [] if runner is None else runner.pump()
+
     def pump_all(self) -> dict[str, list[PumpEvent]]:
-        """推进所有会话的驱动，返回本轮有事件的那些（uid → 事件清单）。"""
+        """推进**所有**会话的驱动，返回本轮有事件的那些（uid → 事件清单）。
+
+        **按轮推进的场合才用它**（没有"谁有活"这回事，比如验证台自己转圈）。有了唤醒
+        通道的驱动方应当走 `pump(uid)`：这里一轮的代价随会话数线性涨。
+        """
         events: dict[str, list[PumpEvent]] = {}
         for uid, runner in list(self._runners.items()):
             got = runner.pump()
             if got:
                 events[uid] = got
         return events
+
+    def refresh_all(self) -> None:
+        """全表问一次退出——**只问退出，不排空桥**。
+
+        退出检测的兜底：绝大多数退出会由读线程的 EOF 唤醒带出来（那时顺手就 `refresh`
+        了），但"进程退了、输出却还开着"（POSIX 上孙进程握着 slave）不会有 EOF 唤醒，
+        只能靠这一遍兜住。调用方按**慢节拍**调它，别每轮都来。
+        """
+        for runner in list(self._runners.values()):
+            runner.session.refresh()
 
     # ── 释放（两阶段）─────────────────────────────────────────
 

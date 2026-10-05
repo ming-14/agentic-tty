@@ -65,6 +65,13 @@ _VIEWS: dict[ReadMode, Callable[[TerminalSession], str]] = {
 }
 """出文本的读视图模式 → 对应的方法。**`BYTES` 不在表里**——它出字节帧，在 `_read` 里提前返回。"""
 
+_EXIT_SWEEP_INTERVAL = 1.0
+"""全表问一次退出（兜底）的最短间隔，秒。
+
+退出绝大多数由读线程的 EOF 唤醒带出来；这一遍只为"进程退了、输出却还开着"那种。节拍
+只决定那种情形多久被发现一次，慢一点没关系——它本来就不 drained。
+"""
+
 
 @dataclass
 class _Sub:
@@ -152,7 +159,7 @@ class KernelHandler:
     """默认的 `RequestHandler`：uid 级请求 → core 操作。"""
 
     def __init__(self, registry: SessionRegistry | None = None, *, endpoint: str = "") -> None:
-        # 读线程读到数据就投一个信号，所有者循环靠它阻塞等待，不必定时轮询所有会话。
+        # 读线程读到数据就投一个信号（带 uid），所有者循环靠它阻塞等待并**只推进那一个**。
         self._wakeup = Wakeup()
         # 不传注册表就用 core 的默认形态表（pty / localpty / subprocess）——模式由 core 定义，
         # 守护进程不再自己另列一份，否则 core 加了模式这里会静默漏掉。
@@ -160,6 +167,9 @@ class KernelHandler:
         self._endpoint = endpoint
         self._started_at = now_timestamp()
         self._started_monotonic = time.monotonic()
+        self._awake: str | None = None
+        """`wait` 记下的那个 uid——`pump` 只推进它。"""
+        self._last_exit_sweep = time.monotonic()
         self._subs: dict[str, _Sub] = {}
         """订阅表：**订阅 id = 那条 `subscribe` 请求的 `mid`**（连接内唯一）。"""
         self._stop: StopSignal | None = None
@@ -300,17 +310,28 @@ class KernelHandler:
         return True if runner is None else runner.input_drained
 
     def pump(self) -> None:
-        self._runtime.pump_all()
+        """推进**被唤醒的那一个**会话；再按慢节拍兜一遍退出检测。
+
+        唤醒通道一个 uid 只留一份（见 `Wakeup`），所以这里不必像从前那样"取出来就扔"：
+        uid 拿得住，也就能只推进它——**一轮的代价与会话数无关**。
+
+        退出检测绝大多数由读线程的 EOF 唤醒带出来（那时顺手就 `refresh` 了）。兜底那遍
+        是给"进程退了、输出却还开着"那种的，按慢节拍走，别每轮都全表问一遍。
+        """
+        awake, self._awake = self._awake, None
+        if awake is not None:
+            self._runtime.pump(awake)
+        now = time.monotonic()
+        if now - self._last_exit_sweep >= _EXIT_SWEEP_INTERVAL:
+            self._last_exit_sweep = now
+            self._runtime.refresh_all()
 
     def wait(self, timeout: float) -> None:
-        """等会话侧的活（读线程经 `Wakeup` 投的信号），或超时。
+        """等会话侧的活（读线程经 `Wakeup` 投的信号），或超时；**记下是哪个会话**。
 
-        醒来后把积压的信号一并清掉：一轮就能把所有会话的桥排空，剩下的信号再叫醒只是白跑
-        一遍，而且读线程**每读到一个块就投一个**，不清就会越积越多。
+        只记不推进：推进要等 `pump`，那才是"轮到所有者线程干活"的地方。
         """
-        self._wakeup.wait(timeout)
-        while self._wakeup.pending:
-            self._wakeup.wait(0)
+        self._awake = self._wakeup.wait(timeout)
 
     def shutdown(self) -> None:
         self._subs.clear()

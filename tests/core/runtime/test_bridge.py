@@ -60,12 +60,12 @@ def test_full_bridge_blocks_then_stop_releases():
 
 
 def test_wakeup_times_out_then_delivers():
-    """唤醒通道：没活时阻塞到超时，有活时立刻拿到 uid。"""
+    """唤醒通道：没活时阻塞到超时，有活时立刻拿到 uid；取走之后就没了。"""
     wakeup = Wakeup()
     assert wakeup.wait(timeout=0.01) is None
     wakeup.signal("uid-1")
     assert wakeup.wait(timeout=0.5) == "uid-1"
-    assert wakeup.pending == 0
+    assert wakeup.wait(timeout=0.01) is None  # 已取走，不再重复给
 
 
 def test_wakeup_keeps_signal_order():
@@ -73,3 +73,16 @@ def test_wakeup_keeps_signal_order():
     wakeup.signal("a")
     wakeup.signal("b")
     assert [wakeup.wait(timeout=0.5), wakeup.wait(timeout=0.5)] == ["a", "b"]
+
+
+def test_wakeup_coalesces_the_same_uid():
+    """同一个会话重复投只留一份——积压的上界是**会话数**，不是信号条数。
+
+    正因为有这条上界，驱动方才拿得住 uid（去推进那一个），而不必为了防涨清空扔掉。
+    """
+    wakeup = Wakeup()
+    for _ in range(1000):
+        wakeup.signal("busy")
+    wakeup.signal("other")
+    assert [wakeup.wait(timeout=0.5), wakeup.wait(timeout=0.5)] == ["busy", "other"]
+    assert wakeup.wait(timeout=0.01) is None  # 一千次只算一次
