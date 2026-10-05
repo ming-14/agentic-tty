@@ -7,9 +7,11 @@
 （进程内消费者）走有界入站队列，投递方在队列满时等待、背压传回消费者。两条路都汇到
 同一个 `_dispatch`。
 
-**答复必达**：交答复时若连接写缓冲满了（`CONGESTED`），守护进程把这条答复按请求攒进
-`_backlog`，下一轮（此时写线程可能已腾出空位）重投，直到收下或连接没了。这样处理层
-不必为响应型答复另备重试表——它只管自己那条推送流的节奏。
+**答复必达**：交答复时若连接写缓冲满了（`CONGESTED`），**谁负责重发由处理层说了算**
+（`owns_retransmission`）——订阅推送的帧摆在处理层的 `out` 里，它下一轮原样再交，
+守护进程不插手；响应型答复处理层没有第二份，就由守护进程按请求攒进 `_backlog`，
+下一轮（此时写线程可能已腾出空位）重投，直到收下或连接没了。两边都攒就会重复投递，
+所以这条分拣必须**在回告之前**问（回告可能顺手把订阅注销掉）。
 
 **收尾也在所有者线程上做**：处理层只许被那一个线程碰（它的契约就是"不需要锁"），
 所以 `run()` 看到停止标志后自己 draining + 收尾；`stop()` 只负责"发信号 + 等它做完"。
@@ -383,42 +385,65 @@ class Daemon:
     def _poll_handler(self, handler: RequestHandler) -> list[Reply]:
         """取处理层此刻的答复；失败只丢这一轮，循环照常走。"""
         try:
-            return handler.poll()
+            return handler.poll(self._room_of)
         except Exception:
             _logger.exception("请求处理层交出答复失败（已隔离）")
             return []
 
+    def _room_of(self, request: object) -> int | None:
+        """这条请求所属连接此刻还能收多少字节；问不出来就返回 None（不限额）。
+
+        处理层拿它当一轮的交付预算，避免"推一帧、被拒、再推"的来回。接入点不在
+        （进程内消费者）时返回 None——那条路本来就不按时钟转圈。
+        """
+        if self._access_point is None:
+            return None
+        return self._access_point.room_for(request)
+
     def _deliver(self, replies: list[Reply]) -> None:
+        """把一轮的答复依次交出去。
+
+        **不中途停**：一批里的帧可能来自不同连接，为一条堵住就把后面的全推迟，会让别的
+        订阅白挨饿。逐帧投、逐帧记账，各归各的——被拒的帧怎么处理由 `_settle` 分拣
+        （处理层负责重发的，它自己留着；响应型的，守护进程攒着）。
+        """
         for reply in replies:
             self._deliver_one(reply)
 
     def _deliver_one(self, reply: Reply) -> None:
         """把答复交回消费者：来自接入点的写回那条连接，其余走 `on_reply`。
 
-        **先路由、再回告、最后记账**：路由结果决定要不要重投，所以无论回告是否抛异常都
-        得先记下来——否则"已发出"的答复留在待重发表里，下一轮会被**重复投递**。
+        **先分拣、再路由、再回告、最后记账**：`owns_retransmission` 必须在 `on_reply`
+        **之前**问——`on_reply` 可能把这条订阅注销掉（最后一帧收下了），那时再问就会
+        误判成"响应型"，把它的答复塞进待重发表。
 
         每一段都各自兜住异常——它在所有者线程上跑，一次交答复失败不能炸穿循环。
         """
         try:
+            mine = self._handler_ready().owns_retransmission(reply.request)
+        except Exception:
+            _logger.exception("询问重发归属失败（已隔离，按守护进程负责处理）")
+            mine = False
+        try:
             delivery = self._route(reply)
         except Exception:
             _logger.exception("投递答复失败（已隔离，循环继续）")
-            return
-        try:
-            self._handler_ready().on_reply(reply.request, delivery)
-        except Exception:
-            _logger.exception("回告投递结果失败（已隔离，循环继续）")
-        self._settle(reply, delivery)
+            delivery = Delivery.GONE
+        else:
+            try:
+                self._handler_ready().on_reply(reply.request, delivery)
+            except Exception:
+                _logger.exception("回告投递结果失败（已隔离，循环继续）")
+        self._settle(reply, delivery, mine)
 
-    def _settle(self, reply: Reply, delivery: Delivery) -> None:
+    def _settle(self, reply: Reply, delivery: Delivery, handler_retransmits: bool) -> None:
         """按投递结果维护待重发表：堵住就攒着，收下 / 连接没了就撤掉。
 
-        **重发归守护进程**（见 `Delivery.CONGESTED`）：处理层回告的"没收下"只用来表示
-        订阅那侧的节奏，守护进程不能借它把答复丢掉——那会让客户端永久干等（同一连接上
-        既有订阅推送又有同步请求时就会发生）。
+        **只攒"处理层不管的那部分"**：订阅推送被拒时，处理层自己把帧留在 `out` 里下轮
+        再交（见 `owns_retransmission`），守护进程再攒一份就是重复投递——同一订阅的几帧
+        还共用一个请求对象，在表里会互相顶掉。响应型答复没有第二份，才由这里兜底。
         """
-        if delivery is Delivery.CONGESTED:
+        if delivery is Delivery.CONGESTED and not handler_retransmits:
             self._backlog.setdefault(id(reply.request), reply)
         else:
             self._backlog.pop(id(reply.request), None)

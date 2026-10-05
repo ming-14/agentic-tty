@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import time
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, TypeVar, cast
@@ -29,8 +29,9 @@ from ..foundation.errors import AgenticTtyError
 from ..foundation.ids import now_timestamp
 from ..foundation.logs import get_logger
 from ..protocol.contracts.daemon_ipc import Command, Event, ReadMode, SessionRef, stream_tag
-from ..protocol.envelope import Envelope
+from ..protocol.envelope import Envelope, to_json
 from ..protocol.errors import MessageError
+from ..protocol.frame import encode_bytes, encode_control
 from ..protocol.response import failed_response, ok_response
 from .access_point import ByteChunk, WireRequest
 from .handler import Delivery, Reply, StopSignal
@@ -40,7 +41,11 @@ _logger = get_logger("daemon.kernel")
 _PUSH_BUDGET = 1 << 16
 """每轮每个订阅最多取多少字节——分片拉取，别把积压一次倒完。"""
 _PUSH_INFLIGHT = 8
-"""每个订阅最多允许多少帧在途（尚未被投递确认）——出站队列有限，别把它撑满。"""
+"""每个订阅**一轮最多交几帧**，也就是最多允许多少帧在途（尚未被投递确认）。
+
+它同时是两条约束：出站队列有限，别把它撑满；以及一轮别把整段积压倒完（额度缺失时
+只有它在兜底）。8 帧 × `_PUSH_BUDGET` = 512 KiB，落在 1 MiB 出站队列之内。
+"""
 
 _E = TypeVar("_E", bound=StrEnum)
 """取参辅助用的枚举类型。"""
@@ -61,6 +66,8 @@ class _Sub:
     out: deque[Envelope | ByteChunk] = field(default_factory=deque)
     done: bool = False
     """会话已排空：`out` 交完就注销。"""
+    handed: int = 0
+    """`out` 里已被本轮交出、等投递结果的**前缀**帧数（见 `poll` / `on_reply` 的约定）。"""
 
 
 def _text(op: Mapping[str, Any], key: str, default: str = "") -> str:
@@ -116,6 +123,17 @@ def _failed(envelope: Envelope, error: BaseException) -> Envelope:
     return failed_response(envelope.type, envelope.mid, type(error).__name__, str(error))
 
 
+def _frame_bytes(frame: Envelope | ByteChunk) -> int:
+    """一帧在出站队列里占多少字节——**按编成后的实际大小算**。
+
+    接入点按编好的字节记账，所以预算也得用同一个口径；拿负载长度估会偏小，
+    额度就形同虚设（贴在边上交、每次都超）。
+    """
+    if isinstance(frame, ByteChunk):
+        return len(encode_bytes(frame.tag, frame.key, frame.data))
+    return len(encode_control(to_json(frame)))
+
+
 class KernelHandler:
     """默认的 `RequestHandler`：uid 级请求 → core 操作。"""
 
@@ -163,14 +181,49 @@ class KernelHandler:
             return Reply(request=wire, answer=_failed(wire.envelope, exc))
         return Reply(request=wire, answer=answer)
 
-    def poll(self) -> list[Reply]:
-        """交出本轮可以推的帧——每个订阅最多一帧，且在途数受上限约束。"""
+    def poll(self, room_of: Callable[[object], int | None]) -> list[Reply]:
+        """交出本轮可以推的帧——**在连接额度内尽量多交**，而不是每订阅一帧。
+
+        一条订阅可以在一轮里连交几帧：额度（字节）用光、在途数到顶或队列排空才停。
+        这样一段突发输出（`cat` 大文件、`make` 日志、位图重绘）几轮就能追上。
+
+        交出去的帧**留在 `out` 里**（`handed` 标到哪了），等 `on_reply` 逐帧确认才划掉：
+        没收下的那些自然还排着队，下一轮原样重发。
+        """
         replies: list[Reply] = []
         for sub_id, sub in list(self._subs.items()):
-            reply = self._push(sub_id, sub)
-            if reply is not None:
-                replies.append(reply)
+            replies.extend(self._drain(sub_id, sub, room_of(sub.request)))
         return replies
+
+    def _drain(self, sub_id: str, sub: _Sub, room: int | None) -> list[Reply]:
+        """把一条订阅「本轮能交的」都交出去，返回它们（按顺序）。
+
+        `room` 是这条连接的剩余字节额度（`None` = 不限额）。每交一帧扣掉它的字节数，
+        额度放不下下一帧就停；再受 `_PUSH_INFLIGHT` 约束（在途数到顶，别把出站队列撑满）。
+        """
+        out: list[Reply] = []
+        while sub.handed < _PUSH_INFLIGHT:
+            frame = self._peek(sub_id, sub)
+            if frame is None:
+                return out
+            size = _frame_bytes(frame)
+            if room is not None and out and size > room:
+                return out  # 本轮额度用光
+            out.append(Reply(sub.request, frame))
+            sub.handed += 1
+            room = None if room is None else room - size
+        return out
+
+    def _peek(self, sub_id: str, sub: _Sub) -> Envelope | ByteChunk | None:
+        """要交的第 `handed` 帧；`out` 里没有就补，补不出（且已排空）就把订阅摘掉。"""
+        while len(sub.out) <= sub.handed and not sub.done:
+            if not self._fill(sub_id, sub):
+                break
+        if len(sub.out) <= sub.handed:
+            if sub.done and not sub.handed:
+                self._subs.pop(sub_id, None)
+            return None
+        return sub.out[sub.handed]
 
     def pending(self) -> int:
         """压着等的请求数——**订阅不算**：它是长期挂着的，算进来会让收尾白等满 `drain_timeout`。"""
@@ -179,19 +232,30 @@ class KernelHandler:
     def on_reply(self, request: object, delivery: Delivery) -> None:
         """投递结果：收下了就把在途那帧划掉；连接没了就把这条订阅丢掉。
 
-        没收下（`CONGESTED`）什么都不做——在途帧还留着，下一轮原样重发，游标不动。
+        确认是**逐帧**的（一轮可能交了好几帧，守护进程交一帧回告一次）：`SENT` 划掉
+        **队首**那帧——批次是按顺序交的，回告也按顺序到，队首正好是对应的那个。
+
+        `CONGESTED` 说明连队首都没被收下，于是 `handed` 归零：这一帧连同后面那些
+        已经交出、还没确认的帧一起退回，下一轮**原样重发**，游标不动。
         """
         wire = cast(WireRequest, request)
         sub = self._subs.get(wire.envelope.mid)
         if sub is None:
             return
         if delivery is Delivery.SENT:
-            # 交付的一定是队首那一帧（`poll` 只交 `out[0]`）。subscribe 的 ack 走 `handle`
-            # 直接返回、那时 `out` 还空着，所以这里不会把推送帧误划掉。
-            if sub.out:
+            # subscribe 的 ack 走 `handle` 直接返回、那时 `out` 还空着，所以这里不会误划。
+            if sub.out and sub.handed:
                 sub.out.popleft()
+                sub.handed -= 1
+        elif delivery is Delivery.CONGESTED:
+            sub.handed = 0
         elif delivery is Delivery.GONE:
             self._subs.pop(wire.envelope.mid, None)
+
+    def owns_retransmission(self, request: object) -> bool:
+        """订阅推送的重发归本层（帧摆在 `out` 里，下一轮原样再交）；其余归守护进程。"""
+        wire = cast(WireRequest, request)
+        return wire.envelope.mid in self._subs
 
     def on_disconnected(self, connection: object) -> None:
         """连接没了：把挂在它上面的订阅全部注销。"""
@@ -276,16 +340,6 @@ class KernelHandler:
             envelope.mid,
             {"sub_id": envelope.mid, "offset": sub.next_offset, "lossy": sub.lossy},
         )
-
-    def _push(self, sub_id: str, sub: _Sub) -> Reply | None:
-        while len(sub.out) < _PUSH_INFLIGHT and not sub.done:
-            if not self._fill(sub_id, sub):
-                break
-        if not sub.out:
-            if sub.done:
-                self._subs.pop(sub_id, None)
-            return None
-        return Reply(sub.request, sub.out[0])
 
     def _fill(self, sub_id: str, sub: _Sub) -> bool:
         """按游标再取一帧放进 `out`；没有新东西返回 False。"""

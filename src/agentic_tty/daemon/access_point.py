@@ -138,6 +138,17 @@ class _Connection:
             self._outbox_cv.notify()
             return True
 
+    @property
+    def room(self) -> int:
+        """出站队列还能收多少字节（观测口径，供处理层一轮批量交付时定预算）。
+
+        队列空时给满上限——`enqueue` 对空队列永远收下，所以"空"等于"至少能收一整条"。
+        """
+        with self._outbox_cv:
+            if self.closed:
+                return 0
+            return self._limit if not self._outbox else max(0, self._limit - self._outbox_bytes)
+
     def close(self) -> None:
         """关掉连接：叫停写线程并释放底层句柄。幂等，**任何线程都可调**。"""
         with self._outbox_cv:
@@ -205,6 +216,17 @@ class AccessPoint:
     def connection_count(self) -> int:
         """当前接了几条连接（观测用）。"""
         return len(self._connections)
+
+    def room_for(self, request: object) -> int | None:
+        """这条请求所属连接还能收多少字节；不是本接入点的请求返回 None。
+
+        处理层按它定"这一轮最多给这个订阅交多少帧"——**别等投递被拒才知道堵了**：
+        逐帧交、逐帧问，得先把帧交出去才拿得到 `CONGESTED`，那时字节已经产出，
+        只能等下一轮重投。先问额度就能一轮交到贴边为止。
+        """
+        if not isinstance(request, WireRequest):
+            return None
+        return request.connection.room
 
     def open(self) -> None:
         """挂监听。"""

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from typing import cast
 from uuid import uuid4
 
@@ -46,7 +47,7 @@ class _EchoHandler:
             answer = ok_response(envelope.type, envelope.mid, {"echo": True})
         return Reply(request=wire, answer=answer)
 
-    def poll(self) -> list[Reply]:
+    def poll(self, room_of: Callable[[object], int | None]) -> list[Reply]:
         return []
 
     def pending(self) -> int:
@@ -70,6 +71,9 @@ class _EchoHandler:
 
     def on_reply(self, request: object, delivery: Delivery) -> None:
         pass
+
+    def owns_retransmission(self, request: object) -> bool:
+        return False
 
     def on_disconnected(self, connection: object) -> None:
         pass

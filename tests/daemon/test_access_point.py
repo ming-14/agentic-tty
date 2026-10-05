@@ -253,3 +253,24 @@ def test_a_full_outbox_is_refused_not_blocked():
     finally:
         connection.close()
         connection.join_writer(2.0)
+
+
+def test_room_reports_what_the_outbox_can_still_take():
+    """`room` 是处理层一轮交付的预算：队空时给满，占用后按余量递减，堵死为 0。"""
+    underlying = _BlockedConnection()
+    connection = _Connection(underlying, outbox_bytes=8)
+    try:
+        assert connection.room == 8  # 队空 = 至少能收一整条
+        connection.enqueue(b"1234")
+        assert connection.room == 4
+        connection.enqueue(b"5678")
+        assert connection.room == 0
+    finally:
+        connection.close()
+        connection.join_writer(2.0)
+
+
+def test_room_for_a_foreign_request_is_unknown(point: tuple[AccessPoint, _Seam]):
+    """不是本接入点发出的请求问不出额度——返回 None，调用方按"不限额"处理。"""
+    access_point, _seam = point
+    assert access_point.room_for(object()) is None

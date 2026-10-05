@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
@@ -86,8 +87,18 @@ class RequestHandler(Protocol):
         """
         ...
 
-    def poll(self) -> list[Reply]:
-        """交出此刻已经可以回答的答复（可能为空）。"""
+    def poll(self, room_of: Callable[[object], int | None]) -> list[Reply]:
+        """交出此刻已经可以回答的答复（可能为空）。
+
+        `room_of(request)` 回答"这条请求所属的连接**此刻**还能收多少字节"——守护进程
+        给的，处理层拿它当**这一轮的交付额度**：一条订阅可以在一轮里连交几帧，直到
+        额度用光为止，而不是一轮一帧。返回 `None` 表示"问不出来"（进程内消费者、
+        没有接入点），此时按"不限额"处理。
+
+        额度是**上限不是保证**：真交出去时连接仍可能被写线程占满（额度只是快照），
+        所以 `on_reply` 的 `CONGESTED` 依然是权威——处理层每交一帧后都要有办法收手。
+        实现方的接口是"一轮尽量交完，交不动就停这一条订阅、其余照旧"。
+        """
         ...
 
     def pending(self) -> int:
@@ -124,6 +135,18 @@ class RequestHandler(Protocol):
         `CONGESTED` 时不要再为这条请求 `pull`（数据还在，下一轮重发）；`GONE` 时把这条
         请求的订阅丢掉。**响应型答复（非订阅）的重发不在这里**——守护进程会按请求攒着
         重投，处理层只处理自己那条推送流。
+        """
+        ...
+
+    def owns_retransmission(self, request: object) -> bool:
+        """这条请求的答复被拒时，**是不是由处理层自己留着重发**。
+
+        订阅推送是：字节从游标里取出来就摆在 `out` 里，没收下就原样再交，守护进程
+        不必替它攒。响应型答复不是：处理层手里没有它的第二份，所以拒了只能由守护进程
+        攒着重投（否则客户端永远等不到那条 `mid`）。
+
+        守护进程靠它分拣：**处理层负责的，拒了就不进守护进程的待重发表**——两边都攒
+        就是重复投递（同一条订阅的几帧共用一个请求对象，在待重发表里还会互相顶掉）。
         """
         ...
 

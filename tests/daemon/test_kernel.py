@@ -15,8 +15,8 @@ from agentic_tty.core.session.base import Session
 from agentic_tty.core.session.registry import SessionRegistry
 from agentic_tty.core.session.subscription import Subscription
 from agentic_tty.daemon.access_point import ByteChunk, WireRequest
-from agentic_tty.daemon.handler import Delivery
-from agentic_tty.daemon.kernel import KernelHandler, _Sub
+from agentic_tty.daemon.handler import Delivery, Reply
+from agentic_tty.daemon.kernel import KernelHandler, _frame_bytes, _Sub
 from agentic_tty.example.core_test.runtime_fakehost import FakeHost, FakeProgram
 from agentic_tty.protocol.contracts.daemon_ipc import Command, Event
 from agentic_tty.protocol.envelope import Envelope, make_request
@@ -43,11 +43,15 @@ def _watch(session: Session) -> KernelHandler:
     return handler
 
 
-def _frames(handler: KernelHandler, limit: int = 8) -> list[object]:
-    """驱动 `poll` / `on_reply`，把这条订阅的帧按交付顺序取出来。"""
+def _frames(handler: KernelHandler, rounds: int = 8, room: int | None = None) -> list[object]:
+    """驱动 `poll` / `on_reply`，把这条订阅的帧按交付顺序取出来。
+
+    `rounds` 是**轮数上限**（一轮现在可以交好几帧）；测成帧顺序的用例只关心切帧对不对，
+    所以给足轮数、额度不限额。
+    """
     frames: list[object] = []
-    for _ in range(limit):
-        replies = handler.poll()
+    for _ in range(rounds):
+        replies = handler.poll(lambda _request: room)
         if not replies:
             break
         for reply in replies:
@@ -125,26 +129,137 @@ def test_push_repeats_the_same_frame_while_the_delivery_is_congested():
     session.ingest_stream(Stream.STDOUT, b"hi")
     handler = _watch(session)
     try:
-        first = handler.poll()
-        assert len(first) == 1 and isinstance(first[0].answer, ByteChunk)
+        first = handler.poll(lambda _request: None)
+        assert first and isinstance(first[0].answer, ByteChunk)
         assert first[0].answer.data == b"hi"
 
         handler.on_reply(first[0].request, Delivery.CONGESTED)
 
-        again = handler.poll()
-        assert len(again) == 1 and again[0].answer is first[0].answer
+        again = handler.poll(lambda _request: None)
+        assert again and again[0].answer is first[0].answer
     finally:
         session.close()
 
 
+def _queued(handler: KernelHandler, count: int) -> _Sub:
+    """手工挂一条订阅，`out` 里放好 `count` 个**内容各不相同**的帧。
+
+    不接会话也不接游标（`done=True`）——这些用例只量"一轮交多少、退帧对不对"，
+    不牵扯日志拉取；每个帧带上序号，才能可靠地认出"重发的是哪一帧"。`mid` 由
+    `make_request` 自动生成，两条订阅天然不同。
+    """
+    sub = _Sub(
+        request=WireRequest(make_request(Command.SUBSCRIBE), _CONNECTION),
+        session=None,
+        stream=None,
+        cursor=None,
+        done=True,
+    )
+    for index in range(count):
+        sub.out.append(ByteChunk(3, "key", bytes([index]) * 8))
+    handler._subs[sub.request.envelope.mid] = sub
+    return sub
+
+
+def _tags(replies: list) -> list[bytes]:
+    return [reply.answer.data for reply in replies]
+
+
+def test_a_round_hands_over_several_frames_within_the_room():
+    """一轮在额度内**连交几帧**：突发输出几轮就能追平，而不是一帧一轮地磨。"""
+    session = _session()
+    session.ingest_stream(Stream.STDOUT, b"x" * 200_000)  # 远多于一个 _PUSH_BUDGET
+    handler = _watch(session)
+    try:
+        replies = handler.poll(lambda _request: 1 << 20)  # 额度给足
+        assert len(replies) > 1, "一轮只交了一帧，额度没生效"
+        for reply in replies:
+            handler.on_reply(reply.request, Delivery.SENT)
+    finally:
+        session.close()
+
+
+def test_the_room_caps_how_much_a_round_hands_over():
+    """额度是**上限**：给得小就少交，不会把整段一次倒出去。"""
+    handler = KernelHandler()
+    sub = _queued(handler, 6)
+    one_frame = _frame_bytes(sub.out[0])
+
+    got = handler.poll(lambda _request: one_frame + 1)  # 只够一帧多一字节
+
+    assert len(got) == 1, f"额度只够一帧却交了 {len(got)} 帧"
+    assert _tags(got) == [b"\x00" * 8]
+
+
+def test_the_frame_a_round_cannot_afford_stays_for_the_next_round():
+    """额度不足的那帧**没被取走**——下一轮额度回来时它还在，一帧不丢、顺序不乱。"""
+    handler = KernelHandler()
+    sub = _queued(handler, 6)
+    one_frame = _frame_bytes(sub.out[0])
+
+    first = handler.poll(lambda _request: one_frame + 1)
+    assert _tags(first) == [b"\x00" * 8]
+    handler.on_reply(first[0].request, Delivery.SENT)
+
+    rest = handler.poll(lambda _request: None)  # 额度放开
+    assert _tags(rest) == [bytes([i]) * 8 for i in range(1, 6)], "没交的帧丢了或乱了"
+
+
+def test_a_batch_congested_in_the_middle_keeps_the_rest_for_the_next_round():
+    """批次**中途**被拒：收下的划掉、被拒的和其后的一起留到下一轮。
+
+    只跳过本订阅：不丢帧，也不重复交已经收下的那些。
+    """
+    handler = KernelHandler()
+    _queued(handler, 6)
+
+    first = handler.poll(lambda _request: None)
+    assert len(first) == 6, "一轮没把整批交出来，测不出中途被拒"
+
+    handler.on_reply(first[0].request, Delivery.SENT)
+    handler.on_reply(first[1].request, Delivery.SENT)
+    handler.on_reply(first[2].request, Delivery.CONGESTED)
+
+    again = handler.poll(lambda _request: None)
+    assert _tags(again) == [bytes([i]) * 8 for i in range(2, 6)], "重发的不是被拒那帧起的余下几帧"
+
+
+def test_one_subscription_being_refused_does_not_stall_another():
+    """一条订阅全被拒，**不该拖住另一条**——各自记账、各走各的。
+
+    交付一批时逐帧回告：若为一条堵住的连接就中断整批，排在后面的订阅交出去的帧
+    拿不到回告，`handed` 会一直顶着上限，那条订阅再也发不出东西。
+    """
+    handler = KernelHandler()
+    a = _queued(handler, 8)
+    b = _queued(handler, 8)
+
+    batch = handler.poll(lambda _request: None)
+
+    def _owner(reply: Reply) -> _Sub:
+        return next(sub for sub in handler._subs.values() if sub.request is reply.request)
+
+    for reply in batch:  # 全投：A 全拒、B 全收
+        handler.on_reply(
+            reply.request,
+            Delivery.CONGESTED if _owner(reply) is a else Delivery.SENT,
+        )
+
+    assert a.handed == 0
+    assert a.out, "A 被拒的帧该留着下轮重发"
+    assert b.handed == 0, "B 的帧交了却没划掉——它永远发不出下一帧了"
+    assert not b.out, "B 交了 8 帧都收下了，队列该空"
+
+
 def test_dropping_the_connection_drops_its_subscriptions():
+    """连接没了，挂在上面的订阅一起注销：那条推送流再没有接收方。"""
     session = _session()
     session.ingest_stream(Stream.STDOUT, b"hi")
     handler = _watch(session)
     try:
-        assert handler.poll()  # 没注销之前是有东西推的
+        assert handler.poll(lambda _request: None)  # 没注销之前是有东西推的
         handler.on_disconnected(_CONNECTION)
-        assert handler.poll() == []
+        assert handler.poll(lambda _request: None) == []
     finally:
         session.close()
 

@@ -53,7 +53,7 @@ class FakeHandler:
             raise RuntimeError("故意炸")
         return Reply(request=request, answer=f"answer:{request}")
 
-    def poll(self) -> list[Reply]:
+    def poll(self, room_of: Callable[[object], int | None]) -> list[Reply]:
         if self.poll_boom:
             raise RuntimeError("poll 故意炸")
         replies = [Reply(request=item, answer=f"deferred:{item}") for item in self.deferred]
@@ -81,6 +81,9 @@ class FakeHandler:
 
     def on_reply(self, request: object, delivery: Delivery) -> None:
         self.deliveries.append((request, delivery))
+
+    def owns_retransmission(self, request: object) -> bool:
+        return False
 
     def on_disconnected(self, connection: object) -> None:
         self.disconnects.append(connection)
@@ -503,6 +506,53 @@ def test_the_running_loop_actually_retries_a_congested_answer(tmp_path):
         assert wait_for(lambda: bool(replies)), "循环没有把攒下的答复补投出去"
         assert replies[0].answer == "answer:ping"
         assert not daemon._backlog
+
+
+def test_a_batch_is_delivered_in_full_even_if_one_is_refused(tmp_path):
+    """一批里有一条被拒，**后面的照投**——不能为一条堵住的连接推迟别的订阅。
+
+    被拒的那条自己进待重发表（响应型）；它之后的照常投递、照常回告。
+    """
+    daemon, handler, _replies = make_daemon(tmp_path, mount_endpoint=False)
+    daemon.start()
+    try:
+        batch = [handler.handle(f"req{n}") for n in range(4)]
+        assert all(reply is not None for reply in batch)
+
+        seen: list[str] = []
+
+        def route(reply: Reply) -> Delivery:
+            seen.append(reply.answer)
+            return Delivery.CONGESTED if reply.answer == "answer:req1" else Delivery.SENT
+
+        daemon._route = route
+        daemon._deliver(batch)
+
+        assert seen == [f"answer:req{n}" for n in range(4)], "被拒之后就停手了"
+        assert [request for request, _ in handler.deliveries] == [r.request for r in batch]
+        assert list(daemon._backlog.values()) == [batch[1]], "被拒的那条没进待重发表"
+    finally:
+        daemon.stop(2)
+
+
+def test_a_refused_push_frame_is_not_backlogged_by_the_daemon(tmp_path):
+    """处理层自己负责重发的请求被拒时，**守护进程不攒**——攒了就重复投递。
+
+    同一条订阅的几帧共用一个请求对象，在待重发表里还会互相顶掉。
+    """
+    daemon, handler, _replies = make_daemon(tmp_path, mount_endpoint=False)
+    daemon.start()
+    try:
+        handler.owns_retransmission = lambda _request: True  # 这一条归处理层
+        reply = handler.handle("push")
+        assert reply is not None
+
+        daemon._route = lambda _reply: Delivery.CONGESTED
+        daemon._deliver_one(reply)
+
+        assert not daemon._backlog, "处理层负责重发的答复被守护进程也攒了一份"
+    finally:
+        daemon.stop(2)
 
 
 def test_stop_signal_from_the_handler_ends_the_loop(tmp_path):
