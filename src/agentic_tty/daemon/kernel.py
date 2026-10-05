@@ -58,6 +58,13 @@ _INPUT_ACTIONS: dict[InputVerdict, InputAction] = {
 }
 """core 的输入判定 → 让守护进程对那条连接做什么（见架构设计 §12）。"""
 
+_VIEWS: dict[ReadMode, Callable[[TerminalSession], str]] = {
+    ReadMode.SCREEN: TerminalSession.screen_text,
+    ReadMode.TEXT: TerminalSession.full_text,
+    ReadMode.SVG: TerminalSession.render_svg,
+}
+"""出文本的读视图模式 → 对应的方法。**`BYTES` 不在表里**——它出字节帧，在 `_read` 里提前返回。"""
+
 
 @dataclass
 class _Sub:
@@ -457,12 +464,7 @@ class KernelHandler:
             data = session.read_range(start, journal.end_offset, stream)
             return ByteChunk(tag=stream_tag(stream.value), key=envelope.mid, data=data)
         terminal = self._terminal(session)
-        if mode is ReadMode.SCREEN:
-            text = terminal.screen_text()
-        elif mode is ReadMode.TEXT:
-            text = terminal.full_text()
-        else:  # SVG：出矢量，栅格化归客户端（守护进程不做呈现，见架构设计 §11）
-            text = terminal.render_svg()
+        text = _VIEWS[mode](terminal)
         # 顺带带上日志末尾的 offset：客户端靠它判断屏幕变了没有，变了才重渲染。
         return ok_response(
             envelope.type,

@@ -212,7 +212,7 @@ def _pty_available() -> bool:
 
 @pytest.mark.skipif(not _pty_available(), reason="pywezterm 不可用")
 def test_screen_views_for_real_pty(root):
-    """真 PTY：屏幕页 / SVG 源码页 / 尺寸控件可用，image 与 svg 都落成位图。"""
+    """真 PTY：屏幕页 / SVG 源码页 / 尺寸控件可用，矢量在本地栅格化成位图。"""
     app = App(root)
     session = app._runtime.create(
         session_spec(ExampleMode.PTY, (sys.executable, "-c", "print('gui-svg')"))
@@ -220,19 +220,14 @@ def test_screen_views_for_real_pty(root):
     app._selected = session.uid
     app._sync_pty_controls()
 
-    assert _pump_until(root, app, session.uid, lambda s: s.drained)
+    # 真起进程 + 真 PTY，满载时会慢——预算给宽一点，别把它当断言失败
+    assert _pump_until(root, app, session.uid, lambda s: s.drained, timeout=20.0)
     app._refresh_detail()
 
     assert app._tabs.page_state(Page.SCREEN) == "normal"
     assert "disabled" not in app._size.save_png_btn.state()
     assert "disabled" not in app._size.apply_btn.state()
     assert app._screen.svg_source.startswith("<svg") and "gui-svg" in app._screen.svg_source
-    assert any(
-        app._screen.canvas.type(i) == "image" for i in app._screen.canvas.find_all()
-    )
-
-    # 切到 svg 格式：走 resvg 栅格化，同样落成一张位图
-    app._screen.format = "svg"
     assert any(
         app._screen.canvas.type(i) == "image" for i in app._screen.canvas.find_all()
     )

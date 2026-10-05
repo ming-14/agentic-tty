@@ -20,7 +20,7 @@ from agentic_tty.daemon.access_point import ByteChunk, WireRequest
 from agentic_tty.daemon.handler import Delivery, InputAction, Reply
 from agentic_tty.daemon.kernel import KernelHandler, _frame_bytes, _Sub
 from agentic_tty.example.core_test.runtime_fakehost import FakeHost, FakeProgram
-from agentic_tty.protocol.contracts.daemon_ipc import Command, Event
+from agentic_tty.protocol.contracts.daemon_ipc import Command, Event, ReadMode
 from agentic_tty.protocol.envelope import Envelope, make_request
 
 _CONNECTION = object()
@@ -467,3 +467,33 @@ def test_input_drained_reports_the_queue_state():
 
     handler._runtime = _FakeRuntime(InputVerdict.QUEUED, drained=None)  # type: ignore[assignment]
     assert handler.input_drained("uid-1") is True, "会话已不在 = 没什么可等"
+
+
+class _RenderingHost(FakeHost):
+    """会出矢量的假宿主——`FakeHost` 刻意不做屏幕渲染，这里只为把读视图那条路走通。"""
+
+    def render_svg(self) -> str:
+        return f'<svg width="80" height="24">{self.screen_text()}</svg>'
+
+
+@pytest.mark.parametrize("mode", [ReadMode.SCREEN, ReadMode.TEXT, ReadMode.SVG])
+def test_read_views_come_back_as_text_plus_the_offset(mode):
+    """三个出文本的读视图都走同一张表：回文本，并带上日志末尾的 offset。"""
+    registry = SessionRegistry(lambda spec: _RenderingHost(spec, FakeProgram()))
+    session = registry.create(SessionSpec(mode=PTY, argv=("x",)))
+    session.ingest_stream(Stream.STDOUT, b"hello")
+    handler = KernelHandler()
+    handler._runtime.get = lambda _uid: session  # type: ignore[method-assign]
+    wire = WireRequest(
+        make_request(Command.READ_SESSION, op={"uid": session.uid, "mode": mode.value}),
+        _CONNECTION,
+    )
+    try:
+        reply = handler.handle(wire)
+    finally:
+        session.close()
+
+    assert reply is not None
+    payload = _data(reply.answer)
+    assert "hello" in payload["text"]
+    assert payload["offset"] == session.journal.end_offset

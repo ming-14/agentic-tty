@@ -51,8 +51,9 @@ class Command(StrEnum):
 class ViewMode(StrEnum):
     """`read_terminal` 要哪个视图。
 
-    与 `daemon_ipc.ReadMode` 同属一套视图语义（取值一致），但**各留一份、互不 import**——
-    改这条边界不牵动那条。
+    与 `daemon_ipc.ReadMode` 同属一套视图语义，但**各留一份、互不 import**——改这条边界
+    不牵动那条。取值也**不必一样**：这一层面对的是显示，位图自己栅格化得出来；守护进程
+    不做呈现，所以它的 `ReadMode` 里没有 `IMAGE`（见架构设计 §4.5）。
     """
 
     SCREEN = "screen"
