@@ -390,21 +390,28 @@ class Daemon:
             self._held.pop(item.connection, None)
             self._access_point.drop(item.connection)
         elif action is InputAction.HOLD:
-            self._held.setdefault(item.connection, set()).add(item.key)
-            self._notice(item.connection, Notice.INPUT_HOLD, item.key)
+            # 只有**确实告诉过发送方**才记进 hold 表——没告诉它就没有要放行的人。
+            if self._notice(item.connection, Notice.INPUT_HOLD, item.key):
+                self._held.setdefault(item.connection, set()).add(item.key)
 
-    def _notice(self, connection: object, notice: Notice, key: str) -> None:
-        """下发一条输入流控通知；发不出去就记一笔（它不像答复那样必达）。"""
+    def _notice(self, connection: object, notice: Notice, key: str) -> bool:
+        """下发一条输入流控通知，返回它有没有进那条连接的出站队列。
+
+        **不像答复那样必达**：连接堵住或没了就发不出去，这里只记一笔。`INPUT_RESUME`
+        尤其丢不得——丢了发送方会永远本端排队，所以调用方要照返回值决定要不要下轮再试。
+        """
         if self._access_point is None:
-            return
-        if not self._access_point.notify(connection, make_response(notice.value, key)):
-            _logger.info("输入流控通知没发出去 key=%s notice=%s", key, notice.value)
+            return False
+        if self._access_point.notify(connection, make_response(notice.value, key)):
+            return True
+        _logger.info("输入流控通知没发出去 key=%s notice=%s", key, notice.value)
+        return False
 
     def _resume_held(self, handler: RequestHandler) -> None:
         """把已经排空的连接放行：撤销 `INPUT_HOLD`。
 
         每轮问一次处理层"这个 key 排空了没"——**不问就不放行**，被 hold 的发送方会一直
-        本端排队。连接没了就顺势撤掉（没什么可放行的）。
+        本端排队。通知没发出去就留着，下一轮接着试。连接没了就顺势撤掉（没什么可放行的）。
         """
         if not self._held or self._access_point is None:
             return
@@ -418,9 +425,8 @@ class Daemon:
                 except Exception:
                     _logger.exception("查询输入队列水位失败（已隔离，循环继续）")
                     continue
-                if drained:
+                if drained and self._notice(connection, Notice.INPUT_RESUME, key):
                     keys.discard(key)
-                    self._notice(connection, Notice.INPUT_RESUME, key)
             if not keys:
                 del self._held[connection]
 

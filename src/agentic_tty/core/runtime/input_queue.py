@@ -3,7 +3,7 @@
 按块数计量等于没有上限——一块可以任意大（粘贴一整篇文本就是一块），所以这里按字节算，
 并给两个水位：
 
-- 越过**软水位**：字节照收，但调用方应让发送方本端排队（消费者据此下发 `InputHold`）。
+- 越过**软水位**：字节照收，但调用方应让发送方本端排队（消费者据此下发 hold 信号）。
 - 越过**硬上限**：拒收（`REJECTED`），调用方按违约处理（消费者据此断开那条连接）。
 
 **"给谁 Hold、断哪条连接"绑着外部连接，属于消费者**——这里只出机制（见架构设计 §12）。
@@ -55,7 +55,7 @@ class WriteQueue:
         return self._drained.is_set()
 
     def wait_drained(self, timeout: float | None = None) -> bool:
-        """阻塞等到队列回落到低水位（解除 InputHold 的时机）。"""
+        """阻塞等到队列回落到低水位（放行发送方的时机）。"""
         return self._drained.wait(timeout)
 
     def put(self, data: bytes) -> InputVerdict:

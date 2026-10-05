@@ -97,7 +97,7 @@ class SessionRunner:
 
     @property
     def input_depth(self) -> int:
-        """输入队列当前积压字节数（消费者据此决定要不要下发 InputHold）。"""
+        """输入队列当前积压字节数（消费者据此决定要不要让发送方本端排队）。"""
         return self._write_queue.depth_bytes
 
     @property
@@ -106,7 +106,7 @@ class SessionRunner:
         return self._write_queue.drained
 
     def wait_input_drained(self, timeout: float | None = None) -> bool:
-        """阻塞等到输入队列回落到低水位——解除 InputHold 的时机。"""
+        """阻塞等到输入队列回落到低水位——放行发送方的时机。"""
         return self._write_queue.wait_drained(timeout)
 
     def start(self) -> None:

@@ -478,6 +478,9 @@ class App:
         if uid is None:
             self._status.set("先选一个会话")
             return
+        if uid in self._held:
+            self._status.set("该会话输入越了软水位，本端排队中（等排空再灌）")
+            return
         blob = b"x" * _FLOOD_BYTES
         try:
             self._client.write(uid, blob)

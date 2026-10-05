@@ -571,3 +571,43 @@ def test_stop_signal_from_the_handler_ends_the_loop(tmp_path):
         handler.stop.request_stop()
         assert wait_for(lambda: not daemon.running)
     assert handler.shutdown_called
+
+
+def test_a_resume_that_could_not_be_sent_is_retried(tmp_path):
+    """放行通知没发出去就**留着下一轮再试**——丢了它，发送方会永远本端排队。"""
+    daemon, handler, _replies = make_daemon(tmp_path, mount_endpoint=False)
+    daemon.start()
+    try:
+        sent: list[object] = []
+
+        class _StubPoint:
+            """只认输入流控用到的那几个方法；`notify` 头一次故意发不出去。"""
+
+            def notify(self, connection: object, envelope: object) -> bool:
+                sent.append(envelope)
+                return len(sent) > 1
+
+            def is_open(self, connection: object) -> bool:
+                return True
+
+            def drop(self, connection: object) -> None:
+                pass
+
+            def stop_accepting(self) -> None:
+                pass
+
+            def close(self) -> None:
+                pass
+
+        daemon._access_point = _StubPoint()  # type: ignore[assignment]
+        connection = object()
+        daemon._held[connection] = {"uid-1"}
+        handler.drained = True
+
+        daemon._resume_held(handler)
+        assert daemon._held == {connection: {"uid-1"}}, "没发出去却把 hold 撤了"
+
+        daemon._resume_held(handler)
+        assert not daemon._held, "第二次发出去了，该撤掉"
+    finally:
+        daemon.stop(2)
