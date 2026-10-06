@@ -255,7 +255,7 @@ class ConDrvPty:
         env: Mapping[str, str] | None = None,
         job_handle: int | None = None,
     ) -> int:
-        """起 conhost 与子进程，返回子进程 pid。
+        """起子进程（伪终端由 `open()` 先建好），返回它的 pid。
 
         `job_handle` 在**创建子进程时**经 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 生效，
         所以子进程一条指令都没执行就已经在作业里——创建后再

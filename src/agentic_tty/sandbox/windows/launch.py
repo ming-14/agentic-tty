@@ -17,7 +17,7 @@ import subprocess
 from ...core.ports import SessionSpec
 from ...core.runtime.errors import HostSpawnError, MonitorUnavailable
 from ...core.runtime.local_pty.console import Console, ConsoleLauncher, require_primitive
-from .wsandbox import require_winsandbox
+from .wsandbox import SandboxInstance, SandboxProcess, require_winsandbox
 
 
 class SandboxTree:
@@ -27,7 +27,7 @@ class SandboxTree:
     静默当"确实没有子进程"会把"看不到"和"没有"混同（与 `ProcessTree` 同一条口径）。
     """
 
-    def __init__(self, process, instance) -> None:
+    def __init__(self, process: SandboxProcess, instance: SandboxInstance) -> None:
         self._process = process
         self._instance = instance
         self._root = process.pid
@@ -37,7 +37,7 @@ class SandboxTree:
         """强杀整棵作业树；实例已关时无事可做（那时树已经被收掉了）。"""
         if self._closed:
             return
-        self._process.terminate(1)
+        self._process.terminate()
 
     def descendants(self) -> tuple[int, ...]:
         """作业里**除根进程外**的成员 pid（升序）。"""
@@ -61,12 +61,13 @@ def make_launcher(*, workspace_write: bool = True) -> ConsoleLauncher:
         winsandbox = require_winsandbox()
         # 本平台的 PTY 原语：这里要的是它"先造 PTY、不认子进程"那一半
         console = require_primitive().ConDrvPty(cols=spec.cols, rows=spec.rows)
-        console.open()
         argv = list(spec.argv)
         workspace = os.path.abspath(spec.cwd) if spec.cwd else os.getcwd()
-        instance = winsandbox.SandboxInstance()
+        # 实例先建：它起不来时伪终端还没造，一行都不用收
+        instance: SandboxInstance = winsandbox.SandboxInstance()
         try:
-            process = instance.start_process(
+            console.open()
+            process: SandboxProcess = instance.start_process(
                 command_line=subprocess.list2cmdline(argv),
                 working_dir=workspace,
                 workspace_write=workspace_write,
@@ -77,7 +78,7 @@ def make_launcher(*, workspace_write: bool = True) -> ConsoleLauncher:
             )
             console.adopt(process.pid)
         except Exception as exc:
-            instance.shutdown()  # 起不来就把实例收掉，不留半截会话
+            instance.shutdown()  # 起不来就把实例与伪终端一起收掉，不留半截会话
             console.close()
             raise HostSpawnError(f"启动 sandbox_pty 会话失败 {argv}: {exc}") from exc
         return Console(pty=console, pid=process.pid, tree=SandboxTree(process, instance))

@@ -25,7 +25,7 @@ _logger = get_logger("daemon.assembly")
 
 
 def default_registry(config: DaemonConfig) -> SessionRegistry:
-    """默认的`标签 → 会话形态`：core 的内置形态 ＋ 沙箱。
+    """默认的 `标签 → 会话形态`：core 的内置形态 ＋ 沙箱。
 
     注册表的 `kinds` 是**替换**不是合并，所以必须自己把 `DEFAULT_KINDS` 铺进来；
     沙箱只往上面**加**一个标签，core 加了模式这里不会漏。

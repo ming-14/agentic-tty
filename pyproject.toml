@@ -31,8 +31,8 @@ timeout = 60
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-# vendor/ 下只有 pywezterm 是第三方产物；condrv / openpty 是自研模块，照常检查
-extend-exclude = ["vendor/pywezterm"]
+# vendor/ 下 pywezterm 与 winsandbox 是第三方产物；condrv / openpty 是自研模块，照常检查
+extend-exclude = ["vendor/pywezterm", "vendor/winsandbox"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "RUF"]

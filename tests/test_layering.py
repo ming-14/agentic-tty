@@ -328,7 +328,7 @@ def _top_level_imports(path: Path) -> list[str]:
 
 
 def test_vendored_modules_never_import_the_app():
-    """`vendor/` 里的自研模块是被依赖方，反向 import `agentic_tty` 就把层次倒过来了。
+    """`vendor/` 里的模块是被依赖方，反向 import `agentic_tty` 就把层次倒过来了。
 
     分层测试只扫 `src/agentic_tty`，够不到这里，所以单列一条。
     """

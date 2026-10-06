@@ -47,8 +47,9 @@ def _pty_class() -> type:
 class PtyPrimitive(Protocol):
     """本机伪终端原语的 IO 面：读写、退出码、排空、尺寸（`condrv` / `openpty` 各一份）。
 
-    原语还各自带平台特有的动作（Windows 的 `open` / `console` / `adopt`，见
-    `condrv.ConDrvPty`），只有需要外部 spawn 的调用方用得到。
+    原语还各自带这一层没有的动作：两个都有、签名差一个 `job_handle` 的 `spawn`，以及
+    Windows 独有的 `open` / `console` / `adopt`（见 `condrv.ConDrvPty`）——只有起会话的
+    调用方用得到。
     """
 
     def read(self, max_bytes: int = 65536, timeout: float | None = 0.2) -> bytes: ...
@@ -78,8 +79,9 @@ ConsoleLauncher = Callable[[SessionSpec], Console]
 
 
 def open_console(spec: SessionSpec) -> Console:
-    """自带路径：原语直接起子进程（Windows 经作业列表在**创建时**即入作业）。"""
-    pty: PtyPrimitive = _pty_class()(cols=spec.cols, rows=spec.rows)
+    """自带路径：原语自己起子进程（Windows 经作业列表在**创建时**即入作业）。"""
+    # 下面用的是原语自带的 `spawn`——它在 `PtyPrimitive` 之外，所以不按那个面标
+    pty = _pty_class()(cols=spec.cols, rows=spec.rows)
     argv = list(spec.argv)
     env = dict(spec.env)
     # 作业对象只有 Windows 有；Linux 侧进程树靠 /proc，原语不收句柄
