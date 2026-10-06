@@ -3,12 +3,14 @@
 模式标签由 example 自己定义（`ExampleMode`，pty / subprocess / localpty 的值直接取自
 core 的内置标签），core 只把 `SessionSpec.mode` 当开放字符串透传：
 
-- `fake`       → `ProcessSession` + `FakeHost`：脚本化的假子进程（双流、无终端模型）。
-- `pty`        → `TerminalSession` + `PtyHost`：pywezterm 宿主（PTY + 终端模型一体）。
-- `localpty`   → `TerminalSession` + `LocalPtyHost`：平台原语（condrv / openpty）配 pyte。
-- `subprocess` → `ProcessSession` + `SubprocessHost`：core.runtime 的真子进程宿主。
-- `sandbox_pty`→ `TerminalSession` + `LocalPtyHost`：同 `localpty`，但子进程关在受限令牌里
+- `fake`        → `ProcessSession` + `FakeHost`：脚本化的假子进程（双流、无终端模型）。
+- `pty`         → `TerminalSession` + `PtyHost`：pywezterm 宿主（PTY + 终端模型一体）。
+- `localpty`    → `TerminalSession` + `LocalPtyHost`：平台原语（condrv / openpty）配 pyte。
+- `subprocess`  → `ProcessSession` + `SubprocessHost`：core.runtime 的真子进程宿主。
+- `sandbox_pty` → `TerminalSession` + `LocalPtyHost`：同 `localpty`，但子进程关在受限令牌里
   （只有工作区与私有 temp 可写）。依赖 Windows 与 `vendor/winsandbox/`。
+- `sandbox_subprocess` → `ProcessSession` + `SubprocessHost`：同 `subprocess`，同样关在
+  受限令牌里。依赖同上。
 
 会话类与宿主工厂**成对**注册，因此选 `pty` 永远得到真 PTY，假宿主只由 `fake` 模式产生。
 `create_runtime` 再把注册表与驱动工厂一起装进 `Runtime`——验证台要的就是这个。
@@ -30,7 +32,12 @@ from ...core.runtime.runtime import RunnerFactory, Runtime
 from ...core.session.base import Session
 from ...core.session.registry import SessionKind, SessionRegistry
 from ...core.terminal.session import TerminalSession
-from ...sandbox import SANDBOX_PTY, pty_host_factory
+from ...sandbox import (
+    SANDBOX_PTY,
+    SANDBOX_SUBPROCESS,
+    process_host_factory,
+    pty_host_factory,
+)
 from .programs import PROGRAMS
 from .runtime_fakehost import FakeHost
 
@@ -49,6 +56,7 @@ class ExampleMode(StrEnum):
     LOCALPTY = ports.LOCALPTY
     SUBPROCESS = ports.SUBPROCESS
     SANDBOX_PTY = SANDBOX_PTY
+    SANDBOX_SUBPROCESS = SANDBOX_SUBPROCESS
 
 
 def session_spec(mode: ExampleMode, argv: Sequence[str], *, cwd: str | None = None) -> SessionSpec:
@@ -69,9 +77,9 @@ def _fake_host_factory(spec: SessionSpec) -> FakeHost:
 
 
 def create_registry(*, host_factory: HostFactory = create_host) -> SessionRegistry:
-    """装配示例层的注册表：五种模式各自声明会话类与宿主工厂。
+    """装配示例层的注册表：六种模式各自声明会话类与宿主工厂。
 
-    `fake` 与 `sandbox_pty` 带专属宿主工厂（假宿主 / 受限 spawn），其余用
+    `fake` 与两种沙箱模式带专属宿主工厂（假宿主 / 受限 spawn），其余用
     `host_factory`——默认是 core 自带的真宿主，测试可注入假宿主。
     """
     return SessionRegistry(
@@ -83,6 +91,7 @@ def create_registry(*, host_factory: HostFactory = create_host) -> SessionRegist
             ExampleMode.SUBPROCESS: SessionKind(ProcessSession),
             # 台子只有可写档；只读档是守护进程的 --sandbox-read-only，进程内这台没有那个开关
             ExampleMode.SANDBOX_PTY: SessionKind(TerminalSession, pty_host_factory()),
+            ExampleMode.SANDBOX_SUBPROCESS: SessionKind(ProcessSession, process_host_factory()),
         },
     )
 
@@ -105,7 +114,7 @@ def make_runner_factory(wakeup: Wakeup | None = None) -> RunnerFactory:
 def create_runtime(
     registry: SessionRegistry | None = None, *, wakeup: Wakeup | None = None
 ) -> Runtime:
-    """装配示例层的运行时：五种模式的注册表（可换）+ 小水位的驱动工厂。"""
+    """装配示例层的运行时：六种模式的注册表（可换）+ 小水位的驱动工厂。"""
     return Runtime(
         registry if registry is not None else create_registry(),
         runner_factory=make_runner_factory(wakeup),

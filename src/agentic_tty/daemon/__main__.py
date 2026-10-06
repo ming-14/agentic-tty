@@ -8,7 +8,7 @@
 运行时目录：`config.runtime_dir(实例名)`
 cwd：`--cwd`；不给 = 继承当前目录
 前台：默认；`--background` = 脱离终端在后台跑（父进程起完就退，服务由新进程做）
-sandbox_pty 的可写档：`--sandbox-read-only` = 工作区也只读（私有 temp 两档都有）
+沙箱会话的可写档：`--sandbox-read-only` = 工作区也只读（私有 temp 两档都有）
 """
 
 from __future__ import annotations

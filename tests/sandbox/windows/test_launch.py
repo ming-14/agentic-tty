@@ -1,7 +1,11 @@
-"""`sandbox_pty` 的端到端契约：真把子进程关进受限令牌里跑。
+"""沙箱两条 stdio 路径的端到端契约：真把子进程关进受限令牌里跑。
 
 需要 Windows、`vendor/winsandbox/`（`_native/*.pyd`）与 `vendor/condrv/OpenConsole.exe`
-——缺任一条即整体跳过。
+——缺任一条即整体跳过（双管道那条只用 winsandbox，但跟着整模块一起跳）。
+
+`make_launcher()`（`sandbox_pty`，伪终端）与 `make_process_launcher()`（`sandbox_subprocess`，
+双管道）共用同一份限制，所以写权限与进程树的用例只在伪终端那条路上写一遍；管道那条另测
+"两路各自独立、stdin 能进、关写端发 EOF"这些伪终端给不了的东西。
 
 **跑过这些用例之后本进程不再能被外部强杀**：winsandbox 每次 spawn 会给宿主进程的
 DACL 加两条 Deny（logon SID + Everyone，含 `PROCESS_TERMINATE`）。收尾仍走进程内
@@ -20,13 +24,14 @@ import pytest
 if sys.platform != "win32":
     pytest.skip("沙箱目前只有 Windows 实现", allow_module_level=True)
 
-from agentic_tty.core.ports import SessionSpec
+from agentic_tty.core.ports import SessionSpec, Stream
 from agentic_tty.core.runtime.errors import MonitorUnavailable
 from agentic_tty.core.runtime.local_pty.host import LocalPtyHost
 from agentic_tty.core.runtime.runtime import Runtime
+from agentic_tty.core.runtime.subprocess.pipes import ProcessConsole
 from agentic_tty.core.session.registry import DEFAULT_KINDS, SessionRegistry
-from agentic_tty.sandbox import SANDBOX_PTY, sandbox_kinds
-from agentic_tty.sandbox.windows.launch import make_launcher
+from agentic_tty.sandbox import SANDBOX_PTY, SANDBOX_SUBPROCESS, sandbox_kinds
+from agentic_tty.sandbox.windows.launch import make_launcher, make_process_launcher
 
 
 def _available() -> bool:
@@ -232,5 +237,96 @@ def test_mode_is_registered_and_journals_output(tmp_path):
             time.sleep(0.01)
         assert b"sandbox-hello" in session.read_all()
         assert "sandbox-hello" in session.screen_text()
+    finally:
+        runtime.close_all()
+
+
+# ── sandbox_subprocess：双管道那一半 ───────────────────────────────────
+
+
+def _pipes_host(tmp_path: Path, argv: list[str], *, workspace_write: bool = True) -> ProcessConsole:
+    spec = SessionSpec(mode=SANDBOX_SUBPROCESS, argv=argv, cwd=str(tmp_path))
+    return make_process_launcher(workspace_write=workspace_write)(spec)
+
+
+def _drain(pipes, deadline_s: float = _WAIT_LIMIT) -> tuple[bytes, bytes]:
+    """把两路都读到进程退出：管道读空**且**进程已退才算排空。"""
+    out = b""
+    err = b""
+    deadline = time.monotonic() + deadline_s
+    while time.monotonic() < deadline:
+        chunk = pipes.read(timeout=0.1)
+        if chunk:
+            out += chunk
+            continue
+        chunk = pipes.read_stderr(timeout=0.1)
+        if chunk:
+            err += chunk
+            continue
+        if pipes.try_wait() is not None:
+            break
+    return out, err
+
+
+def test_pipes_keep_the_two_streams_apart(tmp_path):
+    console = _pipes_host(tmp_path, ["cmd.exe", "/c", "echo out-line && echo err-line 1>&2"])
+    try:
+        out, err = _drain(console.pipes)
+        assert b"out-line" in out and b"err-line" not in out, out
+        assert b"err-line" in err and b"out-line" not in err, err
+        assert console.pipes.try_wait() == 0
+    finally:
+        console.tree.kill()
+        console.pipes.close()
+
+
+def test_stdin_reaches_the_child_and_closing_it_sends_eof(tmp_path):
+    console = _pipes_host(tmp_path, ["cmd.exe", "/c", "findstr ."])
+    try:
+        console.pipes.write(b"line-a\r\nline-b\r\n")
+        console.pipes.close_stdin()  # findstr 读到 EOF 才收工
+        out, _ = _drain(console.pipes)
+        assert b"line-a" in out and b"line-b" in out, out
+        assert console.pipes.try_wait() == 0
+    finally:
+        console.tree.kill()
+        console.pipes.close()
+
+
+def test_pipes_share_the_workspace_rule(tmp_path):
+    """受限约束与伪终端那条同源：工作区外照样写不进去。"""
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.mkdir()
+    target = outside / "outside.txt"
+    body = "import sys\n" + _WRITE_TRIED.format(target="sys.argv[1]")
+    argv = _script(tmp_path, "outside_pipe.py", body, str(target))
+    console = _pipes_host(tmp_path, argv)
+    try:
+        out, _ = _drain(console.pipes)
+        assert b"WRITE-DENIED PermissionError" in out, out
+        assert not target.exists()
+    finally:
+        console.tree.kill()
+        console.pipes.close()
+        shutil.rmtree(outside, ignore_errors=True)
+
+
+def test_process_mode_is_registered_and_journals_both_streams(tmp_path):
+    """按装配处的口径注册：双管道会话的字节分别进两路日志。"""
+    registry = SessionRegistry(kinds={**DEFAULT_KINDS, **sandbox_kinds()})
+    runtime = Runtime(registry)
+    spec = SessionSpec(
+        mode=SANDBOX_SUBPROCESS,
+        argv=["cmd.exe", "/c", "echo pipe-out && echo pipe-err 1>&2"],
+        cwd=str(tmp_path),
+    )
+    try:
+        session = runtime.create(spec)
+        deadline = time.monotonic() + _WAIT_LIMIT
+        while time.monotonic() < deadline and not session.drained:
+            runtime.pump_all()
+            time.sleep(0.01)
+        assert b"pipe-out" in session.read_all()
+        assert b"pipe-err" in session.read_all(Stream.STDERR)
     finally:
         runtime.close_all()

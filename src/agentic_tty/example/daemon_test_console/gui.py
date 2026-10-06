@@ -180,6 +180,7 @@ class App:
                 ("localpty", "localpty"),
                 ("subprocess", "subprocess"),
                 ("sandbox_pty", "sandbox_pty"),
+                ("sandbox_subprocess", "sandbox_subprocess"),
             ),
             value="pty",
             buttons=(("创建会话", self._create_session), ("关闭选中", self._close_selected)),

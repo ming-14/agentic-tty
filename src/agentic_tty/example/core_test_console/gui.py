@@ -11,10 +11,11 @@ Tk 队列，主线程只在 `_tick` 里 drain 这个廉价队列。因为 **Tk �
 线程、不能阻塞**，"阻塞等"只能交给后台线程。`_tick` 仍留一个兜底周期——进程退出、
 进程树变化这类没有读线程事件，只能靠它扫到。
 
-模式五选一：`fake` 跑示例假程序（命令框下拉即假程序名）；`pty` / `localpty` / `subprocess` /
-`sandbox_pty` 跑真命令（命令框直接输入，留空 = 平台默认 shell）。工作目录行定子进程在哪儿跑
-（`sandbox_pty` 下它同时就是可写区），留空 = 本进程当前目录。输入队列的**小水位**
-由 `sessions.create_runtime` 注入，好让 `HOLD` / `REJECTED` 在台子上碰得到。
+模式六选一：`fake` 跑示例假程序（命令框下拉即假程序名）；其余五种跑真命令（命令框直接输入，
+留空 = 平台默认 shell）——`pty` / `localpty` / `subprocess`，以及关在受限令牌里的
+`sandbox_pty` / `sandbox_subprocess`。工作目录行定子进程在哪儿跑（沙箱模式下它同时就是
+可写区），留空 = 本进程当前目录。输入队列的**小水位**由 `sessions.create_runtime` 注入，
+好让 `HOLD` / `REJECTED` 在台子上碰得到。
 
 本文件只做**编排**（会话、运行时驱动、唤醒线程、订阅、刷新节奏）：
 
@@ -121,6 +122,7 @@ class App:
                 ("localpty", ExampleMode.LOCALPTY.value),
                 ("subprocess", ExampleMode.SUBPROCESS.value),
                 ("sandbox_pty", ExampleMode.SANDBOX_PTY.value),
+                ("sandbox_subprocess", ExampleMode.SANDBOX_SUBPROCESS.value),
             ),
             value=ExampleMode.FAKE.value,
             command_values=sorted(PROGRAMS),
@@ -129,9 +131,7 @@ class App:
                 ("强杀", self._kill_selected),
                 ("关闭选中", self._close_selected),
             ),
-            hint=(
-                "（fake 下拉选假程序；pty / localpty / subprocess / sandbox_pty 直接输入真命令）"
-            ),
+            hint="（fake 下拉选假程序；沙箱模式跑真命令，需要 Windows 与 vendor/winsandbox）",
             on_mode_change=self._sync_command_box,
         )
         # 初始模式是 fake，命令框按它摆（默认 repl）——不能只等用户点单选才填

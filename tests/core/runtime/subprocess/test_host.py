@@ -129,7 +129,7 @@ def test_job_assignment_failure_falls_back_to_pid_termination(monkeypatch):
     """入作业失败后不能再拿作业当身份：空作业会让 kill 变成没杀、成员观测谎报空列表。"""
     if sys.platform != "win32":
         pytest.skip("作业对象是 Windows 专有路径")
-    from agentic_tty.core.runtime.subprocess import host as module
+    from agentic_tty.core.runtime.subprocess import pipes as module
 
     monkeypatch.setattr(module, "assign_job", lambda job, pid: False)
     host = SubprocessHost(_spec(_py("import time;time.sleep(30)")))

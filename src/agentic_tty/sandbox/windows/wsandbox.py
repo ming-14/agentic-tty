@@ -6,7 +6,8 @@
 
 惰性导入：别的模式不该被它拖住。
 
-扩展本身没有类型信息，用到的那一小块接口由下面两个 `Protocol` 说明（签名抄自 `_native`）。
+扩展本身没有类型信息，用到的那一小块接口由下面两个 `Protocol` 说明（签名抄自
+`_native`）。
 """
 
 from __future__ import annotations
@@ -33,6 +34,28 @@ class SandboxProcess(Protocol):
         """作业当前的成员 pid（含根进程）。"""
         ...
 
+    def poll_exit(self) -> tuple[int, str] | None:
+        """非阻塞查退出结果 `(退出码, 原因)`；仍在运行返回 `None`。"""
+        ...
+
+    @property
+    def stdin_handle(self) -> int:
+        """stdin 写端的句柄（只有 `pipe_stdio=True` 起出来的进程才有，否则 0）。
+
+        三个句柄的**所有权归调用方**：库不再关它们，用完自己关。
+        """
+        ...
+
+    @property
+    def stdout_handle(self) -> int:
+        """stdout 读端的句柄（见 `stdin_handle` 的所有权说明）。"""
+        ...
+
+    @property
+    def stderr_handle(self) -> int:
+        """stderr 读端的句柄（见 `stdin_handle` 的所有权说明）。"""
+        ...
+
 
 class SandboxInstance(Protocol):
     """一次会话的沙箱实例：受限 spawn ＋ 收尾（作业与目录授权一起收）。"""
@@ -44,6 +67,7 @@ class SandboxInstance(Protocol):
         workspace_write: bool = True,
         hpcon: int | None = None,
         env: dict[str, str] | None = None,
+        pipe_stdio: bool = False,
     ) -> SandboxProcess: ...
 
     def shutdown(self) -> None: ...
