@@ -71,6 +71,19 @@ def test_create_session_uses_the_working_directory_row(root, fake_registry, tmp_
     app.on_close()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows 路径的反斜杠")
+def test_command_box_keeps_backslashes(root, fake_registry):
+    """命令框里填的 Windows 路径原样进 `argv`——反斜杠是路径分隔符，不是转义符。"""
+    app = App(root)
+    app._runtime = Runtime(fake_registry)
+    app._bar.mode.set(ExampleMode.PTY.value)
+    app._bar.command.set(r"C:\Windows\System32\cmd.exe /c dir")
+    app._create_session()
+
+    assert app._runtime.list()[0].spec.argv == (r"C:\Windows\System32\cmd.exe", "/c", "dir")
+    app.on_close()
+
+
 def test_send_input_and_close(root):
     app = App(root)
     app._bar.command.set("repl")

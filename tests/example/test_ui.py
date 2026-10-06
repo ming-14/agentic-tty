@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 tk = pytest.importorskip("tkinter")
@@ -20,6 +22,7 @@ from agentic_tty.example.ui import (  # noqa: E402
     ViewRange,
     bars,
     set_text,
+    split_command,
     svg_size,
 )
 
@@ -30,6 +33,32 @@ _SVG_OTHER = '<svg width="320" height="204" viewBox="0 0 320 204"></svg>'
 def test_svg_size_reads_the_rendered_root():
     assert svg_size(_SVG) == (640, 408)
     assert svg_size('<svg viewBox="0 0 640 408">') is None
+
+
+def test_split_command_splits_on_whitespace():
+    """普通命令行按空白拆；双引号里的空格不断开——两个平台都是这么拆的。"""
+    assert split_command("cmd.exe /c dir") == ("cmd.exe", "/c", "dir")
+    assert split_command(r'"C:\Program Files\app.exe" /c dir') == (
+        r"C:\Program Files\app.exe",
+        "/c",
+        "dir",
+    )
+    assert split_command("") == ()
+    assert split_command("   ") == ()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="只有 Windows 的反斜杠才是路径分隔符")
+def test_split_command_keeps_windows_paths_whole():
+    """裸的 Windows 路径必须原样保留。
+
+    POSIX 的 `shlex` 把 `\\` 当转义符，会把它啃成 `C:WindowsSystem32cmd.exe`——进程起不来。
+    """
+    assert split_command(r"C:\Windows\System32\cmd.exe") == (r"C:\Windows\System32\cmd.exe",)
+    assert split_command(r"C:\Windows\System32\cmd.exe /c dir") == (
+        r"C:\Windows\System32\cmd.exe",
+        "/c",
+        "dir",
+    )
 
 
 def test_set_text_skips_identical_content(root):

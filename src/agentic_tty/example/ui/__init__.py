@@ -5,7 +5,14 @@
 """
 
 from .bars import DirBar, InputBar, SessionBar, SizeBar, StatusBar
-from .common import HINT_COLOR, ask_directory, ask_save, set_text, svg_size
+from .common import (
+    HINT_COLOR,
+    ask_directory,
+    ask_save,
+    set_text,
+    split_command,
+    svg_size,
+)
 from .notebook import DetailNotebook, Page, ViewRange
 from .screen import EXPORT_SCALE, FORMAT_IMAGE, FORMAT_SVG, ScreenView
 from .tree import SessionTree
@@ -28,5 +35,6 @@ __all__ = [
     "ask_directory",
     "ask_save",
     "set_text",
+    "split_command",
     "svg_size",
 ]

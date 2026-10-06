@@ -12,7 +12,6 @@
 
 from __future__ import annotations
 
-import shlex
 import threading
 import time
 import tkinter as tk
@@ -40,6 +39,7 @@ from ..ui import (
     StatusBar,
     ViewRange,
     ask_save,
+    split_command,
 )
 from . import address, lock
 from .client import Answer, Client
@@ -495,7 +495,7 @@ class App:
 
     def _create_session(self) -> None:
         text = self._bar.command.get().strip()
-        argv = list(shlex.split(text)) if text else []
+        argv = list(split_command(text))
         self._bar.command.delete(0, tk.END)
         op: dict = {"mode": self._bar.mode.get(), "argv": argv}
         directory = self._dir.directory

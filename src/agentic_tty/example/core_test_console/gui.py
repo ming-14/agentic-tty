@@ -26,7 +26,6 @@ Tk 队列，主线程只在 `_tick` 里 drain 这个廉价队列。因为 **Tk �
 
 from __future__ import annotations
 
-import shlex
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -56,6 +55,7 @@ from ..ui import (
     StatusBar,
     ViewRange,
     ask_save,
+    split_command,
 )
 from . import render
 from .programs import PROGRAMS
@@ -242,8 +242,8 @@ class App:
         text = self._bar.command.get().strip()
         mode = ExampleMode(self._bar.mode.get())
         if text:
-            # 命令按 shell 语义拆分，支持 "cmd.exe /c dir" 这种整串
-            argv = tuple(shlex.split(text)) or (text,)
+            # 支持 "cmd.exe /c dir" 这种整串；拆法按平台走，Windows 路径的反斜杠不能被吃
+            argv = split_command(text) or (text,)
         elif mode is ExampleMode.FAKE:
             messagebox.showwarning("创建会话", "fake 模式要选一个假程序")
             return

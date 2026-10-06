@@ -1,4 +1,4 @@
-"""纯 Tk 的小工具：等宽字体、提示色、整页文本、SVG 尺寸、另存为 / 选目录对话框。
+"""共享小工具：字体与颜色、整页文本、SVG 尺寸、另存为 / 选目录对话框、命令行拆分。
 
 这一格不认识 core——只吃字符串与字节，回调都由验证台注入。
 """
@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import re
+import shlex
+import sys
 import tkinter as tk
 from tkinter import filedialog
 from tkinter import font as tkfont
@@ -41,6 +43,42 @@ def svg_size(svg: str) -> tuple[int, int] | None:
     if width is None or height is None:
         return None
     return int(float(width.group(1))), int(float(height.group(1)))
+
+
+def split_command(text: str) -> tuple[str, ...]:
+    """命令框里的一行 → argv，按**本平台自己的规则**拆；拆不出东西返回空元组。
+
+    POSIX 的 `shlex` 把 `\\` 当转义符，Windows 路径 `C:\\Windows\\System32\\cmd.exe`
+    会被啃成 `C:WindowsSystem32cmd.exe`，进程根本起不来。Windows 上照 `CreateProcessW`
+    拆命令行用的那套规则走——两边各用各的，而不是拿一套规则套所有平台。
+    """
+    if not text.strip():
+        return ()
+    if sys.platform == "win32":
+        return _split_windows(text)
+    return tuple(shlex.split(text))
+
+
+def _split_windows(text: str) -> tuple[str, ...]:
+    """`CommandLineToArgvW`：与 `CreateProcessW` 拆命令行用的是同一套规则。"""
+    import ctypes
+    from ctypes import wintypes
+
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    shell32.CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+    shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
+    kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
+    kernel32.LocalFree.restype = wintypes.HLOCAL
+
+    count = ctypes.c_int(0)
+    argv = shell32.CommandLineToArgvW(text, ctypes.byref(count))
+    if not argv:
+        raise OSError(ctypes.get_last_error(), f"CommandLineToArgvW 失败: {text!r}")
+    try:
+        return tuple(argv[index] for index in range(count.value))
+    finally:
+        kernel32.LocalFree(argv)
 
 
 def ask_save(
