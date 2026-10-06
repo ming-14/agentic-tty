@@ -75,14 +75,11 @@ def create_registry(
     *,
     host_factory: HostFactory = create_host,
     journal_budget_bytes: int = EXAMPLE_JOURNAL_BUDGET,
-    sandbox_workspace_write: bool = True,
 ) -> SessionRegistry:
     """装配示例层的注册表：五种模式各自声明会话类与宿主工厂。
 
     `fake` 与 `sandbox_pty` 带专属宿主工厂（假宿主 / 受限 spawn），其余用
     `host_factory`——默认是 core 自带的真宿主，测试可注入假宿主。
-
-    `sandbox_workspace_write` 是部署级开关（请求侧没有这个字段），台子上一次定死。
     """
     return SessionRegistry(
         host_factory,
@@ -91,9 +88,8 @@ def create_registry(
             ExampleMode.PTY: SessionKind(TerminalSession),
             ExampleMode.LOCALPTY: SessionKind(TerminalSession),
             ExampleMode.SUBPROCESS: SessionKind(ProcessSession),
-            ExampleMode.SANDBOX_PTY: SessionKind(
-                TerminalSession, pty_host_factory(workspace_write=sandbox_workspace_write)
-            ),
+            # 台子只有可写档；只读档是守护进程的 --sandbox-read-only，进程内这台没有那个开关
+            ExampleMode.SANDBOX_PTY: SessionKind(TerminalSession, pty_host_factory()),
         },
         journal_budget_bytes=journal_budget_bytes,
     )
@@ -115,15 +111,10 @@ def make_runner_factory(wakeup: Wakeup | None = None) -> RunnerFactory:
 
 
 def create_runtime(
-    registry: SessionRegistry | None = None,
-    *,
-    wakeup: Wakeup | None = None,
-    sandbox_workspace_write: bool = True,
+    registry: SessionRegistry | None = None, *, wakeup: Wakeup | None = None
 ) -> Runtime:
     """装配示例层的运行时：五种模式的注册表（可换）+ 小水位的驱动工厂。"""
     return Runtime(
-        registry
-        if registry is not None
-        else create_registry(sandbox_workspace_write=sandbox_workspace_write),
+        registry if registry is not None else create_registry(),
         runner_factory=make_runner_factory(wakeup),
     )
