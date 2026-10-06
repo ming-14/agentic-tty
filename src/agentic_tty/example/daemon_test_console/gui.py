@@ -146,8 +146,11 @@ class App:
     def _apply_state(self, state: str) -> None:
         if state == "connected":
             self._connected = True
-            self._sub_mid = None  # 新连接上不存在旧订阅，留着 mid 只会把推送认错
-            self._held.clear()  # 同理：新连接上不存在旧的 hold
+            # 订阅 mid / 被 hold 的会话 / 在飞请求都绑在**旧连接**上：新连接上它们一概作废
+            # （旧 mid 不会再有答复——mid 在进程内不重复，留在 `_want` 里就是只增不减）
+            self._sub_mid = None
+            self._held.clear()
+            self._want.clear()
             self._daemon_state.set("已连接，取状态中…")  # pid / uptime 等第一条答复
             return
         self._connected = False

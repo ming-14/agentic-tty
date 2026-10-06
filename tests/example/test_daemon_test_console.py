@@ -1,8 +1,7 @@
 """守护进程验证台的端到端：真守护进程 ＋ 真接入点 ＋ 真协议客户端。
 
 请求处理层用的是**守护进程自带的默认那份**（`daemon/kernel.py`），它**真的驱动 core**——
-所以这条链上没有一个替身：`pipe://` 监听、解帧、core 操作、答复回写全是真的。界面
-（`gui.py`）不在这里测，它只负责把答复翻译成界面状态。
+所以这条链上没有一个替身：`pipe://` 监听、解帧、core 操作、答复回写全是真的。
 """
 
 from __future__ import annotations
@@ -320,5 +319,34 @@ def test_gui_requests_a_bitmap_in_image_format(running, root):
             return any(app._screen.canvas.type(i) == "image" for i in app._screen.canvas.find_all())
 
         assert _pump(root, painted, timeout=40.0), "画布上没出现位图"
+    finally:
+        app.on_close()
+
+
+def test_reconnect_drops_the_old_connections_pending_requests(running, root):
+    """断线重连后，旧连接上「已发出、答复还没回来」的请求不再留在 `_want` 里。
+
+    旧 mid 不会再有答复（mid 在进程内不重复），留着就是只增不减；重连后的请求照常认领。
+    """
+    pytest.importorskip("resvg_py")
+    from agentic_tty.example.daemon_test_console.gui import App
+
+    app = App(root, running)
+    try:
+        assert _pump(root, lambda: app._connected), "界面没连上守护进程"
+
+        # 模拟一条"发出去之后连接就断了"的请求：记进表里，答复永远不会来
+        app._want["dead"] = ("status", None)
+
+        app._client._connection.close()  # 读线程随即置回未连接，连接线程随后重连
+
+        assert _pump(root, lambda: app._client.connected and "dead" not in app._want), (
+            "重连后旧连接的请求项还留在表里"
+        )
+
+        # 新连接上的请求照常认领——是换一份表，不是把认领机制废掉
+        app._ask(Command.DAEMON_STATUS, "status")
+        assert len(app._want) == 1
+        assert _pump(root, lambda: not app._want), "重连后的请求没等到答复"
     finally:
         app.on_close()
