@@ -404,7 +404,8 @@ class App:
         if terminal is not None:
             # 尺寸框跟着会话走：留着上一个会话的宽高，点「应用」会改到别的会话头上
             self._size.set_size(terminal.cols, terminal.rows)
-            self._tabs.show_page(Page.SCREEN)
+            # 这里**不切页**：屏幕页默认 `image` 格式（走 `render_image`），切过去要把整个
+            # 字体库拉进内存（约 650 MB）。看哪页由用户点。
 
     # ════════════════════════════════════════════════════════════
     # 刷新

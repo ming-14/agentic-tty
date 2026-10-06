@@ -225,6 +225,31 @@ def test_view_page_reads_its_range(root, fake_registry, monkeypatch):
     app.on_close()
 
 
+def test_selecting_a_session_keeps_the_current_page(root, fake_registry, monkeypatch):
+    """选中会话**不切页**：用户看哪页就留在哪页。
+
+    「屏幕」页默认 `image` 格式（走 `render_image`），一被切过去就要把整个字体库拉进
+    内存（约 650 MB）——选中一个会话不该顺手把位图渲染出来。
+    """
+    rendered: list[float] = []
+    monkeypatch.setattr(
+        render, "screen_png", lambda session, scale: (rendered.append(scale), b"")[1]
+    )
+
+    app = App(root)
+    app._runtime = Runtime(fake_registry)
+    app._tabs.show_page(Page.VIEW)
+
+    session = fake_registry.create(session_spec(ExampleMode.PTY, ("x",)))
+    app._refresh_tree()
+    app._select_session(session.uid)
+
+    assert app._tabs.current is Page.VIEW
+    assert rendered == []
+    fake_registry.close(session.uid)
+    app.on_close()
+
+
 def test_only_the_visible_page_is_rendered(root, fake_registry, monkeypatch):
     """看哪页取哪页：屏幕页不可见时，一次栅格化都不该发生。"""
     painted: list[float] = []
@@ -316,6 +341,7 @@ def test_screen_views_for_real_pty(root):
     )
     app._selected = session.uid
     app._sync_pty_controls()
+    app._tabs.show_page(Page.SCREEN)  # 选中会话不切页，屏幕页要自己切过去
 
     # 真起进程 + 真 PTY，满载时会慢——预算给宽一点，别把它当断言失败
     assert _pump_until(root, app, session.uid, lambda s: s.drained, timeout=20.0)
