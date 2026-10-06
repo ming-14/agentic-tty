@@ -6,5 +6,6 @@ vendor/winsandbox/
 vendor/condrv/OpenConsole.exe
 __pycache__/
 *.pyc
+*.egg-info/
 .pytest_cache/
 .workbuddy/
