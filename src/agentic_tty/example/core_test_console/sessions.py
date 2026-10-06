@@ -54,9 +54,13 @@ class ExampleMode(StrEnum):
     SANDBOX_PTY = SANDBOX_PTY
 
 
-def session_spec(mode: ExampleMode, argv: Sequence[str]) -> SessionSpec:
-    """把示例层的模式与命令行拼成 core 的会话描述。"""
-    return SessionSpec(mode=mode.value, argv=tuple(argv))
+def session_spec(mode: ExampleMode, argv: Sequence[str], *, cwd: str | None = None) -> SessionSpec:
+    """把示例层的模式、命令行与工作目录拼成 core 的会话描述。
+
+    `cwd` 是子进程的工作目录；沙箱模式它同时就是工作区（唯一可写的那个目录）。留空 =
+    各宿主自己退到当前目录。
+    """
+    return SessionSpec(mode=mode.value, argv=tuple(argv), cwd=cwd)
 
 
 def _fake_host_factory(spec: SessionSpec) -> FakeHost:

@@ -1,4 +1,4 @@
-"""纯 Tk 的小工具：等宽字体、提示色、整页文本、SVG 尺寸、另存为对话框。
+"""纯 Tk 的小工具：等宽字体、提示色、整页文本、SVG 尺寸、另存为 / 选目录对话框。
 
 这一格不认识 core——只吃字符串与字节，回调都由验证台注入。
 """
@@ -53,3 +53,8 @@ def ask_save(
         initialfile=initial,
         filetypes=[filetype],
     )
+
+
+def ask_directory(*, title: str, initial: str = "") -> str:
+    """选目录对话框；用户取消返回空串（只让选已存在的目录）。"""
+    return filedialog.askdirectory(title=title, initialdir=initial or None, mustexist=True)

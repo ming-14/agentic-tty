@@ -38,6 +38,12 @@ def test_subprocess_mode_uses_process_session():
     assert isinstance(_create(ExampleMode.SUBPROCESS, ("cmd",)), ProcessSession)
 
 
+def test_session_spec_carries_the_working_directory():
+    """工作目录是会话级参数：给了就传下去，没给就是 `None`（宿主自己退到当前目录）。"""
+    assert session_spec(ExampleMode.PTY, ("cmd",)).cwd is None
+    assert session_spec(ExampleMode.PTY, ("cmd",), cwd="/work").cwd == "/work"
+
+
 def test_sandbox_mode_uses_terminal_session():
     """沙箱与 `localpty` 同形（终端会话），但标签是装配处并进来的，不在 core 内置里。
 

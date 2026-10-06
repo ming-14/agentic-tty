@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -228,6 +229,57 @@ def test_gui_reports_a_failed_subscribe(running: tuple[str, DaemonConfig], root)
         assert _pump(root, lambda: "订阅失败" in page_text()), page_text()
     finally:
         app.on_close()
+
+
+def test_create_session_runs_in_the_requested_directory(running, tmp_path):
+    """请求里的 `cwd` 真的落到子进程上——不是记下来就算。"""
+    program = "import os; print(os.getcwd(), flush=True)"
+    with _Session(address(running)) as session:
+        created = session.data(
+            Command.CREATE_SESSION,
+            {
+                "mode": "subprocess",
+                "argv": [sys.executable, "-u", "-c", program],
+                "cwd": str(tmp_path),
+            },
+        )
+        uid = SessionRef.from_dict(created["session"]).uid
+        seen = b""
+        deadline = time.monotonic() + _DEADLINE
+        while time.monotonic() < deadline:
+            answer = session.ask(Command.READ_SESSION, {"uid": uid, "mode": "bytes"})
+            assert answer.chunk is not None
+            seen = answer.chunk.data
+            if seen.strip():
+                break
+
+    printed = seen.decode(errors="replace").strip()
+    assert printed, "子进程没有打印工作目录"
+    assert os.path.samefile(printed, tmp_path), printed
+
+
+def test_gui_sends_the_working_directory(running, root, tmp_path, monkeypatch):
+    """台子填了工作目录就带上它；留空则不带（让守护进程用自己启动时那个目录）。"""
+    pytest.importorskip("resvg_py")
+    from agentic_tty.example.daemon_test_console.gui import App  # 拉 tkinter + resvg，按需导入
+
+    app = App(root, running)
+    sent: list[dict] = []
+    try:
+        monkeypatch.setattr(
+            app._client, "request", lambda command, op=None: (sent.append(op), "mid")[1]
+        )
+        app._dir.set_directory(str(tmp_path))
+        app._create_session()
+        app._dir.set_directory(None)
+        app._create_session()
+    finally:
+        app.on_close()
+
+    assert sent == [
+        {"mode": "pty", "argv": [], "cwd": str(tmp_path)},
+        {"mode": "pty", "argv": []},
+    ]
 
 
 def test_read_image_over_the_wire(running):

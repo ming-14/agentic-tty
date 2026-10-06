@@ -13,10 +13,12 @@ from agentic_tty.example.ui import (  # noqa: E402
     FORMAT_IMAGE,
     FORMAT_SVG,
     DetailNotebook,
+    DirBar,
     Page,
     ScreenView,
     SessionTree,
     ViewRange,
+    bars,
     set_text,
     svg_size,
 )
@@ -38,6 +40,27 @@ def test_set_text_skips_identical_content(root):
     assert page.get("1.0", "end-1c") == "hello"
     set_text(page, "next")
     assert page.get("1.0", "end-1c") == "next"
+
+
+def _browse_button(bar: DirBar) -> ttk.Button:
+    return next(w for w in bar.winfo_children() if isinstance(w, ttk.Button))
+
+
+def test_dir_bar_keeps_what_the_picker_returned(root, monkeypatch):
+    """工作目录行：留空 = 默认目录（`None`），选中的目录原样留着，取消不改动。"""
+    bar = DirBar(root)
+    assert bar.directory is None
+
+    monkeypatch.setattr(bars, "ask_directory", lambda **_kwargs: "/picked/dir")
+    _browse_button(bar).invoke()
+    assert bar.directory == "/picked/dir"
+
+    monkeypatch.setattr(bars, "ask_directory", lambda **_kwargs: "")
+    _browse_button(bar).invoke()
+    assert bar.directory == "/picked/dir"
+
+    bar.set_directory("   ")
+    assert bar.directory is None  # 只剩空白也算留空
 
 
 def test_detail_notebook_holds_pages_and_their_states(root):

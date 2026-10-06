@@ -52,6 +52,25 @@ def test_create_session_pumps_to_completion(root):
     app.on_close()
 
 
+def test_create_session_uses_the_working_directory_row(root, fake_registry, tmp_path):
+    """工作目录行的值进 `SessionSpec.cwd`；留空就是 `None`（宿主退到当前目录）。
+
+    `sandbox_pty` 下这个字段同时就是可写区，所以它必须真的到位，不能只存在界面上。
+    """
+    app = App(root)
+    app._runtime = Runtime(fake_registry)
+    app._bar.mode.set(ExampleMode.PTY.value)
+    app._bar.command.set("x")
+
+    app._dir.set_directory(str(tmp_path))
+    app._create_session()
+    app._dir.set_directory(None)
+    app._create_session()
+
+    assert [session.spec.cwd for session in app._runtime.list()] == [str(tmp_path), None]
+    app.on_close()
+
+
 def test_send_input_and_close(root):
     app = App(root)
     app._bar.command.set("repl")

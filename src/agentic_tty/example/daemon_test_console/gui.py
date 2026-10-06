@@ -30,6 +30,7 @@ from ..ui import (
     EXPORT_SCALE,
     HINT_COLOR,
     DetailNotebook,
+    DirBar,
     InputBar,
     Page,
     ScreenView,
@@ -185,6 +186,8 @@ class App:
             hint="（留空 = 平台默认 shell）",
             padding=(8, 0),
         )
+
+        self._dir = DirBar(self._root, hint="（留空 = 守护进程的启动目录）")
 
         body = ttk.Panedwindow(self._root, orient=tk.HORIZONTAL)
         body.pack(fill=tk.BOTH, expand=True, padx=8, pady=(4, 6))
@@ -494,11 +497,11 @@ class App:
         text = self._bar.command.get().strip()
         argv = list(shlex.split(text)) if text else []
         self._bar.command.delete(0, tk.END)
-        self._ask(
-            Command.CREATE_SESSION,
-            "create",
-            {"mode": self._bar.mode.get(), "argv": argv},
-        )
+        op: dict = {"mode": self._bar.mode.get(), "argv": argv}
+        directory = self._dir.directory
+        if directory is not None:
+            op["cwd"] = directory
+        self._ask(Command.CREATE_SESSION, "create", op)
 
     def _close_selected(self) -> None:
         if self._selected is not None:

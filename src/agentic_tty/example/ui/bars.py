@@ -1,4 +1,4 @@
-"""四条横向控件：顶栏（模式 + 命令 + 动作）、输入行、尺寸行、状态栏。"""
+"""五条横向控件：顶栏（模式 + 命令 + 动作）、工作目录行、输入行、尺寸行、状态栏。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import tkinter as tk
 from collections.abc import Callable, Sequence
 from tkinter import ttk
 
-from .common import HINT_COLOR
+from .common import HINT_COLOR, ask_directory
 
 
 class SessionBar(ttk.Frame):
@@ -48,6 +48,44 @@ class SessionBar(ttk.Frame):
         if hint:
             ttk.Label(self, text=hint, foreground=HINT_COLOR).pack(side=tk.LEFT, padx=6)
         self.pack(fill=tk.X)
+
+
+class DirBar(ttk.Frame):
+    """工作目录行：路径框 + 浏览。**留空 = 用默认目录**（谁起会话就由谁的当前目录说了算）。
+
+    路径原样往下传：相对路径的语义由起会话的那一侧解释，这里不替它猜。
+    """
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        *,
+        hint: str = "",
+        padding: tuple[int, int] = (8, 0),
+    ) -> None:
+        super().__init__(parent, padding=padding)
+        ttk.Label(self, text="工作目录").pack(side=tk.LEFT)
+        self.path = ttk.Entry(self)
+        self.path.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(self, text="浏览…", command=self._browse).pack(side=tk.LEFT, padx=(4, 0))
+        if hint:
+            ttk.Label(self, text=hint, foreground=HINT_COLOR).pack(side=tk.LEFT, padx=6)
+        self.pack(fill=tk.X)
+
+    def _browse(self) -> None:
+        """选目录；取消（空串）就保持原样。"""
+        chosen = ask_directory(title="选择工作目录", initial=self.directory or "")
+        if chosen:
+            self.set_directory(chosen)
+
+    @property
+    def directory(self) -> str | None:
+        """填了就是它（去掉首尾空白）；留空 = `None`，交给默认目录。"""
+        return self.path.get().strip() or None
+
+    def set_directory(self, value: str | None) -> None:
+        self.path.delete(0, tk.END)
+        self.path.insert(0, value or "")
 
 
 class InputBar(ttk.Frame):

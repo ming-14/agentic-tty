@@ -13,6 +13,7 @@ from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, TypeVar, cast
 
 from ..core.errors import CoreError, OffsetTrimmed
@@ -471,14 +472,19 @@ class KernelHandler:
 
     def _create(self, envelope: Envelope, op: Mapping[str, Any]) -> Envelope:
         argv = tuple(str(item) for item in (op.get("argv") or ())) or default_shell()
+        # 请求里给了就在那儿跑；没给 = 继承守护进程的目录（守护进程自己的目录由入口的
+        # `--cwd` 定，见 `daemon/__main__.py`）
+        cwd = _text(op, "cwd") or None
+        # 请求不可信，目录先在这儿挡住：不存在的路径到了宿主那层才炸，错误码是宿主各自
+        # 的异常；而且沙箱那种"起会话会授权目录"的模式，宁可在做任何副作用前就拒掉。
+        if cwd is not None and not Path(cwd).is_dir():
+            raise MessageError(f"工作目录不存在或不是目录: {cwd}")
         spec = SessionSpec(
             mode=_text(op, "mode"),
             argv=argv,
             cols=_number(op, "cols") or 80,
             rows=_number(op, "rows") or 24,
-            # 请求里给了就在那儿跑；没给 = 继承守护进程的目录（守护进程自己的目录由入口的
-            # `--cwd` 定，见 `daemon/__main__.py`）
-            cwd=_text(op, "cwd") or None,
+            cwd=cwd,
         )
         # 会话与驱动一起建、一起起；起不来时 Runtime 自己把会话收掉，这里不留半个。
         session = self._runtime.create(spec)

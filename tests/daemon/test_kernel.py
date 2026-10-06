@@ -414,6 +414,70 @@ def test_host_spawn_failure_is_expected_not_a_stack(caplog):
     assert not any(record.exc_info for record in caplog.records), "可预期的失败不该记堆栈"
 
 
+def test_create_passes_the_working_directory_to_the_spec(tmp_path):
+    """请求里的工作目录原样落到 `SessionSpec`——各宿主都靠它定位。"""
+    seen: list[SessionSpec] = []
+    registry = SessionRegistry(lambda spec: (seen.append(spec), FakeHost(spec, FakeProgram()))[1])
+    handler = KernelHandler(registry)
+
+    reply = handler.handle(
+        WireRequest(
+            make_request(
+                Command.CREATE_SESSION,
+                op={"mode": PTY, "argv": ["cmd"], "cwd": str(tmp_path)},
+            ),
+            _CONNECTION,
+        )
+    )
+
+    assert reply is not None
+    assert seen[0].cwd == str(tmp_path)
+    assert len(handler._runtime.list()) == 1
+
+
+def test_create_rejects_a_missing_working_directory(tmp_path):
+    """请求不可信：目录不存在就不建会话，也不该让它走到宿主那层才报错。"""
+    registry = SessionRegistry(lambda spec: FakeHost(spec, FakeProgram()))
+    handler = KernelHandler(registry)
+    gone = tmp_path / "nope"
+
+    reply = handler.handle(
+        WireRequest(
+            make_request(
+                Command.CREATE_SESSION,
+                op={"mode": PTY, "argv": ["cmd"], "cwd": str(gone)},
+            ),
+            _CONNECTION,
+        )
+    )
+
+    assert reply is not None
+    assert reply.answer.payload.output["error"]["code"] == "MessageError"
+    assert handler._runtime.list() == []
+
+
+def test_create_rejects_a_working_directory_that_is_a_file(tmp_path):
+    """路径存在但不是目录，照样得拒——`cwd` 得是目录。"""
+    file_path = tmp_path / "file.txt"
+    file_path.write_text("x")
+    registry = SessionRegistry(lambda spec: FakeHost(spec, FakeProgram()))
+    handler = KernelHandler(registry)
+
+    reply = handler.handle(
+        WireRequest(
+            make_request(
+                Command.CREATE_SESSION,
+                op={"mode": PTY, "argv": ["cmd"], "cwd": str(file_path)},
+            ),
+            _CONNECTION,
+        )
+    )
+
+    assert reply is not None
+    assert reply.answer.payload.output["error"]["code"] == "MessageError"
+    assert handler._runtime.list() == []
+
+
 class _FakeRunner:
     """只回答"排空了没"——测映射不需要真的起写线程。"""
 

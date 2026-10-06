@@ -33,6 +33,8 @@ class Command(StrEnum):
     SHUTDOWN_DAEMON = "shutdown_daemon"
     """让守护进程收尾退出（进程级：连着它的消费者的会话都会结束）。"""
     CREATE_SESSION = "create_session"
+    """`op` 的 `cwd` 定会话在哪儿跑（沙箱模式下它同时就是工作区）；不给 = 守护进程自己的
+    目录。**必须是已存在的目录**——服务端会拒掉坏的 `cwd`，不让它到宿主那层才炸。"""
     CLOSE_SESSION = "close_session"
     LIST_SESSIONS = "list_sessions"
     READ_SESSION = "read_session"

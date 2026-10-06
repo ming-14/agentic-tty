@@ -12,7 +12,8 @@ Tk 队列，主线程只在 `_tick` 里 drain 这个廉价队列。因为 **Tk �
 进程树变化这类没有读线程事件，只能靠它扫到。
 
 模式五选一：`fake` 跑示例假程序（命令框下拉即假程序名）；`pty` / `localpty` / `subprocess` /
-`sandbox_pty` 跑真命令（命令框直接输入，留空 = 平台默认 shell）。输入队列的**小水位**
+`sandbox_pty` 跑真命令（命令框直接输入，留空 = 平台默认 shell）。工作目录行定子进程在哪儿跑
+（`sandbox_pty` 下它同时就是可写区），留空 = 本进程当前目录。输入队列的**小水位**
 由 `sessions.create_runtime` 注入，好让 `HOLD` / `REJECTED` 在台子上碰得到。
 
 本文件只做**编排**（会话、运行时驱动、唤醒线程、订阅、刷新节奏）：
@@ -45,6 +46,7 @@ from ...foundation.logs import get_logger
 from ..ui import (
     EXPORT_SCALE,
     DetailNotebook,
+    DirBar,
     InputBar,
     Page,
     ScreenView,
@@ -134,6 +136,8 @@ class App:
         )
         # 初始模式是 fake，命令框按它摆（默认 repl）——不能只等用户点单选才填
         self._sync_command_box()
+
+        self._dir = DirBar(self._root, hint="（留空 = 本进程当前目录）")
 
         body = ttk.Panedwindow(self._root, orient=tk.HORIZONTAL)
         body.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 6))
@@ -246,7 +250,7 @@ class App:
         else:
             argv = default_shell()  # 留空 = 平台默认 shell
         try:
-            session = self._runtime.create(session_spec(mode, argv))
+            session = self._runtime.create(session_spec(mode, argv, cwd=self._dir.directory))
         except Exception as exc:  # 宿主起不来：Runtime 不会留残骸
             messagebox.showerror("创建会话失败", str(exc))
             return
