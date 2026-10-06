@@ -18,7 +18,7 @@ pytest.importorskip("mcp")
 from mcp.server.mcpserver.exceptions import ToolError
 
 from agentic_tty.example.core_test_mcp_server.core import Core
-from agentic_tty.example.core_test_mcp_server.server import build_server
+from agentic_tty.example.core_test_mcp_server.server import _READ_DELAY, build_server
 from agentic_tty.protocol.contracts.daemon_ipc import SessionRef
 
 _TIMEOUT = 20.0
@@ -82,6 +82,11 @@ async def _scenario() -> None:
             return "mark-core" in _text(await server.call_tool("read_terminal", {"uid": uid}))
 
         assert await _pump_until(core, echoed), "屏幕上没出现敲进去的那条命令"
+
+        # 读之前固定等 `_READ_DELAY`：刚写进去的输入得先被终端吃掉（只验下界，不脆）
+        started = time.monotonic()
+        await server.call_tool("read_terminal", {"uid": uid})
+        assert time.monotonic() - started >= _READ_DELAY
 
         listed = json.loads(_text(await server.call_tool("list_terminals", {})))
         assert [session["uid"] for session in listed] == [uid]

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -27,6 +28,8 @@ _MODE = "pty"
 """只提供 pywezterm 版的终端会话——别的模式不进这个台子。"""
 _UID_CHARS = 4
 """工具面上露出的 uid 长度。"""
+_READ_DELAY = 0.03
+"""读屏前的等待，秒——刚写进去的输入得先被终端吃掉，否则读到的是上一屏。"""
 
 
 def build_server(supervisor: Supervisor) -> MCPServer:
@@ -65,7 +68,9 @@ def build_server(supervisor: Supervisor) -> MCPServer:
     @server.tool()
     def read_terminal(uid: str) -> str:
         """取终端当前可见屏幕的文本。"""
-        op = {"uid": _resolve(supervisor, uid), "mode": ReadMode.SCREEN.value}
+        full = _resolve(supervisor, uid)
+        time.sleep(_READ_DELAY)  # 等守护进程把刚写进去的输入吃掉
+        op = {"uid": full, "mode": ReadMode.SCREEN.value}
         return str(_call(supervisor, Command.READ_SESSION, op).get("text") or "")
 
     @server.tool()

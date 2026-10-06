@@ -27,6 +27,8 @@ _MODE = "pty"
 """只提供 pywezterm 版的终端会话——别的模式不进这个台子。"""
 _UID_CHARS = 4
 """工具面上露出的 uid 长度。"""
+_READ_DELAY = 0.03
+"""读屏前的等待，秒——刚写进去的输入得先被终端吃掉，否则读到的是上一屏。"""
 
 
 def build_server(core: Core) -> MCPServer:
@@ -75,7 +77,9 @@ def build_server(core: Core) -> MCPServer:
     @_guarded
     async def read_terminal(uid: str) -> str:
         """取终端当前可见屏幕的文本。"""
-        return core.read(_resolve(core, uid))
+        full = _resolve(core, uid)
+        await asyncio.sleep(_READ_DELAY)  # 让出去，推进循环好把刚写进去的输入吃掉
+        return core.read(full)
 
     @server.tool()
     @_guarded
