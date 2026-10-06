@@ -34,9 +34,6 @@ from ...sandbox import SANDBOX_PTY, pty_host_factory
 from .programs import PROGRAMS
 from .runtime_fakehost import FakeHost
 
-EXAMPLE_JOURNAL_BUDGET = 1 << 20
-"""示例层用更小的日志预算，便于观察裁剪与重建。"""
-
 EXAMPLE_INPUT_MAX_BYTES = 4 << 10
 EXAMPLE_INPUT_HIGH_WATERMARK = 2 << 10
 EXAMPLE_INPUT_LOW_WATERMARK = 512
@@ -71,11 +68,7 @@ def _fake_host_factory(spec: SessionSpec) -> FakeHost:
     return FakeHost(spec, program)
 
 
-def create_registry(
-    *,
-    host_factory: HostFactory = create_host,
-    journal_budget_bytes: int = EXAMPLE_JOURNAL_BUDGET,
-) -> SessionRegistry:
+def create_registry(*, host_factory: HostFactory = create_host) -> SessionRegistry:
     """装配示例层的注册表：五种模式各自声明会话类与宿主工厂。
 
     `fake` 与 `sandbox_pty` 带专属宿主工厂（假宿主 / 受限 spawn），其余用
@@ -91,7 +84,6 @@ def create_registry(
             # 台子只有可写档；只读档是守护进程的 --sandbox-read-only，进程内这台没有那个开关
             ExampleMode.SANDBOX_PTY: SessionKind(TerminalSession, pty_host_factory()),
         },
-        journal_budget_bytes=journal_budget_bytes,
     )
 
 
