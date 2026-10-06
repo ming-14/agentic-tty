@@ -51,6 +51,8 @@ _ALLOWED_THIRD_PARTY: dict[str, frozenset[str]] = {
     "fastapi": frozenset({"web"}),
     "starlette": frozenset({"web"}),
     "uvicorn": frozenset({"web"}),
+    # MCP SDK 只允许出现在 MCP 验证台
+    "mcp": frozenset({"example/daemon_test_mcp_server"}),
 }
 
 
@@ -225,6 +227,9 @@ _SPAWN_MODULES = frozenset({"subprocess", "multiprocessing"})
 _SPAWN_CALLS = ("subprocess.", "os.system", "os.popen", "os.spawn", "os.exec", "os.fork")
 """启动进程的调用——消费者格一个都不许有。"""
 
+_SPAWN_EXEMPT = frozenset({"daemon_test_mcp_server"})
+"""自己管守护进程的台子：它由 MCP 客户端拉起，用户没法先手动起守护进程。"""
+
 
 def _called_name(node: ast.expr) -> str | None:
     """把调用目标还原成点号链：`subprocess.Popen(...)` → `"subprocess.Popen"`。"""
@@ -247,6 +252,8 @@ def test_consumer_packages_never_spawn_processes():
     """
     violations: list[str] = []
     for path in sorted((SRC / "example").rglob("*.py")):
+        if path.relative_to(SRC / "example").parts[0] in _SPAWN_EXEMPT:
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
