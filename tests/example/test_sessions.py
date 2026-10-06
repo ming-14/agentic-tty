@@ -8,8 +8,8 @@ from agentic_tty.core.errors import CoreError
 from agentic_tty.core.process.session import ProcessSession
 from agentic_tty.core.session.registry import SessionRegistry
 from agentic_tty.core.terminal.session import TerminalSession
-from agentic_tty.example.core_test.runtime_fakehost import FakeHost, FakeProgram
-from agentic_tty.example.core_test.sessions import ExampleMode, create_registry, session_spec
+from agentic_tty.example.core_test_console.runtime_fakehost import FakeHost, FakeProgram
+from agentic_tty.example.core_test_console.sessions import ExampleMode, create_registry, session_spec
 
 
 def _registry() -> SessionRegistry:

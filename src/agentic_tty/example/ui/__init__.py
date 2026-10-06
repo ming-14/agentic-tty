@@ -1,7 +1,7 @@
 """示例层的共享 Tk 控件：验证台长得一样的那部分。
 
 **这一格不认识 core**——只吃字符串与字节，会话数据由验证台渲染好再喂进来
-（`core_test/render.py`）。所以换任何一台台子都能直接用。
+（`core_test_console/render.py`）。所以换任何一台台子都能直接用。
 """
 
 from .bars import InputBar, SessionBar, SizeBar, StatusBar

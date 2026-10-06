@@ -171,14 +171,14 @@ def test_nothing_depends_on_example():
 def test_example_client_stays_a_pure_client():
     """客户端那一格只许依赖公共层，也不许伸手进别的格——包级规则管不住它，单列一条。
 
-    `core_test/` 跳过：它是**进程内**的台，直连核心层是它的职责，import core 是本职。
-    `daemon_test/` **不跳过**——它是**跨进程**的纯消费者，这条断言真的管得住它。
+    `core_test_console/` 跳过：它是**进程内**的台，直连核心层是它的职责，import core 是本职。
+    `daemon_test_console/` **不跳过**——它是**跨进程**的纯消费者，这条断言真的管得住它。
     `ui/` 是**共用格**（纯 Tk，不认识任何层），台子引用它不算跨格违规。
     """
     for package in sorted((SRC / "example").iterdir()):
         if not package.is_dir() or not (package / "__init__.py").exists():
             continue
-        if package.name == "core_test":  # 进程内的台：直连核心层是它的职责
+        if package.name == "core_test_console":  # 进程内的台：直连核心层是它的职责
             continue
         for path in sorted(package.rglob("*.py")):
             deps, _ = _deps(path)

@@ -5,11 +5,23 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from agentic_tty.config.constants import PREFIX, endpoint_name, lock_name, runtime_dir
+from agentic_tty.config.constants import (
+    PREFIX,
+    endpoint_name,
+    lock_name,
+    resolve_endpoint,
+    runtime_dir,
+)
 
 
 def test_endpoint_name_carries_the_prefix():
     assert endpoint_name("daemon-test") == f"{PREFIX}daemon-test"
+
+
+def test_resolve_endpoint_prefers_the_explicit_name():
+    """显式给的是**完整名字**（不加前缀）；没给才由实例名派生。"""
+    assert resolve_endpoint("daemon-test") == f"{PREFIX}daemon-test"
+    assert resolve_endpoint("daemon-test", "my-pipe") == "my-pipe"
 
 
 def test_runtime_dir_is_per_instance(tmp_path: Path, monkeypatch):

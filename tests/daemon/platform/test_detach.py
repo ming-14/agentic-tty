@@ -65,6 +65,22 @@ def test_replays_the_entry_verbatim(fake_popen):
     assert kwargs["close_fds"] is True
 
 
+def test_replays_instance_and_endpoint_options(fake_popen):
+    """`--name` / `--listen` 也要原样带到新进程——漏一个就起了另一个实例 / 端点。"""
+    raw = [BACKGROUND_FLAG, "--name", "foo", "--listen", "my-pipe"]
+    detach([arg for arg in raw if arg != BACKGROUND_FLAG])
+    argv, _kwargs = fake_popen.calls[0]
+    assert argv == [
+        sys.executable,
+        "-m",
+        "agentic_tty.daemon",
+        "--name",
+        "foo",
+        "--listen",
+        "my-pipe",
+    ]
+
+
 def test_starts_a_new_session_on_posix(fake_popen):
     if _IS_WINDOWS:
         pytest.skip("POSIX 专属：start_new_session 是 setsid 的等价物")

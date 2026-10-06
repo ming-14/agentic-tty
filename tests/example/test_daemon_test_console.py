@@ -19,8 +19,8 @@ import pytest
 from agentic_tty.config import DaemonConfig
 from agentic_tty.daemon.kernel import KernelHandler
 from agentic_tty.daemon.server import Daemon
-from agentic_tty.example.daemon_test import address
-from agentic_tty.example.daemon_test.client import Answer, Client
+from agentic_tty.example.daemon_test_console import address
+from agentic_tty.example.daemon_test_console.client import Answer, Client
 from agentic_tty.protocol.contracts.daemon_ipc import Command, Event, SessionRef
 from agentic_tty.protocol.response import data_of, error_of, is_ok
 
@@ -200,7 +200,7 @@ def test_gui_turns_answers_into_widget_state(running: tuple[str, DaemonConfig], 
     """
     pytest.importorskip("resvg_py")
     name = running
-    from agentic_tty.example.daemon_test.gui import App  # 拉 tkinter + resvg，按需导入
+    from agentic_tty.example.daemon_test_console.gui import App  # 拉 tkinter + resvg，按需导入
 
     app = App(root, name)
     try:
@@ -216,7 +216,7 @@ def test_gui_turns_answers_into_widget_state(running: tuple[str, DaemonConfig], 
 def test_gui_reports_a_failed_subscribe(running: tuple[str, DaemonConfig], root):
     """订阅失败要在页里明说——它和推送共用同一个 `mid`，不能抛在驱动循环里被吞掉。"""
     pytest.importorskip("resvg_py")
-    from agentic_tty.example.daemon_test.gui import App
+    from agentic_tty.example.daemon_test_console.gui import App
     from agentic_tty.example.ui import Page
 
     app = App(root, running)
@@ -255,7 +255,7 @@ def test_read_image_over_the_wire(running):
 def test_gui_requests_a_bitmap_in_image_format(running, root):
     """「屏幕」页切到 `image`：位图经一次请求往返拿回来，铺到画布上。"""
     pytest.importorskip("resvg_py")
-    from agentic_tty.example.daemon_test.gui import App
+    from agentic_tty.example.daemon_test_console.gui import App
     from agentic_tty.example.ui import FORMAT_IMAGE, Page
 
     app = App(root, running)

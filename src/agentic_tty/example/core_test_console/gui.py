@@ -1,6 +1,6 @@
 """示例层的 Tk 管理台：接入核心层接口，手动起会话、看屏幕、发输入。
 
-    python -m agentic_tty.example.core_test
+    python -m agentic_tty.example.core_test_console
 
 **Tk 的 mainloop 就是所有者线程**：界面回调与 `Runtime.pump_all()` 都跑在同一
 线程，所以这里不需要任何锁——这正是核心层"单线程所有者"约定带来的好处。
@@ -59,7 +59,7 @@ from . import render
 from .programs import PROGRAMS
 from .sessions import EXAMPLE_INPUT_MAX_BYTES, ExampleMode, create_runtime, session_spec
 
-_logger = get_logger("example.core_test.gui")
+_logger = get_logger("example.core_test_console.gui")
 
 _TICK_MS = 20
 # 每多少个 tick 刷一次界面（20ms × 8 ≈ 160ms，避免文本频繁重排）

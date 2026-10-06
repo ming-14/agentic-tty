@@ -15,11 +15,11 @@ from uuid import uuid4
 
 import pytest
 
-from agentic_tty.config import DaemonConfig
+from agentic_tty.config import DaemonConfig, endpoint_name
 from agentic_tty.daemon.errors import AlreadyRunning, DaemonError, NotStarted
 from agentic_tty.daemon.handler import Delivery, InputAction, Reply, RequestHandler, StopSignal
 from agentic_tty.daemon.server import Daemon, SubmitOutcome
-from agentic_tty.transport.pipe import PipeTransport
+from agentic_tty.transport.pipe import PipeTransport, pipe_address
 from agentic_tty.transport.stream import parse_address
 
 _DEADLINE = 5.0
@@ -164,6 +164,23 @@ def test_address_is_empty_when_no_access_point_is_mounted(tmp_path):
     """不挂接入点（进程内嵌入 / 单测）时没有地址——由 `Daemon` 一处算，别处不预测。"""
     daemon, _handler, _replies = make_daemon(tmp_path, mount_endpoint=False)
     assert daemon.address == ""
+
+
+def test_address_derives_from_the_name_without_an_explicit_endpoint(tmp_path):
+    config = DaemonConfig(
+        name="inst", directory=tmp_path / "run", write_log_file=False
+    )
+    daemon = Daemon(config, _fake, on_reply=lambda _r: None)
+    assert daemon.address == pipe_address(endpoint_name("inst"), tmp_path / "run")
+
+
+def test_address_uses_the_explicit_endpoint_when_given(tmp_path):
+    """`endpoint` 是**完整管道名**（不加前缀），且不改变运行时目录 / 锁名。"""
+    config = DaemonConfig(
+        name="inst", endpoint="my-pipe", directory=tmp_path / "run", write_log_file=False
+    )
+    daemon = Daemon(config, _fake, on_reply=lambda _r: None)
+    assert daemon.address == pipe_address("my-pipe", tmp_path / "run")
 
 
 def test_second_daemon_on_the_same_lock_is_rejected(tmp_path):

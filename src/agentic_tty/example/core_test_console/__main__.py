@@ -1,6 +1,6 @@
 """核心层测试台入口：Tk 管理台。
 
-    python -m agentic_tty.example.core_test
+    python -m agentic_tty.example.core_test_console
 
 管理台直接接核心层（起会话 / 看屏幕 / 发输入 / 观测进程树），驱动由 core.runtime 的
 `SessionRunner` 代劳。界面细节见 `gui.py`。

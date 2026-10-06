@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from ...config import endpoint_name, lock_name, runtime_dir
+from ...config import lock_name, resolve_endpoint, runtime_dir
 from ...transport.pipe import pipe_address
 
 
-def address(instance: str) -> str:
-    """接入点地址——与守护进程那边用同一套命名算出来。"""
-    return pipe_address(endpoint_name(instance), runtime_dir(instance))
+def address(instance: str, endpoint: str | None = None) -> str:
+    """接入点地址——与守护进程那边用同一套命名算出来（`endpoint` 显式给完整管道名时优先）。"""
+    return pipe_address(resolve_endpoint(instance, endpoint), runtime_dir(instance))
 
 
 def lock(instance: str) -> str:

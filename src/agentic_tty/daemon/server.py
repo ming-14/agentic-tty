@@ -30,7 +30,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
-from ..config import DaemonConfig, endpoint_name, lock_name, runtime_dir
+from ..config import DaemonConfig, lock_name, resolve_endpoint, runtime_dir
 from ..foundation.instance import InstanceLock
 from ..foundation.logs import add_rotating_file, get_logger
 from ..protocol.contracts.daemon_ipc import Notice
@@ -98,7 +98,9 @@ class Daemon:
         self._dir = config.directory or runtime_dir(config.name)
         # 地址只在这里算一次：装配层与处理层都不再预测它（预测错了只会静默连不上）。
         self._address = (
-            pipe_address(endpoint_name(config.name), self._dir) if config.mount_endpoint else ""
+            pipe_address(resolve_endpoint(config.name, config.endpoint), self._dir)
+            if config.mount_endpoint
+            else ""
         )
 
         self._lock: InstanceLock | None = None
@@ -143,7 +145,7 @@ class Daemon:
 
     @property
     def address(self) -> str:
-        """接入点地址（由实例名派生）；不挂接入点时为空串。"""
+        """接入点地址（`endpoint` 优先，否则由实例名派生）；不挂接入点为空串。"""
         return self._address
 
     def request_stop(self) -> None:

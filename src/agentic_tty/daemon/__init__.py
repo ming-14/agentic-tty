@@ -4,5 +4,6 @@
 但**接缝上的报文对它不透明**——它只把请求转给请求处理层，把答复转回去。
 
 `assembly.py` 把 core 装进默认请求处理层（`kernel.py`）再交给 `Daemon`；
-`python -m agentic_tty.daemon` 直接起（实例名取自 `config`，`--cwd` 只决定从哪儿起）。
+`python -m agentic_tty.daemon` 直接起（实例名与端点名可由 `--name` / `--listen` 给，不给就取
+`config` 里的默认；`--cwd` 只决定从哪儿起）。
 """

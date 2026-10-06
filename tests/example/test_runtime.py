@@ -12,7 +12,7 @@ from agentic_tty.core.runtime.input_queue import InputVerdict
 from agentic_tty.core.runtime.runner import SessionRunner
 from agentic_tty.core.runtime.runtime import Runtime
 from agentic_tty.core.session.registry import SessionRegistry
-from agentic_tty.example.core_test.runtime_fakehost import FakeHost, FakeProgram
+from agentic_tty.example.core_test_console.runtime_fakehost import FakeHost, FakeProgram
 
 
 def _runtime(program: FakeProgram | None = None) -> Runtime:

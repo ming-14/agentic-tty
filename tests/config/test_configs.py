@@ -1,4 +1,4 @@
-"""各层的配置对象：**字段默认值就是配置常量**——没有别的地方可配。"""
+"""各层的配置对象：**字段默认值就是配置常量**，入口 / 调用方可以覆盖实例名与端点名。"""
 
 from dataclasses import FrozenInstanceError
 
@@ -8,9 +8,17 @@ from agentic_tty.config import DEFAULT_INSTANCE, ConsumerConfig, DaemonConfig
 
 
 def test_name_comes_from_the_constant():
-    """名字来自常量——两端同一个，且没有别的地方可配。"""
+    """名字来自常量——两端同一个。"""
     assert DaemonConfig().name == DEFAULT_INSTANCE
     assert ConsumerConfig().name == DEFAULT_INSTANCE
+
+
+def test_endpoint_defaults_to_derived_from_name():
+    """端点默认留空 = 由实例名派生；两端都能显式覆盖（`--listen`）。"""
+    assert DaemonConfig().endpoint is None
+    assert ConsumerConfig().endpoint is None
+    assert DaemonConfig(name="foo", endpoint="my-pipe").endpoint == "my-pipe"
+    assert ConsumerConfig(name="foo", endpoint="my-pipe").endpoint == "my-pipe"
 
 
 def test_daemon_defaults_are_the_assembly_parameters():

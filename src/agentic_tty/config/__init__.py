@@ -2,14 +2,21 @@
 
 - `constants` —— 名字前缀 / 默认实例名，以及由它们派生的**本机实例命名**（运行时目录 /
   端点名 / 锁名）。**命名只此一处**，两端各算一次必然一致。
-- `daemon` / `consumer` —— 各层的配置对象：字段默认值**就是配置常量**（写死在代码里），
-  随装配注入，**不从任何地方加载**。
+- `daemon` / `consumer` —— 各层的配置对象：字段默认值**就是配置常量**；入口解析命令行后
+  把实例名与端点名填进去，随装配注入。`config/` 自身不解析、不加载任何东西。
 
 **它只压在 `foundation` 上**，所以 `transport` 够不着它——端点名由调用方给**完整名字**，
 `transport` 不再自带前缀。
 """
 
-from .constants import DEFAULT_INSTANCE, PREFIX, endpoint_name, lock_name, runtime_dir
+from .constants import (
+    DEFAULT_INSTANCE,
+    PREFIX,
+    endpoint_name,
+    lock_name,
+    resolve_endpoint,
+    runtime_dir,
+)
 from .consumer import ConsumerConfig
 from .daemon import DaemonConfig
 
@@ -20,5 +27,6 @@ __all__ = [
     "DaemonConfig",
     "endpoint_name",
     "lock_name",
+    "resolve_endpoint",
     "runtime_dir",
 ]

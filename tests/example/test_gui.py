@@ -14,9 +14,9 @@ from agentic_tty.core.ports import Stream  # noqa: E402
 from agentic_tty.core.runtime.input_queue import InputVerdict  # noqa: E402
 from agentic_tty.core.runtime.runtime import Runtime  # noqa: E402
 from agentic_tty.core.terminal.session import TerminalSession  # noqa: E402
-from agentic_tty.example.core_test import render  # noqa: E402
-from agentic_tty.example.core_test.gui import App  # noqa: E402
-from agentic_tty.example.core_test.sessions import (  # noqa: E402
+from agentic_tty.example.core_test_console import render  # noqa: E402
+from agentic_tty.example.core_test_console.gui import App  # noqa: E402
+from agentic_tty.example.core_test_console.sessions import (  # noqa: E402
     ExampleMode,
     make_runner_factory,
     session_spec,

@@ -31,7 +31,7 @@ from ...transport.errors import ConnectionClosed, TransportError
 from ...transport.pipe import PipeTransport
 from ...transport.stream import Connection, parse_address
 
-_logger = get_logger("example.daemon_test.client")
+_logger = get_logger("example.daemon_test_console.client")
 
 _POLL = 0.05
 """recv 的等待粒度；也是读线程"该收工了吗"的响应粒度。"""

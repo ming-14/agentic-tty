@@ -1,14 +1,14 @@
-"""会话 → 文本的渲染（`core_test/render.py`）：纯函数，不碰 Tk。"""
+"""会话 → 文本的渲染（`core_test_console/render.py`）：纯函数，不碰 Tk。"""
 
 from __future__ import annotations
 
 from agentic_tty.core.ports import Stream
 from agentic_tty.core.process.session import ProcessSession
 from agentic_tty.core.runtime.runner import Exited, Ingested, StreamEof
-from agentic_tty.example.core_test import render
-from agentic_tty.example.core_test.programs import PROGRAMS
-from agentic_tty.example.core_test.runtime_fakehost import FakeHost
-from agentic_tty.example.core_test.sessions import ExampleMode, session_spec
+from agentic_tty.example.core_test_console import render
+from agentic_tty.example.core_test_console.programs import PROGRAMS
+from agentic_tty.example.core_test_console.runtime_fakehost import FakeHost
+from agentic_tty.example.core_test_console.sessions import ExampleMode, session_spec
 
 
 def test_view_text_of_a_process_session_is_both_streams(fake_registry):

@@ -8,7 +8,7 @@ from agentic_tty.core.process.session import ProcessSession
 from agentic_tty.core.session.base import Session
 from agentic_tty.core.session.registry import SessionRegistry
 from agentic_tty.core.session.state import SessionState
-from agentic_tty.example.core_test.runtime_fakehost import FakeHost, FakeProgram
+from agentic_tty.example.core_test_console.runtime_fakehost import FakeHost, FakeProgram
 
 
 def _registry(program: FakeProgram | None = None) -> SessionRegistry:

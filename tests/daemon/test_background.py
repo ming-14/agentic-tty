@@ -13,10 +13,11 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
-from agentic_tty.config import DEFAULT_INSTANCE, endpoint_name, runtime_dir
+from agentic_tty.config import DEFAULT_INSTANCE, PREFIX, endpoint_name, runtime_dir
 from agentic_tty.protocol.contracts.daemon_ipc import Command
 from agentic_tty.protocol.envelope import Envelope, from_json, make_request, to_json
 from agentic_tty.protocol.frame import ControlFrame, FrameReader, encode_control
@@ -120,6 +121,47 @@ def test_background_daemon_runs_untethered(runtime: Path):
         connection.close()
 
     _wait_gone(address)
+
+
+@pytest.mark.timeout(60)
+def test_custom_name_and_listen(runtime: Path):
+    """`--name` 定实例（锁 / 目录），`--listen` 定接入点——后者是完整管道名，不与前者互相派生。"""
+    env = _env(runtime)
+    name = f"custom-{uuid4().hex[:8]}"
+    endpoint = f"custom-pipe-{uuid4().hex[:8]}"
+    address = pipe_address(endpoint, runtime_dir(name))
+
+    parent = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "agentic_tty.daemon",
+            "--background",
+            "--name",
+            name,
+            "--listen",
+            endpoint,
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert parent.returncode == 0, parent.stderr
+
+    connection = _connection(address)
+    try:
+        connection.send(encode_control(to_json(make_request(Command.DAEMON_STATUS))))
+        assert data_of(_read_one(connection))["endpoint"] == address
+
+        connection.send(encode_control(to_json(make_request(Command.SHUTDOWN_DAEMON))))
+        _read_one(connection)
+    finally:
+        connection.close()
+
+    _wait_gone(address)
+    # 运行时目录（锁 / 日志）按 `--name` 落，与端点名无关
+    assert (runtime / f"{PREFIX}{name}").is_dir()
 
 
 @pytest.mark.timeout(60)

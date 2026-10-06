@@ -1,7 +1,7 @@
 """默认请求处理层（`daemon/kernel.py`）：订阅推送的**成帧**。
 
 推送不经过接入点，用假宿主直接驱动 `poll` / `on_reply` 就够——不必起真管道，也不必碰
-原生扩展。命令那半边由端到端测试（`tests/example/test_daemon_test.py`）覆盖。
+原生扩展。命令那半边由端到端测试（`tests/example/test_daemon_test_console.py`）覆盖。
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from agentic_tty.core.session.subscription import Subscription
 from agentic_tty.daemon.access_point import ByteChunk, WireRequest
 from agentic_tty.daemon.handler import Delivery, InputAction, Reply
 from agentic_tty.daemon.kernel import KernelHandler, _frame_bytes, _Sub
-from agentic_tty.example.core_test.runtime_fakehost import FakeHost, FakeProgram
+from agentic_tty.example.core_test_console.runtime_fakehost import FakeHost, FakeProgram
 from agentic_tty.protocol.contracts.daemon_ipc import Command, Event, ReadMode
 from agentic_tty.protocol.envelope import Envelope, make_request
 

@@ -1,7 +1,7 @@
 """配置常量：**两端必须一致的那些名字**。
 
 同一个实例在操作系统里叫什么，由这几个常量派生——两端各算一次必然一致，所以不需要
-任何"发现"协议，也不需要谁发布状态。
+任何"发现"协议，也不需要谁发布状态。接入点名也可以显式给（`--listen`），不给就走派生。
 """
 
 from __future__ import annotations
@@ -42,6 +42,11 @@ def endpoint_name(instance: str) -> str:
     `transport` 直接拿它当 `pipe://` 的 netloc——那边不认识命名习惯，只认完整名字。
     """
     return f"{PREFIX}{instance}"
+
+
+def resolve_endpoint(instance: str, endpoint: str | None = None) -> str:
+    """接入点用的**完整名字**：显式给的优先（完整名字，不加前缀）；没给就按实例名派生。"""
+    return endpoint if endpoint is not None else endpoint_name(instance)
 
 
 def lock_name(instance: str, directory: Path) -> str:

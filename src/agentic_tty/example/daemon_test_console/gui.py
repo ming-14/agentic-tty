@@ -1,6 +1,6 @@
-"""守护进程的验证台：界面与 `core_test/gui.py` 同款，差别只在**挂载点**。
+"""守护进程的验证台：界面与 `core_test_console/gui.py` 同款，差别只在**挂载点**。
 
-- `core_test/gui.py`：直接驱动核心层（自己装 core + runtime），不套守护进程。
+- `core_test_console/gui.py`：直接驱动核心层（自己装 core + runtime），不套守护进程。
 - 本文件：**连守护进程**——界面里没有一行碰 core，一切数据都经接入点往返。
 
 每个动作都是一次请求：`Client.request()` 投出去，答复由后台读线程投进队列，界面在 tick
@@ -43,7 +43,7 @@ from ..ui import (
 from . import address, lock
 from .client import Answer, Client
 
-_logger = get_logger("example.daemon_test.gui")
+_logger = get_logger("example.daemon_test_console.gui")
 
 _TICK_MS = 20
 # 每多少个 tick 刷一次界面（20ms × 8 ≈ 160ms）；刷新 = 几次请求往返。
@@ -72,10 +72,10 @@ def _size_suffix(data: dict) -> str:
 class App:
     """验证台：把守护进程的答复翻译成界面状态。"""
 
-    def __init__(self, root: tk.Tk, instance: str) -> None:
+    def __init__(self, root: tk.Tk, instance: str, endpoint: str | None = None) -> None:
         self._root = root
-        # 名字由入口从配置常量取来；地址与锁名都按它算
-        self._address = address(instance)
+        # 名字由入口从配置取来；地址按实例名与端点算，锁名只按实例名
+        self._address = address(instance, endpoint)
         self._lock = lock(instance)
         self._answers: Queue[Answer] = Queue()
         # 请求 → (用途, 目标会话)：答复靠 mid 认领；带会话是为了丢掉"已经切走的那一个"
@@ -647,10 +647,10 @@ class App:
         self._root.destroy()
 
 
-def main(instance: str) -> int:
+def main(instance: str, endpoint: str | None = None) -> int:
     root = tk.Tk()
     try:
-        app = App(root, instance)  # 连不上会抛 TransportError，交给入口去报
+        app = App(root, instance, endpoint)  # 连不上会抛 TransportError，交给入口去报
     except Exception:
         root.destroy()  # 别留一个空窗口
         raise

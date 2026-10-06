@@ -1,4 +1,4 @@
-"""协议客户端（`example/daemon_test/client.py`）：连上、收帧、掉线。
+"""协议客户端（`example/daemon_test_console/client.py`）：连上、收帧、掉线。
 
 客户端只碰公共层，所以这里用一个**裸监听点**当对端——不必起守护进程，也不必碰 Tk。
 """
@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable
 from uuid import uuid4
 
-from agentic_tty.example.daemon_test.client import Client
+from agentic_tty.example.daemon_test_console.client import Client
 from agentic_tty.transport.pipe import PipeTransport, pipe_address
 from agentic_tty.transport.stream import parse_address
 

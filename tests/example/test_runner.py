@@ -10,7 +10,7 @@ from agentic_tty.core.runtime.input_queue import InputVerdict
 from agentic_tty.core.runtime.runner import Exited, Ingested, SessionRunner, StreamEof
 from agentic_tty.core.session.registry import SessionRegistry
 from agentic_tty.core.session.state import SessionState
-from agentic_tty.example.core_test.runtime_fakehost import FakeHost, FakeProgram
+from agentic_tty.example.core_test_console.runtime_fakehost import FakeHost, FakeProgram
 
 
 def _open(program: FakeProgram, mode: str = SUBPROCESS):
