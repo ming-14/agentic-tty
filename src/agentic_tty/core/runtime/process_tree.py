@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import signal
 import sys
+from typing import Protocol
 
 from ...foundation.logs import get_logger
 from .errors import MonitorUnavailable
@@ -323,6 +324,20 @@ def _windows_resume_process(pid: int) -> None:
             more = kernel32.Thread32Next(snap, ctypes.byref(entry))
     finally:
         kernel32.CloseHandle(snap)
+
+
+class Tree(Protocol):
+    """一棵会话进程树：强杀、释放与成员枚举。
+
+    端口只要求这三件事。`ProcessTree` 是自带实现（Windows 作业对象 / Linux 进程组）；
+    沙箱那边作业归沙箱运行时，由它给出一份同形状的实现。
+    """
+
+    def kill(self) -> None: ...
+
+    def close(self) -> None: ...
+
+    def descendants(self) -> tuple[int, ...]: ...
 
 
 class ProcessTree:

@@ -12,7 +12,8 @@ import time
 import pytest
 
 from agentic_tty.core.ports import LOCALPTY, SessionSpec
-from agentic_tty.core.runtime.local_pty.host import LocalPtyHost, require_primitive
+from agentic_tty.core.runtime.local_pty.console import require_primitive
+from agentic_tty.core.runtime.local_pty.host import LocalPtyHost
 
 
 def _primitive_available() -> bool:

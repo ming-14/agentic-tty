@@ -36,6 +36,13 @@ class DaemonConfig:
     inbound_maxsize: int = 256
     """入站队列长度（消费者线程投递、所有者线程消费）；满了投递方等待，背压传回消费者。"""
 
+    sandbox_workspace_write: bool = True
+    """沙箱会话的可写档：`True` = 连工作区一起可写，`False` = 工作区也只读。
+
+    两档都拿到一个私有的可写 temp（见 `vendor/README.md`）。它是**部署级**开关——
+    会话请求（`SessionSpec`）里没有对应字段，同一个守护进程上所有沙箱会话一个档。
+    """
+
     write_log_file: bool = True
     """是否同时写轮转日志文件。"""
     log_max_bytes: int = 4 << 20

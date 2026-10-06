@@ -17,8 +17,7 @@ from uuid import uuid4
 import pytest
 
 from agentic_tty.config import DaemonConfig
-from agentic_tty.daemon.kernel import KernelHandler
-from agentic_tty.daemon.server import Daemon
+from agentic_tty.daemon.assembly import build
 from agentic_tty.example.daemon_test_console import address
 from agentic_tty.example.daemon_test_console.client import Answer, Client
 from agentic_tty.protocol.contracts.daemon_ipc import Command, Event, SessionRef
@@ -37,11 +36,8 @@ def running(tmp_path, monkeypatch) -> Iterator[str]:
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
     name = f"test-{uuid4().hex[:8]}"
-    config = DaemonConfig(name=name, write_log_file=False, tick_interval=0.001)
-    daemon = Daemon(
-        config,
-        lambda endpoint: KernelHandler(endpoint=endpoint),
-    )
+    # 走真装配（`assembly.build`）：这条链上连请求处理层都是默认那一份，没有替身
+    daemon = build(DaemonConfig(name=name, write_log_file=False, tick_interval=0.001))
     daemon.start()
     thread = threading.Thread(target=daemon.run, name="daemon-run", daemon=True)
     thread.start()

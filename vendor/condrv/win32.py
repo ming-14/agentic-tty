@@ -111,6 +111,7 @@ GENERIC_READ = 0x80000000
 GENERIC_WRITE = 0x40000000
 GENERIC_ALL = 0x10000000
 SYNCHRONIZE = 0x00100000
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
 FILE_SHARE_READ = 0x00000001
 FILE_SHARE_WRITE = 0x00000002
@@ -180,6 +181,7 @@ PeekNamedPipe = _kapi(
 WaitForSingleObject = _kapi("WaitForSingleObject", W.DWORD, [W.HANDLE, W.DWORD])
 CancelIoEx = _kapi("CancelIoEx", W.BOOL, [W.HANDLE, ctypes.c_void_p])
 GetExitCodeProcess = _kapi("GetExitCodeProcess", W.BOOL, [W.HANDLE, ctypes.POINTER(W.DWORD)])
+OpenProcess = _kapi("OpenProcess", W.HANDLE, [W.DWORD, W.BOOL, W.DWORD])
 
 InitializeProcThreadAttributeList = _kapi(
     "InitializeProcThreadAttributeList",

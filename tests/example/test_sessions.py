@@ -6,10 +6,15 @@ import pytest
 
 from agentic_tty.core.errors import CoreError
 from agentic_tty.core.process.session import ProcessSession
-from agentic_tty.core.session.registry import SessionRegistry
+from agentic_tty.core.session.registry import DEFAULT_KINDS, SessionRegistry
 from agentic_tty.core.terminal.session import TerminalSession
 from agentic_tty.example.core_test_console.runtime_fakehost import FakeHost, FakeProgram
-from agentic_tty.example.core_test_console.sessions import ExampleMode, create_registry, session_spec
+from agentic_tty.example.core_test_console.sessions import (
+    ExampleMode,
+    create_registry,
+    session_spec,
+)
+from agentic_tty.sandbox import SANDBOX_PTY
 
 
 def _registry() -> SessionRegistry:
@@ -31,6 +36,17 @@ def test_pty_mode_uses_terminal_session():
 
 def test_subprocess_mode_uses_process_session():
     assert isinstance(_create(ExampleMode.SUBPROCESS, ("cmd",)), ProcessSession)
+
+
+def test_sandbox_mode_uses_terminal_session():
+    """沙箱与 `localpty` 同形（终端会话），但标签是装配处并进来的，不在 core 内置里。
+
+    不真的建会话——沙箱的宿主工厂是它自己的，注入假宿主换不掉它。
+    """
+    kinds = create_registry()._kinds
+    assert SANDBOX_PTY in kinds
+    assert kinds[SANDBOX_PTY].session_class is TerminalSession
+    assert SANDBOX_PTY not in DEFAULT_KINDS
 
 
 def test_fake_mode_rejects_unknown_program():

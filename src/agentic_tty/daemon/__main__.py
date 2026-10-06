@@ -1,12 +1,14 @@
 """守护进程入口：
 
     python -m agentic_tty.daemon [--name <实例名>] [--listen <管道名>] [--cwd <目录>] [--background]
+                           [--sandbox-read-only]
 
 实例名：`--name`；不给 = `config.DEFAULT_INSTANCE`——锁名 / 运行时目录 / 日志文件名都由它派生
 端点名：`--listen` 给**完整管道名**（不加前缀）；不给 = `config.endpoint_name(实例名)`
 运行时目录：`config.runtime_dir(实例名)`
 cwd：`--cwd`；不给 = 继承当前目录
 前台：默认；`--background` = 脱离终端在后台跑（父进程起完就退，服务由新进程做）
+sandbox_pty 的可写档：`--sandbox-read-only` = 工作区也只读（私有 temp 两档都有）
 """
 
 from __future__ import annotations
@@ -43,7 +45,13 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return 0
 
-    return run(DaemonConfig(name=args.name, endpoint=args.listen))
+    return run(
+        DaemonConfig(
+            name=args.name,
+            endpoint=args.listen,
+            sandbox_workspace_write=not args.sandbox_read_only,
+        )
+    )
 
 
 def _parse(argv: list[str]) -> argparse.Namespace:
@@ -55,6 +63,11 @@ def _parse(argv: list[str]) -> argparse.Namespace:
         "--listen", default=None, help="接入点的完整管道名（不加前缀）；不给 = 由实例名派生"
     )
     parser.add_argument("--cwd", help="从哪个目录跑；不给 = 继承当前目录")
+    parser.add_argument(
+        "--sandbox-read-only",
+        action="store_true",
+        help="沙箱会话的工作区也只读（不给 = 工作区可写）",
+    )
     parser.add_argument(
         BACKGROUND_FLAG,
         action="store_true",

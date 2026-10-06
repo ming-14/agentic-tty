@@ -34,6 +34,7 @@ from .win32 import (
     PROC_THREAD_ATTRIBUTE_JOB_LIST,
     PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
     PROCESS_INFORMATION,
+    PROCESS_QUERY_LIMITED_INFORMATION,
     PSEUDO_CONSOLE,
     PTY_SIGNAL_RESIZE_WINDOW,
     STARTF_USESTDHANDLES,
@@ -45,6 +46,7 @@ from .win32 import (
     CreatePipe,
     CreateProcessW,
     GetExitCodeProcess,
+    OpenProcess,
     PeekNamedPipe,
     ReadFile,
     SetHandleInformation,
@@ -160,35 +162,22 @@ class ConDrvPty:
 
     # ── 生命周期 ────────────────────────────────────────────────
 
-    def spawn(
-        self,
-        argv: Sequence[str],
-        *,
-        cwd: str | None = None,
-        env: Mapping[str, str] | None = None,
-        job_handle: int | None = None,
-    ) -> int:
-        """起 conhost 与子进程，返回子进程 pid。
+    def open(self) -> None:
+        """建 conhost 与伪终端——**不认子进程**。
 
-        `job_handle` 在**创建子进程时**经 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 生效，
-        所以子进程一条指令都没执行就已经在作业里——创建后再
-        `AssignProcessToJobObject` 有时间窗，期间 fork 出的孙进程会逃出去。
+        子进程由谁来起都行：自带路径见 `spawn()`；沙箱那边拿 `console` 给的 HPCON 起
+        受限子进程，再 `adopt(pid)` 认领。
         """
-        if not argv:
-            raise ValueError("argv 不能为空")
         if self._in_w is not None:
-            raise RuntimeError("本实例已经启动过")
+            raise RuntimeError("本实例已经打开")
 
         conhost = find_conhost()
         in_r = in_w = out_r = out_w = sig_r = sig_w = None
         server = reference = None
         conhost_attrs: AttrList | None = None
-        child_attrs: AttrList | None = None
         conhost_pi = PROCESS_INFORMATION()
-        child_pi = PROCESS_INFORMATION()
         try:
             conhost_attrs = AttrList(1)
-            child_attrs = AttrList(2 if job_handle else 1)
 
             in_r, in_w = _make_pipe()
             out_r, out_w = _make_pipe()
@@ -207,43 +196,100 @@ class ConDrvPty:
             _make_inheritable(sig_r)
 
             conhost_pi = self._start_conhost(conhost, server, in_r, out_w, sig_r, conhost_attrs)
-            close_handles(server, in_r, out_w, sig_r)
-            server = in_r = out_w = sig_r = None
-
-            pseudo = PSEUDO_CONSOLE()
-            pseudo.hSignal = sig_w
-            pseudo.hPtyReference = reference
-            pseudo.hConPtyProcess = conhost_pi.hProcess
-
-            child_pi = self._start_child(
-                argv, cwd=cwd, env=env, pseudo=pseudo, job_handle=job_handle, attrs=child_attrs
-            )
         except BaseException:
             close_handles(
                 in_r, in_w, out_r, out_w, sig_r, sig_w, server, reference,
                 conhost_pi.hProcess, conhost_pi.hThread,
-                child_pi.hProcess, child_pi.hThread,
             )
             raise
         finally:
             if conhost_attrs is not None:
                 conhost_attrs.close()
-            if child_attrs is not None:
-                child_attrs.close()
 
-        close_handles(conhost_pi.hThread, child_pi.hThread)
+        close_handles(server, in_r, out_w, sig_r, conhost_pi.hThread)
+        pseudo = PSEUDO_CONSOLE()
+        pseudo.hSignal = sig_w
+        pseudo.hPtyReference = reference
+        pseudo.hConPtyProcess = conhost_pi.hProcess
+
         self._in_w = in_w
         self._out_r = out_r
         self._signal = sig_w
         self._reference = reference
         self._conhost = conhost_pi.hProcess
-        self._child = child_pi.hProcess
         # 持有 HPCON 指向的那块内存：传给子进程的是它的地址，结构体被回收掉就悬空了
         self._pseudo_console = pseudo
         _logger.info(
-            "ConDrv 会话已启动 pid=%s conhost=%s size=%dx%d",
-            child_pi.dwProcessId,
+            "ConDrv 伪终端已就绪 conhost=%s size=%dx%d",
             conhost_pi.dwProcessId,
+            self._cols,
+            self._rows,
+        )
+
+    @property
+    def console(self) -> int:
+        """HPCON 值——`PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` 要的是它本身，不是它的地址。"""
+        if self._pseudo_console is None:
+            raise RuntimeError("伪终端还没打开")
+        return ctypes.cast(ctypes.pointer(self._pseudo_console), HPCON).value
+
+    def adopt(self, pid: int) -> None:
+        """认领一个**外部起的**子进程，`try_wait()` 才答得出退出码。
+
+        只取只读类权限：沙箱子进程的默认 DACL 是**追加**授权（不替换），本进程仍查得到它。
+        """
+        if self._closed:
+            raise RuntimeError("本实例已经关闭")
+        if self._child is not None:
+            raise RuntimeError("本实例已经认领过子进程")
+        handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, pid)
+        if not handle:
+            raise OSError(ctypes.get_last_error(), f"OpenProcess 失败 pid={pid}")
+        self._child = handle
+
+    def spawn(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: str | None = None,
+        env: Mapping[str, str] | None = None,
+        job_handle: int | None = None,
+    ) -> int:
+        """起 conhost 与子进程，返回子进程 pid。
+
+        `job_handle` 在**创建子进程时**经 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 生效，
+        所以子进程一条指令都没执行就已经在作业里——创建后再
+        `AssignProcessToJobObject` 有时间窗，期间 fork 出的孙进程会逃出去。
+        """
+        if not argv:
+            raise ValueError("argv 不能为空")
+        self.open()
+
+        child_attrs: AttrList | None = None
+        child_pi = PROCESS_INFORMATION()
+        try:
+            child_attrs = AttrList(2 if job_handle else 1)
+            child_pi = self._start_child(
+                argv,
+                cwd=cwd,
+                env=env,
+                pseudo=self._pseudo_console,
+                job_handle=job_handle,
+                attrs=child_attrs,
+            )
+        except BaseException:
+            close_handles(child_pi.hProcess, child_pi.hThread)
+            self.close()  # 伪终端已建好：起子进程失败就一并收掉，不留半截
+            raise
+        finally:
+            if child_attrs is not None:
+                child_attrs.close()
+
+        close_handles(child_pi.hThread)
+        self._child = child_pi.hProcess
+        _logger.info(
+            "ConDrv 会话已启动 pid=%s size=%dx%d",
+            child_pi.dwProcessId,
             self._cols,
             self._rows,
         )

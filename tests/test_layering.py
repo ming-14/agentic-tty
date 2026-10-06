@@ -17,15 +17,26 @@ _ALLOWED: dict[str, frozenset[str]] = {
     "protocol": frozenset({"foundation", "protocol"}),
     # 核心层（能力体）：core 内部可以直接用 core.runtime 的宿主实现
     "core": frozenset({"foundation", "core"}),
+    # 沙箱（能力实现）：只压在核心层上——模式由装配处合并注册，core 反过来不认识它
+    "sandbox": frozenset({"foundation", "core", "sandbox"}),
     # 只搬字节，不认识帧（帧在 protocol，缝合靠装配方注入）
     "transport": frozenset({"foundation", "transport"}),
     # 守护进程（那个进程）：机制不碰 core，只有 kernel / assembly / __main__ 碰
     "daemon": frozenset(
-        {"foundation", "config", "protocol", "transport", "core", "daemon"}
+        {"foundation", "config", "protocol", "transport", "core", "sandbox", "daemon"}
     ),
     # 示例层是各层的占位：直连核心层当测试驱动，也演示守护进程与客户端这一对
     "example": frozenset(
-        {"foundation", "config", "protocol", "core", "transport", "daemon", "example"}
+        {
+            "foundation",
+            "config",
+            "protocol",
+            "core",
+            "sandbox",
+            "transport",
+            "daemon",
+            "example",
+        }
     ),
 }
 
@@ -34,6 +45,8 @@ _ALLOWED_THIRD_PARTY: dict[str, frozenset[str]] = {
     # 原生扩展只允许出现在这些格子里——纯子进程场景因此不拖进 pywezterm
     "pywezterm": frozenset({"core/runtime/pywezterm_pty"}),
     "resvg_py": frozenset({"core/runtime/local_pty", "example/ui"}),
+    # 沙箱运行时同样只在它自己那一格
+    "winsandbox": frozenset({"sandbox/windows"}),
     # web 框架只允许出现在 web 层
     "fastapi": frozenset({"web"}),
     "starlette": frozenset({"web"}),
@@ -295,8 +308,11 @@ def test_daemon_only_uses_the_local_pipe():
     assert not violations, "daemon 用了 transport 的网络部分:\n" + "\n".join(violations)
 
 
-_VENDORED_MODULES = ("condrv", "openpty")
-"""`vendor/` 里**自研**的模块——它们与第三方依赖放在同一处，所以方向得自己守住。"""
+_VENDORED_MODULES = ("condrv", "openpty", "winsandbox")
+"""`vendor/` 里的模块——它们与第三方依赖放在同一处，所以方向得自己守住。
+
+`winsandbox` 是发行方的包装层（原地不动），一起管住：哪天要改它，反向依赖 `agentic_tty`
+一样会把层次倒过来。"""
 
 
 def _top_level_imports(path: Path) -> list[str]:

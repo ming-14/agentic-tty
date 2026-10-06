@@ -1,77 +1,37 @@
 """`localpty` 宿主：平台 PTY 原语 + pyte 终端模型。
 
-Windows 走 `vendor/condrv`（ConDrv 直连），Linux 走 `vendor/openpty`；两边都配 pyte
-做终端模型。**不碰 pywezterm**——这个后端的存在就是为了不依赖那份编译产物。
+会话由 `ConsoleLauncher` 起——自带的那份在 `console.py`（Windows 走 `vendor/condrv`
+的 ConDrv 直连，Linux 走 `vendor/openpty`），沙箱换掉同一个可调用对象即可复用本类
+的全部终端侧逻辑。**不碰 pywezterm**——这个后端的存在就是为了不依赖那份编译产物。
 
 原语是惰性导入的：纯 `pty` / `subprocess` 场景不会把它们拖进来。
 """
 
 from __future__ import annotations
 
-import importlib
 import os
-import sys
-from types import ModuleType
 
 from ....foundation.logs import get_logger
 from ...ports import HostMetadata, SessionSpec, Stream
-from ..errors import DependencyMissing, HostSpawnError
-from ..process_tree import ProcessTree, close_job, create_job
+from .console import ConsoleLauncher, PtyPrimitive, open_console
 from .screen import PyteScreen
 from .svg import render_image, render_svg
 
 _logger = get_logger("core.runtime.local_pty.host")
 
-_IS_WINDOWS = sys.platform == "win32"
-
-_primitive: ModuleType | None = None
-
-
-def require_primitive() -> ModuleType:
-    """惰性导入本平台的 PTY 原语；不可用则抛 `DependencyMissing`。"""
-    global _primitive
-    if _primitive is None:
-        from ..vendor import ensure_vendor_on_path
-
-        ensure_vendor_on_path()
-        name = "condrv" if _IS_WINDOWS else "openpty"
-        try:
-            _primitive = importlib.import_module(name)
-        except Exception as exc:
-            raise DependencyMissing(f"{name} 不可用（应在仓库 vendor/ 下）: {exc}") from exc
-    return _primitive
-
-
-def _pty_class() -> type:
-    """本平台的 PTY 原语类。两个原语各用自己描述性的类名，分派只此一处。"""
-    module = require_primitive()
-    return module.ConDrvPty if _IS_WINDOWS else module.OpenPty
-
 
 class LocalPtyHost:
     """伪终端宿主：平台原语负责 PTY，pyte 负责终端模型。"""
 
-    def __init__(self, spec: SessionSpec) -> None:
-        self._pty = _pty_class()(cols=spec.cols, rows=spec.rows)
+    def __init__(self, spec: SessionSpec, *, launch: ConsoleLauncher = open_console) -> None:
+        console = launch(spec)
+        self._pty: PtyPrimitive = console.pty
+        self._pid = console.pid
+        self._tree = console.tree
         self._screen = PyteScreen(spec.cols, spec.rows)
         self._closed = False
         # pyte 只认 OSC 0/2 的标题，不认 OSC 7，所以拿不到程序自己 cd 之后的位置
         self._fallback_cwd = os.path.abspath(spec.cwd) if spec.cwd else os.getcwd()
-        self._pid: int | None = None
-
-        argv = list(spec.argv)
-        env = dict(spec.env)
-        # 作业对象只有 Windows 有；Linux 侧进程树靠 /proc，原语不收句柄
-        job = create_job()
-        try:
-            if job is None:
-                self._pid = self._pty.spawn(argv, cwd=spec.cwd, env=env)
-            else:
-                self._pid = self._pty.spawn(argv, cwd=spec.cwd, env=env, job_handle=job)
-        except Exception as exc:
-            close_job(job)
-            raise HostSpawnError(f"启动 localpty 会话失败 {argv}: {exc}") from exc
-        self._tree = ProcessTree(self._pid, job)
 
     # ── HostLifecycle ──────────────────────────────────────────
 
